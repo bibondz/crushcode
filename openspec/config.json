@@ -1,0 +1,16 @@
+{
+  "provider": "zai",
+  "models": {
+    "chat": "zai-coding-plan/glm-4.6",
+    "edit": "zai-coding-plan/glm-4.6",
+    "completion": "zai-coding-plan/glm-4.6"
+  },
+  "defaultModel": "zai-coding-plan/glm-4.6",
+  "mcp": {
+    "openspec": {
+      "type": "local",
+      "command": ["openspec-mcp"],
+      "enabled": true
+    }
+  }
+}
