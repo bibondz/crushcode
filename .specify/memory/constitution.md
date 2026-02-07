@@ -1,50 +1,46 @@
-# [PROJECT_NAME] Constitution
-<!-- Example: Spec Constitution, TaskFlow Constitution, etc. -->
+# Crushcode Constitution
 
 ## Core Principles
 
-### [PRINCIPLE_1_NAME]
-<!-- Example: I. Library-First -->
-[PRINCIPLE_1_DESCRIPTION]
-<!-- Example: Every feature starts as a standalone library; Libraries must be self-contained, independently testable, documented; Clear purpose required - no organizational-only libraries -->
+### I. Memory Safety & Zero-Cost Abstractions
+Every module MUST leverage Zig's memory safety guarantees and zero-cost abstractions. No manual memory management without explicit justification. All allocations MUST use Zig's allocator patterns with proper error handling.
 
-### [PRINCIPLE_2_NAME]
-<!-- Example: II. CLI Interface -->
-[PRINCIPLE_2_DESCRIPTION]
-<!-- Example: Every library exposes functionality via CLI; Text in/out protocol: stdin/args → stdout, errors → stderr; Support JSON + human-readable formats -->
+### II. Plugin-First Architecture
+Every AI provider MUST be implemented as a plugin through the plugin interface. Providers MUST be independently testable and swappable without affecting core functionality. Plugin contracts MUST be versioned and backward compatible.
 
-### [PRINCIPLE_3_NAME]
-<!-- Example: III. Test-First (NON-NEGOTIABLE) -->
-[PRINCIPLE_3_DESCRIPTION]
-<!-- Example: TDD mandatory: Tests written → User approved → Tests fail → Then implement; Red-Green-Refactor cycle strictly enforced -->
+### III. CLI-First Interface
+All functionality MUST be accessible via CLI commands with clear, consistent flag patterns. Commands MUST support both human-readable and JSON output formats. Error handling MUST be explicit and provide actionable feedback.
 
-### [PRINCIPLE_4_NAME]
-<!-- Example: IV. Integration Testing -->
-[PRINCIPLE_4_DESCRIPTION]
-<!-- Example: Focus areas requiring integration tests: New library contract tests, Contract changes, Inter-service communication, Shared schemas -->
+### IV. Multi-Provider AI Integration
+System MUST support 17+ AI providers with unified interface. Provider selection MUST be runtime configurable. Fallback mechanisms REQUIRED for provider failures. Rate limiting and quota management MUST be implemented.
 
-### [PRINCIPLE_5_NAME]
-<!-- Example: V. Observability, VI. Versioning & Breaking Changes, VII. Simplicity -->
-[PRINCIPLE_5_DESCRIPTION]
-<!-- Example: Text I/O ensures debuggability; Structured logging required; Or: MAJOR.MINOR.BUILD format; Or: Start simple, YAGNI principles -->
+### V. Performance & Testing Discipline
+Performance profiling REQUIRED for all AI operations. Integration tests MUST cover provider contract changes and inter-service communication. Memory leak detection and performance regression testing MANDATORY for all releases.
 
-## [SECTION_2_NAME]
-<!-- Example: Additional Constraints, Security Requirements, Performance Standards, etc. -->
+## Technical Standards
 
-[SECTION_2_CONTENT]
-<!-- Example: Technology stack requirements, compliance standards, deployment policies, etc. -->
+**Memory Management**: Zig allocator patterns with explicit error handling. No memory leaks, use-after-free, or buffer overflows allowed.
 
-## [SECTION_3_NAME]
-<!-- Example: Development Workflow, Review Process, Quality Gates, etc. -->
+**Error Handling**: Zig error unions with explicit handling. All error paths MUST be documented and tested.
 
-[SECTION_3_CONTENT]
-<!-- Example: Code review requirements, testing gates, deployment approval process, etc. -->
+**Documentation**: Every module MUST have clear documentation of purpose, interfaces, and usage patterns.
+
+## Development Workflow
+
+**Code Review**: All changes MUST be reviewed for memory safety, performance implications, and architectural consistency.
+
+**Testing Gates**: Unit tests REQUIRED for all modules. Integration tests REQUIRED for provider contracts. Performance benchmarks for critical paths.
+
+**Versioning Policy**: Semantic versioning with MAJOR.MINOR.PATCH. Backward compatibility REQUIRED unless MAJOR version increment.
 
 ## Governance
-<!-- Example: Constitution supersedes all other practices; Amendments require documentation, approval, migration plan -->
 
-[GOVERNANCE_RULES]
-<!-- Example: All PRs/reviews must verify compliance; Complexity must be justified; Use [GUIDANCE_FILE] for runtime development guidance -->
+This constitution supersedes all other development practices. Amendments require:
+1. Documentation of proposed changes
+2. Impact analysis on existing modules  
+3. Migration plan for breaking changes
+4. Team approval and testing validation
 
-**Version**: [CONSTITUTION_VERSION] | **Ratified**: [RATIFICATION_DATE] | **Last Amended**: [LAST_AMENDED_DATE]
-<!-- Example: Version: 2.1.1 | Ratified: 2025-06-13 | Last Amended: 2025-07-16 -->
+All development MUST verify compliance with these principles through automated checks and code reviews.
+
+**Version**: 1.0.0 | **Ratified**: 2025-02-07 | **Last Amended**: 2025-02-07
