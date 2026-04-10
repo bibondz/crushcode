@@ -188,7 +188,7 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         },
         .opencode_zen => ProviderConfig{
             // OpenCode Zen - models tested by OpenCode team
-            .base_url = try allocator.dupe(u8, "https://opencode.ai/api/v1"),
+            .base_url = try allocator.dupe(u8, "https://opencode.ai/zen/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{
                 "opencode/gpt-5.1-codex",
@@ -196,6 +196,8 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
                 "opencode/gemini-2.5-pro",
                 "opencode/grok-2",
                 "opencode/qwen3-coder-480b",
+                "opencode/gpt-5-nano", // Free model
+                "opencode/big-pickle", // Free model
             },
             .is_models_static = true,
         },
@@ -236,6 +238,53 @@ pub const ProviderRegistry = struct {
     pub fn registerProvider(self: *ProviderRegistry, provider_type: ProviderType) !void {
         const provider = try Provider.init(self.allocator, provider_type);
         try self.providers.put(provider.name, provider);
+    }
+
+    /// Fetch available models from OpenCode Zen API
+    pub fn fetchOpenCodeZenModels(self: *ProviderRegistry, api_key: []const u8) ![]const []const u8 {
+        if (api_key.len == 0) {
+            return error.AuthenticationRequired;
+        }
+
+        var client: std.http.Client = .{ .allocator = self.allocator };
+        defer client.deinit();
+
+        const uri = try std.Uri.parse("https://opencode.ai/zen/v1/models");
+
+        var request = try client.open(.GET, uri, .{});
+        defer request.deinit();
+
+        try request.headers.append("Authorization", try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key}));
+
+        const response = try request.send();
+        const body = try response.body().?.readAllAlloc(self.allocator, 1024 * 1024);
+        defer self.allocator.free(body);
+
+        if (response.status != .ok) {
+            return error.FetchFailed;
+        }
+
+        // Parse JSON response to extract model IDs
+        var model_list = std.ArrayList([]const u8).init(self.allocator);
+
+        // Simple JSON parsing - look for "id":"..." patterns
+        var search_idx: usize = 0;
+        while (search_idx < body.len) {
+            if (std.mem.indexOf(u8, body[search_idx..], "\"id\":\"")) |idx| {
+                const start = search_idx + idx + 5;
+                if (start < body.len) {
+                    if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
+                        const model_id = body[start..(start + end_idx)];
+                        try model_list.append(try std.fmt.allocPrint(self.allocator, "opencode/{s}", .{model_id}));
+                        search_idx = start + end_idx;
+                        continue;
+                    }
+                }
+            }
+            search_idx += 1;
+        }
+
+        return model_list.toOwnedSlice();
     }
 
     pub fn registerAllProviders(self: *ProviderRegistry) !void {
