@@ -87,7 +87,20 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         return err;
     };
 
-    std.debug.print("\n{s}\n\n", .{response.choices[0].message.content});
+    // Safety check - ensure we have a valid response
+    if (response.choices.len == 0) {
+        std.debug.print("\nError: Empty response from AI\n", .{});
+        return error.EmptyResponse;
+    }
+
+    // Simple content extraction with inline null check
+    var content_slice: []const u8 = "";
+    const choice = response.choices[0];
+    if (choice.message.content) |c| {
+        content_slice = c;
+    }
+    std.debug.print("\n{s}\n\n", .{content_slice});
+    std.debug.print("---\n", .{});
     std.debug.print("---\n", .{});
     std.debug.print("Provider: {s}\n", .{provider_name});
     std.debug.print("Model: {s}\n", .{model_name});
@@ -134,7 +147,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer {
         for (messages.items) |msg| {
             allocator.free(msg.role);
-            allocator.free(msg.content);
+            if (msg.content) |c| allocator.free(c);
         }
         messages.deinit();
     }
@@ -189,12 +202,13 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         };
 
         // Print response
-        std.debug.print("{s}", .{response.choices[0].message.content});
+        const content = response.choices[0].message.content orelse "";
+        std.debug.print("{s}", .{content});
 
         // Add assistant response to history
         try messages.append(.{
             .role = try allocator.dupe(u8, "assistant"),
-            .content = try allocator.dupe(u8, response.choices[0].message.content),
+            .content = try allocator.dupe(u8, content),
         });
 
         std.debug.print("\n", .{});
