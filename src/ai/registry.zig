@@ -202,14 +202,19 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .is_models_static = true,
         },
         .opencode_go => ProviderConfig{
-            // OpenCode Go - low cost subscription for open coding models
-            .base_url = try allocator.dupe(u8, "https://opencode.ai/go/v1"),
+            // OpenCode Go - low cost subscription ($5 first month, $10/month)
+            // Models: GLM-5, GLM-5.1, Kimi K2.5, MiMo-V2-Pro, MiMo-V2-Omni, MiniMax M2.7, MiniMax M2.5
+            // Endpoint is under /zen/go path
+            .base_url = try allocator.dupe(u8, "https://opencode.ai/zen/go/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{
-                "opencode/qwen3-8b",
-                "opencode/qwen3-14b",
-                "opencode/llama3.1-8b",
-                "opencode/llama3.1-70b",
+                "glm-5.1",
+                "glm-5",
+                "kimi-k2.5",
+                "mimo-v2-pro",
+                "mimo-v2-omni",
+                "minimax-m2.7",
+                "minimax-m2.5",
             },
             .is_models_static = true,
         },
