@@ -18,6 +18,8 @@ pub const ProviderType = enum {
     openrouter,
     zai,
     vercel_gateway,
+    opencode_zen,
+    opencode_go,
 
     pub fn toString(self: ProviderType) []const u8 {
         return switch (self) {
@@ -38,6 +40,8 @@ pub const ProviderType = enum {
             .openrouter => "openrouter",
             .zai => "zai",
             .vercel_gateway => "vercel-gateway",
+            .opencode_zen => "opencode-zen",
+            .opencode_go => "opencode-go",
         };
     }
 };
@@ -180,6 +184,31 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .base_url = try allocator.dupe(u8, "https://api.vercel.ai/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{"your-provider-model"},
+            .is_models_static = true,
+        },
+        .opencode_zen => ProviderConfig{
+            // OpenCode Zen - models tested by OpenCode team
+            .base_url = try allocator.dupe(u8, "https://opencode.ai/api/v1"),
+            .api_key = try allocator.dupe(u8, ""),
+            .models = &[_][]const u8{
+                "opencode/gpt-5.1-codex",
+                "opencode/claude-sonnet-4.5",
+                "opencode/gemini-2.5-pro",
+                "opencode/grok-2",
+                "opencode/qwen3-coder-480b",
+            },
+            .is_models_static = true,
+        },
+        .opencode_go => ProviderConfig{
+            // OpenCode Go - low cost subscription for open coding models
+            .base_url = try allocator.dupe(u8, "https://opencode.ai/go/v1"),
+            .api_key = try allocator.dupe(u8, ""),
+            .models = &[_][]const u8{
+                "opencode/qwen3-8b",
+                "opencode/qwen3-14b",
+                "opencode/llama3.1-8b",
+                "opencode/llama3.1-70b",
+            },
             .is_models_static = true,
         },
     };

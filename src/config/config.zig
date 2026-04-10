@@ -149,6 +149,8 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
         \\openrouter = "sk-or-your-openrouter-api-key"
         \\zai = "your-zai-api-key"
         \\vercel_gateway = "your-vercel-api-key"
+        \\opencode_zen = "your-opencode-zen-api-key"
+        \\opencode_go = "your-opencode-go-api-key"
     ;
 
     _ = try file.writeAll(default_content);
