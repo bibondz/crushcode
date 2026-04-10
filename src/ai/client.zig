@@ -5,7 +5,7 @@ const error_handler_mod = @import("../ai/error_handler.zig");
 // Forward declarations
 pub const ChatMessage = struct {
     role: []const u8,
-    content: []const u8,
+    content: ?[]const u8 = null,
 };
 
 pub const ChatRequest = struct {
@@ -23,12 +23,15 @@ pub const ChatResponse = struct {
     model: []const u8,
     choices: []ChatChoice,
     usage: ?Usage = null,
+    provider: ?[]const u8 = null,
+    cost: ?[]const u8 = null,
+    system_fingerprint: ?[]const u8 = null,
 };
 
 pub const ChatChoice = struct {
     index: u32,
     message: ChatMessage,
-    finish_reason: []const u8,
+    finish_reason: ?[]const u8 = null,
 };
 
 pub const Usage = struct {
@@ -67,6 +70,14 @@ pub const AIClient = struct {
         _ = self;
     }
 
+    /// Get the actual model name to send to API (strip "opencode/" prefix for Zen/Go)
+    pub fn getApiModelName(self: *AIClient) []const u8 {
+        if (std.mem.startsWith(u8, self.model, "opencode/")) {
+            return self.model["opencode/".len..];
+        }
+        return self.model;
+    }
+
     pub fn sendChat(self: *AIClient, user_message: []const u8) !ChatResponse {
         return self.sendChatWithOptions(user_message, null, true);
     }
@@ -94,7 +105,9 @@ pub const AIClient = struct {
         const has_key = self.api_key.len > 0;
         const is_local = std.mem.eql(u8, self.provider.name, "ollama") or
             std.mem.eql(u8, self.provider.name, "lm_studio") or
-            std.mem.eql(u8, self.provider.name, "llama_cpp");
+            std.mem.eql(u8, self.provider.name, "llama_cpp") or
+            std.mem.eql(u8, self.provider.name, "opencode-zen") or
+            std.mem.eql(u8, self.provider.name, "opencode-go");
 
         if (!has_key and !is_local) {
             return error.AuthenticationError;
@@ -155,7 +168,7 @@ pub const AIClient = struct {
         _ = has_key;
         _ = _attempt;
 
-        const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else "/chat/completions";
+        const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else if (std.mem.eql(u8, self.provider.name, "opencode-zen")) "/chat/completions" else if (std.mem.eql(u8, self.provider.name, "opencode-go")) "/chat/completions" else "/chat/completions";
 
         if (debug) {
             std.debug.print("\n[HTTP Request]\n", .{});
@@ -173,7 +186,7 @@ pub const AIClient = struct {
 
         const json_body = try std.fmt.allocPrint(allocator,
             \\{{"model":"{s}","messages":[{{"role":"user","content":"{s}"}}],"max_tokens":2048,"temperature":0.7}}
-        , .{ self.model, user_message });
+        , .{ self.getApiModelName(), user_message });
         defer allocator.free(json_body);
         if (debug) std.debug.print("Body: {s}\n", .{json_body});
 
@@ -261,7 +274,7 @@ pub const AIClient = struct {
                     .role = try allocator.dupe(u8, "assistant"),
                     .content = content,
                 },
-                .finish_reason = if (is_done) "stop" else "length",
+                .finish_reason = if (is_done) "stop" else null,
             };
 
             const response = ChatResponse{
@@ -284,9 +297,75 @@ pub const AIClient = struct {
         });
         defer json_parsed.deinit();
 
+        // Deep clone the response to avoid lifetime issues
+        const original = json_parsed.value;
+
+        // Clone id
+        const id_copy = try allocator.dupe(u8, original.id);
+
+        // Clone object
+        const object_copy = try allocator.dupe(u8, original.object);
+
+        // Clone model
+        const model_copy = try allocator.dupe(u8, original.model);
+
+        // Clone choices
+        const choices_copy = try allocator.alloc(ChatChoice, original.choices.len);
+
+        for (original.choices, 0..) |orig_choice, i| {
+            const role_copy = try allocator.dupe(u8, orig_choice.message.role);
+
+            const content_copy: ?[]const u8 = if (orig_choice.message.content) |c|
+                try allocator.dupe(u8, c)
+            else
+                null;
+
+            const finish_copy: ?[]const u8 = if (orig_choice.finish_reason) |fr|
+                try allocator.dupe(u8, fr)
+            else
+                null;
+
+            choices_copy[i] = .{
+                .index = orig_choice.index,
+                .message = .{
+                    .role = role_copy,
+                    .content = content_copy,
+                },
+                .finish_reason = finish_copy,
+            };
+        }
+
+        // Clone provider, cost, system_fingerprint if present
+        const provider_copy: ?[]const u8 = if (original.provider) |p|
+            try allocator.dupe(u8, p)
+        else
+            null;
+
+        const cost_copy: ?[]const u8 = if (original.cost) |c|
+            try allocator.dupe(u8, c)
+        else
+            null;
+
+        const sf_copy: ?[]const u8 = if (original.system_fingerprint) |sf|
+            try allocator.dupe(u8, sf)
+        else
+            null;
+
+        const cloned_response = ChatResponse{
+            .id = id_copy,
+            .object = object_copy,
+            .created = original.created,
+            .model = model_copy,
+            .choices = choices_copy,
+            .usage = original.usage,
+            .provider = provider_copy,
+            .cost = cost_copy,
+            .system_fingerprint = sf_copy,
+        };
+
         return HTTPResult{
             .err = null,
-            .response = json_parsed.value,
+            .response = cloned_response,
         };
     }
 
@@ -326,7 +405,8 @@ pub const AIClient = struct {
             try json_body.appendSlice(msg.role);
             try json_body.appendSlice("\",\"content\":\"");
             // Escape special characters in content
-            for (msg.content) |c| {
+            const msg_content = msg.content orelse "";
+            for (msg_content) |c| {
                 switch (c) {
                     '"' => try json_body.appendSlice("\\\""),
                     '\\' => try json_body.appendSlice("\\\\"),
@@ -423,7 +503,7 @@ pub const AIClient = struct {
                     .role = try allocator.dupe(u8, "assistant"),
                     .content = content,
                 },
-                .finish_reason = if (is_done) "stop" else "length",
+                .finish_reason = if (is_done) "stop" else null,
             };
 
             const response = ChatResponse{
