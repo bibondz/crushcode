@@ -215,16 +215,30 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         },
         .opencode_zen => ProviderConfig{
             // OpenCode Zen - models tested by OpenCode team
+            // Chat Completions API: https://opencode.ai/docs/zen/#endpoints
             .base_url = try allocator.dupe(u8, "https://opencode.ai/zen/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{
+                // Free models (tested working)
+                "opencode/minimax-m2.5-free", // MiniMax M2.5 Free
+                "opencode/big-pickle", // Stealth free model
+                "opencode/qwen3.6-plus-free", // Qwen3.6 Plus Free
+                "opencode/nemotron-3-super-free", // Nemotron 3 Super Free
+                // Paid models (need balance)
+                "opencode/gpt-5.4",
+                "opencode/gpt-5.3-codex",
+                "opencode/gpt-5.2",
                 "opencode/gpt-5.1-codex",
-                "opencode/claude-sonnet-4.5",
-                "opencode/gemini-2.5-pro",
-                "opencode/grok-2",
-                "opencode/qwen3-coder-480b",
-                "opencode/gpt-5-nano", // Free model
-                "opencode/big-pickle", // Free model
+                "opencode/gpt-5-nano", // Free
+                "opencode/claude-opus-4-6",
+                "opencode/claude-sonnet-4-6",
+                "opencode/claude-haiku-4-5",
+                "opencode/gemini-3.1-pro",
+                "opencode/gemini-3-flash",
+                "opencode/minimax-m2.5",
+                "opencode/glm-5.1",
+                "opencode/glm-5",
+                "opencode/kimi-k2.5",
             },
             .is_models_static = true,
         },
