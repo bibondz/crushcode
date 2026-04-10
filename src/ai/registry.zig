@@ -171,7 +171,22 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         .openrouter => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://openrouter.ai/api/v1"),
             .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{ "openai/gpt-4o", "anthropic/claude-3.5-sonnet", "google/gemini-pro-1.5" },
+            .models = &[_][]const u8{
+                // Free models (2026)
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "arcee-ai/trinity-large-preview:free",
+                "z-ai/glm-4.5-air:free",
+                "nvidia/nemotron-3-nano-30b-a3b:free",
+                "minimax/minimax-m2.5:free",
+                "openai/gpt-oss-120b:free",
+                "google/gemma-4-31b-it:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "qwen/qwen3-coder:free",
+                // Paid models
+                "openai/gpt-4o",
+                "anthropic/claude-3.5-sonnet",
+                "google/gemini-pro-1.5",
+            },
             .is_models_static = true,
         },
         .zai => ProviderConfig{
