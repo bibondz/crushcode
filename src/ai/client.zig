@@ -526,9 +526,75 @@ pub const AIClient = struct {
         });
         defer json_parsed.deinit();
 
+        // Deep clone the response to avoid lifetime issues (same as in performHttpRequest)
+        const original = json_parsed.value;
+
+        // Clone id
+        const id_copy = try allocator.dupe(u8, original.id);
+
+        // Clone object
+        const object_copy = try allocator.dupe(u8, original.object);
+
+        // Clone model
+        const model_copy = try allocator.dupe(u8, original.model);
+
+        // Clone choices
+        const choices_copy = try allocator.alloc(ChatChoice, original.choices.len);
+
+        for (original.choices, 0..) |orig_choice, i| {
+            const role_copy = try allocator.dupe(u8, orig_choice.message.role);
+
+            const content_copy: ?[]const u8 = if (orig_choice.message.content) |c|
+                try allocator.dupe(u8, c)
+            else
+                null;
+
+            const finish_copy: ?[]const u8 = if (orig_choice.finish_reason) |fr|
+                try allocator.dupe(u8, fr)
+            else
+                null;
+
+            choices_copy[i] = .{
+                .index = orig_choice.index,
+                .message = .{
+                    .role = role_copy,
+                    .content = content_copy,
+                },
+                .finish_reason = finish_copy,
+            };
+        }
+
+        // Clone provider, cost, system_fingerprint if present
+        const provider_copy: ?[]const u8 = if (original.provider) |p|
+            try allocator.dupe(u8, p)
+        else
+            null;
+
+        const cost_copy: ?[]const u8 = if (original.cost) |c|
+            try allocator.dupe(u8, c)
+        else
+            null;
+
+        const sf_copy: ?[]const u8 = if (original.system_fingerprint) |sf|
+            try allocator.dupe(u8, sf)
+        else
+            null;
+
+        const cloned_response = ChatResponse{
+            .id = id_copy,
+            .object = object_copy,
+            .created = original.created,
+            .model = model_copy,
+            .choices = choices_copy,
+            .usage = original.usage,
+            .provider = provider_copy,
+            .cost = cost_copy,
+            .system_fingerprint = sf_copy,
+        };
+
         return HTTPResult{
             .err = null,
-            .response = json_parsed.value,
+            .response = cloned_response,
         };
     }
 
