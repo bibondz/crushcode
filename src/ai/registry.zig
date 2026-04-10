@@ -172,27 +172,30 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .base_url = try allocator.dupe(u8, "https://openrouter.ai/api/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{
-                // Free models (2026)
-                "nvidia/nemotron-3-super-120b-a12b:free",
-                "arcee-ai/trinity-large-preview:free",
-                "z-ai/glm-4.5-air:free",
-                "nvidia/nemotron-3-nano-30b-a3b:free",
-                "minimax/minimax-m2.5:free",
-                "openai/gpt-oss-120b:free",
+                // Free models (2026) - tested
                 "google/gemma-4-31b-it:free",
                 "google/gemma-4-26b-a4b-it:free",
-                "meta-llama/llama-3.3-70b-instruct:free",
-                "qwen/qwen3-coder:free",
                 "openai/gpt-oss-20b:free",
-                // Tested working - paid
+                "z-ai/glm-4.5-air:free",
+                // Anthropic models - tested working via OpenRouter
+                "anthropic/claude-opus-4.6",
+                "anthropic/claude-sonnet-4.6",
+                "anthropic/claude-haiku-4.5",
+                "anthropic/claude-3-haiku",
+                // DeepSeek models - tested working
+                "deepseek/deepseek-chat",
+                "deepseek/deepseek-v3.2",
+                "deepseek/deepseek-r1",
+                // OpenAI models - tested working
+                "openai/gpt-5.2",
                 "openai/gpt-4o",
                 "openai/gpt-4o-mini",
-                "openai/gpt-5.2",
-                "anthropic/claude-3-haiku",
-                "deepseek/deepseek-chat",
+                // Google models - tested working
                 "google/gemini-2.0-flash-001",
                 "google/gemini-2.0-flash",
+                // Meta/Llama models - tested working
                 "meta-llama/llama-3.1-8b-instruct",
+                // Z.ai models - tested working
                 "z-ai/glm-5.1",
                 "z-ai/glm-4.5-air",
             },
