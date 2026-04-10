@@ -198,6 +198,12 @@ pub const AIClient = struct {
 
         try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
 
+        // OpenRouter app identification headers (optional but recommended)
+        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
+            try headers_buf.append(.{ .name = try allocator.dupe(u8, "HTTP-Referer"), .value = try allocator.dupe(u8, "https://github.com/crushcode/crushcode") });
+            try headers_buf.append(.{ .name = try allocator.dupe(u8, "X-Title"), .value = try allocator.dupe(u8, "Crushcode") });
+        }
+
         if (self.api_key.len > 0) {
             try headers_buf.append(.{ .name = try allocator.dupe(u8, "Authorization"), .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
         }
@@ -433,6 +439,12 @@ pub const AIClient = struct {
         defer headers_buf.deinit();
 
         try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
+
+        // OpenRouter app identification headers (optional but recommended)
+        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
+            try headers_buf.append(.{ .name = try allocator.dupe(u8, "HTTP-Referer"), .value = try allocator.dupe(u8, "https://github.com/crushcode/crushcode") });
+            try headers_buf.append(.{ .name = try allocator.dupe(u8, "X-Title"), .value = try allocator.dupe(u8, "Crushcode") });
+        }
 
         if (self.api_key.len > 0) {
             try headers_buf.append(.{ .name = try allocator.dupe(u8, "Authorization"), .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
