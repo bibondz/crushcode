@@ -5,6 +5,7 @@ pub const Args = struct {
     provider: ?[]const u8,
     model: ?[]const u8,
     config_file: ?[]const u8,
+    interactive: bool = false,
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -16,6 +17,7 @@ pub const Args = struct {
             .provider = null,
             .model = null,
             .config_file = null,
+            .interactive = false,
             .remaining = undefined, // Will be set later
         };
 
@@ -47,6 +49,8 @@ pub const Args = struct {
                     if (args_iter.next()) |next_arg| {
                         result.config_file = next_arg;
                     }
+                } else if (std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "-i")) {
+                    result.interactive = true;
                 }
             } else if (result.command[0] == 0 or result.command.ptr == "chat".ptr) {
                 // First non-flag is the command
@@ -65,6 +69,7 @@ pub const Args = struct {
             .provider = if (result.provider) |p| try allocator.dupe(u8, p) else null,
             .model = if (result.model) |m| try allocator.dupe(u8, m) else null,
             .config_file = if (result.config_file) |c| try allocator.dupe(u8, c) else null,
+            .interactive = result.interactive,
             .remaining = remaining,
             .has_command = has_command,
         };
