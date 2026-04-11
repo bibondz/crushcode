@@ -127,6 +127,36 @@ Extensions for future releases.
 
 ---
 
+## v3 Requirements (Phase 14-16)
+
+Sources: multica (Go agent platform), oh-my-openagent (TypeScript multi-agent plugin)
+
+### Streaming Session Abstraction (Phase 14)
+
+- [ ] **STREAM-01**: Unified streaming session interface across all providers (OpenAI, Anthropic, Ollama, etc.)
+- [ ] **STREAM-02**: Real-time token-by-token display in terminal during AI response
+- [ ] **STREAM-03**: Provider-specific response parsers (NDJSON, SSE, JSON-RPC)
+- [ ] **STREAM-04**: Session lifecycle management (create, pause, resume, cancel)
+- [ ] **STREAM-05**: Tool call streaming with intermediate result display
+
+### Token Usage Tracking (Phase 15)
+
+- [ ] **TOKEN-01**: Comprehensive usage struct (input, output, cache_read, cache_write tokens)
+- [ ] **TOKEN-02**: Per-request and per-session token accumulation
+- [ ] **TOKEN-03**: Cost estimation based on provider pricing tables
+- [ ] **TOKEN-04**: Usage report command (`crushcode usage`) with session summary
+- [ ] **TOKEN-05**: Token budget alerts when approaching configurable limits
+
+### Hashline Edit Validation (Phase 16)
+
+- [ ] **HASH-01**: Content hash generation for file lines (hashline format: LINE#ID)
+- [ ] **HASH-02**: Edit validation against current file state to detect stale references
+- [ ] **HASH-03**: Conflict detection and resolution when hashes mismatch
+- [ ] **HASH-04**: Integration with existing file edit/write commands
+- [ ] **HASH-05**: Hash index caching for large files
+
+---
+
 ## Out of Scope
 
 | Feature | Reason |
@@ -177,9 +207,9 @@ Extensions for future releases.
 | ADV-02 | Advanced | ✅ Complete |
 | ADV-03 | Advanced | ✅ Complete |
 
-**Total:** 32/32 requirements complete ✅
+**Total:** 32/32 v1/v2 requirements complete ✅ | 15/15 v3 requirements pending
 
 ---
 
 *Requirements defined: 2026-04-11*
-*Last updated: 2026-04-11 after v1 completion*
+*Last updated: 2026-04-11 — v3 requirements added from multica + oh-my-openagent analysis*
