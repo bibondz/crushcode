@@ -51,6 +51,15 @@ pub const OllamaMessage = struct {
     content: []const u8,
 };
 
+/// Extended usage data for tracking (Phase 15 integration)
+pub const ExtendedUsage = struct {
+    input_tokens: u32 = 0,
+    output_tokens: u32 = 0,
+    cache_read_tokens: u32 = 0,
+    cache_write_tokens: u32 = 0,
+    estimated_cost_usd: f64 = 0.0,
+};
+
 pub const AIClient = struct {
     allocator: std.mem.Allocator,
     provider: registry_mod.Provider,
@@ -638,5 +647,82 @@ pub const AIClient = struct {
     fn estimateTokens(text: []const u8) u32 {
         const len = @min(text.len, 100);
         return @as(u32, @divTrunc(len, 4));
+    }
+
+    /// Extract extended usage from a ChatResponse for usage tracking
+    pub fn extractExtendedUsage(_: *AIClient, response: *const ChatResponse) ExtendedUsage {
+        var eu = ExtendedUsage{};
+        if (response.usage) |usage| {
+            eu.input_tokens = usage.prompt_tokens;
+            eu.output_tokens = usage.completion_tokens;
+        }
+        return eu;
+    }
+
+    /// Build the JSON request body with streaming enabled
+    pub fn buildStreamingBody(self: *AIClient, user_message: []const u8) ![]const u8 {
+        const allocator = self.allocator;
+        var json_body = std.ArrayList(u8).init(allocator);
+        defer json_body.deinit();
+
+        try json_body.appendSlice("{\"model\":\"");
+        try json_body.appendSlice(self.getApiModelName());
+        try json_body.appendSlice("\",\"messages\":[");
+
+        if (self.system_prompt) |sys_prompt| {
+            if (sys_prompt.len > 0) {
+                try json_body.appendSlice("{\"role\":\"system\",\"content\":\"");
+                for (sys_prompt) |c| {
+                    switch (c) {
+                        '"' => try json_body.appendSlice("\\\""),
+                        '\\' => try json_body.appendSlice("\\\\"),
+                        '\n' => try json_body.appendSlice("\\n"),
+                        '\r' => try json_body.appendSlice("\\r"),
+                        '\t' => try json_body.appendSlice("\\t"),
+                        else => try json_body.append(c),
+                    }
+                }
+                try json_body.appendSlice("\"},");
+            }
+        }
+
+        try json_body.appendSlice("{\"role\":\"user\",\"content\":\"");
+        for (user_message) |c| {
+            switch (c) {
+                '"' => try json_body.appendSlice("\\\""),
+                '\\' => try json_body.appendSlice("\\\\"),
+                '\n' => try json_body.appendSlice("\\n"),
+                '\r' => try json_body.appendSlice("\\r"),
+                '\t' => try json_body.appendSlice("\\t"),
+                else => try json_body.append(c),
+            }
+        }
+        try json_body.appendSlice("\"}],\"max_tokens\":2048,\"temperature\":0.7,\"stream\":true}");
+
+        return allocator.dupe(u8, json_body.items);
+    }
+
+    /// Build headers for HTTP request
+    pub fn buildHeaders(self: *AIClient) ![]std.http.Header {
+        const allocator = self.allocator;
+        var headers = std.ArrayList(std.http.Header).init(allocator);
+        try headers.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
+
+        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
+            try headers.append(.{ .name = try allocator.dupe(u8, "HTTP-Referer"), .value = try allocator.dupe(u8, "https://github.com/crushcode/crushcode") });
+            try headers.append(.{ .name = try allocator.dupe(u8, "X-Title"), .value = try allocator.dupe(u8, "Crushcode") });
+        }
+
+        if (self.api_key.len > 0) {
+            try headers.append(.{ .name = try allocator.dupe(u8, "Authorization"), .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
+        }
+
+        return headers.toOwnedSlice();
+    }
+
+    /// Get the chat endpoint path for this provider
+    pub fn getChatPath(self: *AIClient) []const u8 {
+        if (std.mem.eql(u8, self.provider.name, "ollama")) return "/chat";
+        return "/chat/completions";
     }
 };

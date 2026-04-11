@@ -73,4 +73,49 @@ pub const FileReader = struct {
 
         return results.toOwnedSlice(self.allocator);
     }
+
+    /// Read a file and annotate each line with content hash (hashline format)
+    /// Output format: "  LINE#HASH | actual content"
+    pub fn readWithHashlines(self: *FileReader, path: []const u8) !FileContent {
+        const raw = try self.read(path);
+        errdefer raw.deinit();
+
+        var output = std.ArrayList(u8).init(self.allocator);
+        errdefer output.deinit();
+
+        const FNV_OFFSET: u32 = 2166136261;
+        const FNV_PRIME: u32 = 16777619;
+
+        var lines = std.mem.splitScalar(u8, raw.content, '\n');
+        var line_num: u32 = 1;
+
+        while (lines.next()) |line| {
+            // Compute FNV-1a hash of trimmed line
+            const trimmed = std.mem.trim(u8, line, " \t\r\n");
+            var h: u32 = FNV_OFFSET;
+            for (trimmed) |byte| {
+                h ^= @as(u32, byte);
+                h *%= FNV_PRIME;
+            }
+
+            const formatted = std.fmt.allocPrint(self.allocator, "  {d}#{x:0>8} | {s}\n", .{
+                line_num,
+                h,
+                line,
+            }) catch "  (hashline error)\n";
+            defer self.allocator.free(formatted);
+            output.appendSlice(formatted) catch {};
+            line_num += 1;
+        }
+
+        const annotated = try output.toOwnedSlice();
+        self.allocator.free(raw.content);
+
+        return FileContent{
+            .path = raw.path,
+            .content = annotated,
+            .size = annotated.len,
+            .allocator = self.allocator,
+        };
+    }
 };

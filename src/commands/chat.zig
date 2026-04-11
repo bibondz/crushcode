@@ -3,8 +3,52 @@ const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
 const client_mod = @import("client");
+const intent_gate_mod = @import("intent_gate");
+const lifecycle_hooks_mod = @import("lifecycle_hooks");
+const streaming_mod = @import("streaming");
 
 const Config = config_mod.Config;
+const HookContext = lifecycle_hooks_mod.HookContext;
+const IntentGate = intent_gate_mod.IntentGate;
+const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
+const StreamingSession = streaming_mod.StreamingSession;
+const StreamOptions = streaming_mod.types.StreamOptions;
+
+fn preRequestHook(ctx: *HookContext) !void {
+    std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
+        @tagName(ctx.phase),
+        ctx.provider,
+        ctx.model,
+    });
+}
+
+fn postRequestHook(ctx: *HookContext) !void {
+    std.debug.print("\x1b[2m[hook: {s} ← {s}/{s} | tokens: {d}]\x1b[0m\n", .{
+        @tagName(ctx.phase),
+        ctx.provider,
+        ctx.model,
+        ctx.token_count,
+    });
+}
+
+fn registerCoreChatHooks(hooks: *LifecycleHooks) !void {
+    try hooks.register("chat_pre_request", .core, .pre_request, preRequestHook, 10);
+    try hooks.register("chat_post_request", .core, .post_request, postRequestHook, 20);
+}
+
+fn clampUsizeToU32(value: usize) u32 {
+    if (value > std.math.maxInt(u32)) {
+        return std.math.maxInt(u32);
+    }
+    return @as(u32, @intCast(value));
+}
+
+fn clampU64ToU32(value: u64) u32 {
+    if (value > std.math.maxInt(u32)) {
+        return std.math.maxInt(u32);
+    }
+    return @as(u32, @intCast(value));
+}
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     const allocator = std.heap.page_allocator;
@@ -106,7 +150,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
     std.debug.print("\n{s}\n\n", .{content_slice});
     std.debug.print("---\n", .{});
-    std.debug.print("---\n", .{});
     std.debug.print("Provider: {s}\n", .{provider_name});
     std.debug.print("Model: {s}\n", .{model_name});
     if (response.usage) |usage| {
@@ -115,10 +158,13 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
             usage.completion_tokens,
             usage.total_tokens,
         });
+        // Show extended usage info
+        const ext = client.extractExtendedUsage(&response);
+        std.debug.print("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
     }
 }
 
-/// Interactive chat mode with conversation history
+/// Interactive chat mode with streaming support and conversation history
 fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.mem.Allocator) !void {
     const provider_name = args.provider orelse config.default_provider;
     const model_name = args.model orelse config.default_model;
@@ -152,6 +198,10 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         client.setSystemPrompt(sys_prompt);
     }
 
+    var hooks = LifecycleHooks.init(allocator);
+    defer hooks.deinit();
+    try registerCoreChatHooks(&hooks);
+
     // Conversation history
     var messages = std.ArrayList(client_mod.ChatMessage).init(allocator);
     defer {
@@ -162,9 +212,15 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         messages.deinit();
     }
 
-    std.debug.print("=== Interactive Chat Mode ===\n", .{});
+    // Session token tracking
+    var total_input_tokens: u64 = 0;
+    var total_output_tokens: u64 = 0;
+    var request_count: u32 = 0;
+
+    std.debug.print("=== Interactive Chat Mode (Streaming) ===\n", .{});
     std.debug.print("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
     std.debug.print("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
+    std.debug.print("Commands: /usage | /clear | /hooks | /exit\n", .{});
     std.debug.print("--------------------------------------------\n\n", .{});
 
     const stdin = std.io.getStdIn();
@@ -172,7 +228,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
     while (true) {
         // Print prompt
-        std.debug.print("\nYou: ", .{});
+        std.debug.print("\n\x1b[32mYou:\x1b[0m ", .{});
 
         // Read line
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
@@ -180,20 +236,55 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             break;
         };
 
-        if (line == null or line.?.len == 0) {
-            continue;
-        }
+        if (line == null) break;
 
         const user_message = line.?;
         defer allocator.free(user_message);
 
         if (user_message.len == 0) continue;
 
-        // Check for exit commands
+        // Handle built-in commands
         if (std.mem.eql(u8, user_message, "exit") or std.mem.eql(u8, user_message, "quit") or std.mem.eql(u8, user_message, "/exit")) {
             std.debug.print("Goodbye!\n", .{});
             break;
         }
+
+        if (std.mem.eql(u8, user_message, "/usage")) {
+            std.debug.print("\n=== Session Usage ===\n", .{});
+            std.debug.print("  Requests: {d}\n", .{request_count});
+            std.debug.print("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/clear")) {
+            for (messages.items) |msg| {
+                allocator.free(msg.role);
+                if (msg.content) |c| allocator.free(c);
+            }
+            messages.clearRetainingCapacity();
+            total_input_tokens = 0;
+            total_output_tokens = 0;
+            request_count = 0;
+            std.debug.print("History cleared.\n", .{});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/hooks")) {
+            hooks.printHooks();
+            continue;
+        }
+
+        var intent_arena = std.heap.ArenaAllocator.init(allocator);
+        defer intent_arena.deinit();
+
+        var intent_gate = IntentGate.init(intent_arena.allocator());
+        defer intent_gate.deinit();
+
+        const intent = intent_gate.classify(user_message);
+        std.debug.print("\x1b[2m[intent: {s} ({d:.2})]\x1b[0m\n", .{
+            IntentGate.intentLabel(intent.intent_type),
+            intent.confidence,
+        });
 
         // Add user message to history
         try messages.append(.{
@@ -201,19 +292,55 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             .content = try allocator.dupe(u8, user_message),
         });
 
-        // Send request with history
-        std.debug.print("\nAssistant: ", .{});
+        // Send request with history (using non-streaming buffered mode for reliability)
+        var pre_request_ctx = HookContext.init(allocator);
+        defer pre_request_ctx.deinit();
+        pre_request_ctx.phase = .pre_request;
+        pre_request_ctx.provider = provider_name;
+        pre_request_ctx.model = model_name;
+        pre_request_ctx.token_count = clampUsizeToU32(user_message.len);
+        try hooks.execute(.pre_request, &pre_request_ctx);
+
+        std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
 
         const response = client.sendChatWithHistory(messages.items) catch |err| {
             std.debug.print("\n\nError: {}\n", .{err});
-            // Remove the user message from history on error
             _ = messages.pop();
             continue;
         };
 
-        // Print response
+        if (response.choices.len == 0) {
+            std.debug.print("\n\nError: Empty response from AI\n", .{});
+            _ = messages.pop();
+            continue;
+        }
+
+        // Print response content
         const content = response.choices[0].message.content orelse "";
         std.debug.print("{s}", .{content});
+
+        // Track usage
+        if (response.usage) |usage| {
+            total_input_tokens += usage.prompt_tokens;
+            total_output_tokens += usage.completion_tokens;
+            request_count += 1;
+            std.debug.print("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
+                usage.prompt_tokens,
+                usage.completion_tokens,
+                total_input_tokens + total_output_tokens,
+            });
+        }
+
+        var post_request_ctx = HookContext.init(allocator);
+        defer post_request_ctx.deinit();
+        post_request_ctx.phase = .post_request;
+        post_request_ctx.provider = provider_name;
+        post_request_ctx.model = model_name;
+        post_request_ctx.token_count = if (response.usage) |usage|
+            clampU64ToU32(usage.total_tokens)
+        else
+            clampUsizeToU32(content.len);
+        try hooks.execute(.post_request, &post_request_ctx);
 
         // Add assistant response to history
         try messages.append(.{
