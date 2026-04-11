@@ -431,6 +431,9 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("compaction", compaction_mod);
     handlers_mod.addImport("scaffold", scaffold_mod);
 
+    // Wire compaction into chat for auto-compaction
+    chat_mod.addImport("compaction", compaction_mod);
+
     // Executable
     const exe = b.addExecutable(.{
         .name = "crushcode",

@@ -5,11 +5,13 @@ const config_mod = @import("config");
 const client_mod = @import("client");
 const intent_gate_mod = @import("intent_gate");
 const lifecycle_hooks_mod = @import("lifecycle_hooks");
+const compaction_mod = @import("compaction");
 
 const Config = config_mod.Config;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
+const ContextCompactor = compaction_mod.ContextCompactor;
 
 fn preRequestHook(ctx: *HookContext) !void {
     std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
@@ -376,6 +378,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var total_output_tokens: u64 = 0;
     var request_count: u32 = 0;
 
+    // Auto-compaction: compact context when approaching token limits
+    // Default max context = 128k tokens, compact at 80% = ~102k tokens
+    var compactor = ContextCompactor.init(allocator, 128_000);
+    defer compactor.deinit();
+    compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
+
     std.debug.print("=== Interactive Chat Mode (Streaming) ===\n", .{});
     std.debug.print("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
     std.debug.print("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
@@ -580,6 +588,64 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         if (!turn_complete and !turn_failed) {
             std.debug.print("\nError: Agent loop hit max iterations (25)\n", .{});
             rollbackMessagesTo(&messages, allocator, turn_start_len);
+        }
+
+        // Auto-compact context when approaching token limits
+        const session_tokens = total_input_tokens + total_output_tokens;
+        if (compactor.needsCompaction(session_tokens) and messages.items.len > 12) {
+            std.debug.print("\n\x1b[33m⚡ Context approaching limit ({d} tokens). Compacting...\x1b[0m\n", .{session_tokens});
+
+            // Convert ChatMessages to CompactMessages for compaction
+            var compact_msgs = std.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
+            defer compact_msgs.deinit();
+            for (messages.items) |msg| {
+                compact_msgs.appendAssumeCapacity(.{
+                    .role = msg.role,
+                    .content = msg.content orelse "",
+                    .timestamp = null,
+                });
+            }
+
+            const result = compactor.compact(compact_msgs.items) catch |err| {
+                std.debug.print("Compaction failed: {}\n", .{err});
+                continue;
+            };
+
+            if (result.messages_summarized > 0) {
+                // Free old messages
+                for (messages.items) |msg| {
+                    freeChatMessage(msg, allocator);
+                }
+                messages.clearRetainingCapacity();
+
+                // Add summary as a system message
+                const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch continue;
+
+                messages.append(.{
+                    .role = allocator.dupe(u8, "system") catch continue,
+                    .content = summary_content,
+                    .tool_call_id = null,
+                    .tool_calls = null,
+                }) catch continue;
+
+                // Re-add preserved recent messages
+                for (result.messages) |compact_msg| {
+                    messages.append(.{
+                        .role = allocator.dupe(u8, compact_msg.role) catch continue,
+                        .content = if (compact_msg.content.len > 0) allocator.dupe(u8, compact_msg.content) catch continue else null,
+                        .tool_call_id = null,
+                        .tool_calls = null,
+                    }) catch continue;
+                }
+
+                // Free the summary if it was allocated (compactor owns it, but we copied it)
+                allocator.free(result.summary);
+
+                std.debug.print("\x1b[33m  Compacted {d} messages. Saved ~{d} tokens.\x1b[0m\n", .{
+                    result.messages_summarized,
+                    result.tokens_saved,
+                });
+            }
         }
     }
 }
