@@ -80,6 +80,11 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     var client = try client_mod.AIClient.init(allocator, provider, model_name, api_key);
     defer client.deinit();
 
+    // Set system prompt from config if available
+    if (config.getSystemPrompt()) |sys_prompt| {
+        client.setSystemPrompt(sys_prompt);
+    }
+
     std.debug.print("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
     const response = client.sendChat(message) catch |err| {
@@ -141,6 +146,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     // Initialize client
     var client = try client_mod.AIClient.init(allocator, provider, model_name, api_key);
     defer client.deinit();
+
+    // Set system prompt from config if available
+    if (config.getSystemPrompt()) |sys_prompt| {
+        client.setSystemPrompt(sys_prompt);
+    }
 
     // Conversation history
     var messages = std.ArrayList(client_mod.ChatMessage).init(allocator);

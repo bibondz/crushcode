@@ -4,6 +4,7 @@ pub const Config = struct {
     allocator: std.mem.Allocator,
     default_provider: []const u8,
     default_model: []const u8,
+    system_prompt: []const u8,
     api_keys: std.StringHashMap([]const u8),
 
     pub fn init(allocator: std.mem.Allocator) Config {
@@ -11,6 +12,7 @@ pub const Config = struct {
             .allocator = allocator,
             .default_provider = "",
             .default_model = "",
+            .system_prompt = "",
             .api_keys = std.StringHashMap([]const u8).init(allocator),
         };
     }
@@ -24,6 +26,7 @@ pub const Config = struct {
         self.api_keys.deinit();
         if (self.default_provider.len > 0) self.allocator.free(self.default_provider);
         if (self.default_model.len > 0) self.allocator.free(self.default_model);
+        if (self.system_prompt.len > 0) self.allocator.free(self.system_prompt);
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -91,9 +94,16 @@ pub const Config = struct {
             self.default_provider = try self.allocator.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "default_model")) {
             self.default_model = try self.allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "system_prompt")) {
+            self.system_prompt = try self.allocator.dupe(u8, value);
         } else {
             try self.setApiKey(key, value);
         }
+    }
+
+    pub fn getSystemPrompt(self: *Config) ?[]const u8 {
+        if (self.system_prompt.len > 0) return self.system_prompt;
+        return null;
     }
 };
 

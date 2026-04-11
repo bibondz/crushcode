@@ -56,6 +56,7 @@ pub const AIClient = struct {
     provider: registry_mod.Provider,
     model: []const u8,
     api_key: []const u8,
+    system_prompt: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator, provider: registry_mod.Provider, model: []const u8, api_key: []const u8) !AIClient {
         return AIClient{
@@ -63,7 +64,12 @@ pub const AIClient = struct {
             .provider = provider,
             .model = model,
             .api_key = api_key,
+            .system_prompt = null,
         };
+    }
+
+    pub fn setSystemPrompt(self: *AIClient, prompt: []const u8) void {
+        self.system_prompt = prompt;
     }
 
     pub fn deinit(self: *AIClient) void {
@@ -404,6 +410,25 @@ pub const AIClient = struct {
         try json_body.appendSlice("{\"model\":\"");
         try json_body.appendSlice(self.model);
         try json_body.appendSlice("\",\"messages\":[");
+
+        // Prepend system message if system_prompt is set
+        if (self.system_prompt) |sys_prompt| {
+            if (sys_prompt.len > 0) {
+                try json_body.appendSlice("{\"role\":\"system\",\"content\":\"");
+                for (sys_prompt) |c| {
+                    switch (c) {
+                        '"' => try json_body.appendSlice("\\\""),
+                        '\\' => try json_body.appendSlice("\\\\"),
+                        '\n' => try json_body.appendSlice("\\n"),
+                        '\r' => try json_body.appendSlice("\\r"),
+                        '\t' => try json_body.appendSlice("\\t"),
+                        else => try json_body.append(c),
+                    }
+                }
+                try json_body.appendSlice("\"}");
+                if (messages.len > 0) try json_body.appendSlice(",");
+            }
+        }
 
         for (messages, 0..) |msg, i| {
             if (i > 0) try json_body.appendSlice(",");
