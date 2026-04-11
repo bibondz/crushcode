@@ -32,7 +32,9 @@
   5. `zig build` produces working crushcode executable with no LSP errors
   6. Help text displays for all commands with user-friendly error messages
 
-**Plans:** TBD
+**Plans:** 1 plan
+
+- [ ] 01-01-PLAN.md — System prompt + streaming support
 
 **UI hint:** yes
 
@@ -76,8 +78,8 @@
 ## Progress
 
 | Phase | Plans Complete | Status | Completed |
-|-------|----------------|--------|-----------|
-| 1. Core Infrastructure | 0/1 | Not started | - |
+|------|----------------|--------|-----------|
+| 1. Core Infrastructure | 1/1 | Planned | - |
 | 2. Shell Execution | 0/1 | Not started | - |
 | 3. AI File Operations | 0/1 | Not started | - |
 
