@@ -54,7 +54,11 @@
   3. Interactive commands (like htop, vim) work via PTY
   4. Commands can be terminated after a configurable timeout
 
-**Plans:** TBD
+**Plans:** 3 plans
+
+- [ ] 02-01-PLAN.md — Shell command with output + exit codes
+- [ ] 02-02-PLAN.md — PTY integration for interactive commands
+- [ ] 02-03-PLAN.md — Timeout support
 
 ---
 
@@ -80,7 +84,7 @@
 | Phase | Plans Complete | Status | Completed |
 |------|----------------|--------|-----------|
 | 1. Core Infrastructure | 1/1 | Planned | - |
-| 2. Shell Execution | 0/1 | Not started | - |
+| 2. Shell Execution | 3/3 | Planned | - |
 | 3. AI File Operations | 0/1 | Not started | - |
 
 ---
