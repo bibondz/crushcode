@@ -150,10 +150,41 @@ fn executeShellTool(allocator: std.mem.Allocator, tool_call: client_mod.ParsedTo
     var parsed = try std.json.parseFromSlice(ShellArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.timeout != null) {
-        return error.ToolTimeoutUnsupported;
+    // Use `timeout` utility if available and timeout is specified
+    if (parsed.value.timeout) |secs| {
+        if (secs > 0) {
+            const cmd = try std.fmt.allocPrint(allocator, "timeout --signal=KILL {d} sh -c {s}", .{ secs, parsed.value.command });
+            defer allocator.free(cmd);
+            const argv: [3][]const u8 = .{ "sh", "-c", cmd };
+            var child = std.process.Child.init(&argv, allocator);
+            child.stdout_behavior = .Pipe;
+            child.stderr_behavior = .Pipe;
+
+            _ = try child.spawn();
+
+            var stdout = std.ArrayListUnmanaged(u8){};
+            var stderr = std.ArrayListUnmanaged(u8){};
+            defer {
+                stdout.deinit(allocator);
+                stderr.deinit(allocator);
+            }
+
+            try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+            const term = try child.wait();
+            const exit_code: u8 = switch (term) {
+                .Exited => |code| @intCast(code),
+                .Signal => |code| @intCast(code),
+                else => 1,
+            };
+            const timed_out = if (exit_code == 124) true else false;
+            return .{
+                .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\", timeout={d}s) → exit {d}{s}\n", .{ parsed.value.command, secs, exit_code, if (timed_out) " (TIMEOUT)" else "" }),
+                .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, stdout.items, stderr.items }),
+            };
+        }
     }
 
+    // No timeout: run directly
     const argv: [3][]const u8 = .{ "sh", "-c", parsed.value.command };
     var child = std.process.Child.init(&argv, allocator);
     child.stdout_behavior = .Pipe;
@@ -542,9 +573,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         },
         .{
             .name = "shell",
-            .description = "Execute a shell command and return stdout/stderr",
+            .description = "Execute a shell command and return stdout/stderr. Supports optional timeout.",
             .parameters =
-            \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"}},"required":["command"]}
+            \\{"type":"object","properties":{"command":{"type":"string","description":"Shell command to execute"},"timeout":{"type":"number","description":"Timeout in seconds (default: no timeout)"}},"required":["command"]}
             ,
         },
         .{
