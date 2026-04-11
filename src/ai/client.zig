@@ -75,6 +75,13 @@ pub const ExtendedUsage = struct {
     estimated_cost_usd: f64 = 0.0,
 };
 
+/// A tool schema for the AI API (OpenAI function calling format)
+pub const ToolSchema = struct {
+    name: []const u8,
+    description: []const u8,
+    parameters: []const u8, // JSON Schema as string
+};
+
 const APIFunctionCall = struct {
     name: []const u8,
     arguments: []const u8,
@@ -147,6 +154,7 @@ pub const AIClient = struct {
     model: []const u8,
     api_key: []const u8,
     system_prompt: ?[]const u8 = null,
+    tools: []const ToolSchema = &.{},
 
     pub fn init(allocator: std.mem.Allocator, provider: registry_mod.Provider, model: []const u8, api_key: []const u8) !AIClient {
         return AIClient{
@@ -160,6 +168,31 @@ pub const AIClient = struct {
 
     pub fn setSystemPrompt(self: *AIClient, prompt: []const u8) void {
         self.system_prompt = prompt;
+    }
+
+    /// Set available tools for function calling
+    pub fn setTools(self: *AIClient, tools: []const ToolSchema) void {
+        self.tools = tools;
+    }
+
+    /// Build the tools array JSON for API requests
+    fn buildToolsJson(self: *AIClient, allocator: std.mem.Allocator) ![]const u8 {
+        if (self.tools.len == 0) return allocator.dupe(u8, "");
+
+        var buf = std.ArrayList(u8).init(allocator);
+        defer buf.deinit();
+        const writer = buf.writer();
+
+        try writer.writeAll(",\"tools\":[");
+        for (self.tools, 0..) |tool, i| {
+            if (i > 0) try writer.writeAll(",");
+            try writer.print(
+                \\{{"type":"function","function":{{"name":"{s}","description":"{s}","parameters":"{s}"}}\}}
+            , .{ tool.name, tool.description, tool.parameters });
+        }
+        try writer.writeAll("]");
+
+        return buf.toOwnedSlice();
     }
 
     pub fn deinit(self: *AIClient) void {
@@ -1226,6 +1259,12 @@ pub const AIClient = struct {
         }
 
         try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7");
+        // Inject tools array for function calling
+        if (self.tools.len > 0) {
+            const tools_json = try self.buildToolsJson(allocator);
+            defer allocator.free(tools_json);
+            try json_body.appendSlice(tools_json);
+        }
         if (stream) {
             try json_body.appendSlice(",\"stream\":true");
         }
