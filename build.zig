@@ -80,6 +80,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Write module
+    const write_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/write.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Handlers module
     const handlers_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/handlers.zig"),
@@ -92,6 +99,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("chat", chat_mod);
     handlers_mod.addImport("read", read_mod);
     handlers_mod.addImport("shell", shell_mod);
+    handlers_mod.addImport("write", write_mod);
 
     // Main module
     const main_mod = b.createModule(.{

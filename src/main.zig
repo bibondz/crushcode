@@ -34,6 +34,8 @@ fn isCommandRecognized(command: []const u8) bool {
     return std.mem.eql(u8, command, "chat") or
         std.mem.eql(u8, command, "read") or
         std.mem.eql(u8, command, "shell") or
+        std.mem.eql(u8, command, "write") or
+        std.mem.eql(u8, command, "edit") or
         std.mem.eql(u8, command, "list") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
@@ -113,6 +115,10 @@ pub fn main() !void {
         try commands.handleRead(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "shell")) {
         try commands.handleShell(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "write")) {
+        try commands.handleWrite(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "edit")) {
+        try commands.handleEdit(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "list")) {
         try commands.handleList(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "help") or

@@ -5,6 +5,7 @@ const config_mod = @import("config");
 const chat_mod = @import("chat");
 const read_mod = @import("read");
 const shell_mod = @import("shell");
+const write_mod = @import("write");
 
 const Config = config_mod.Config;
 
@@ -18,6 +19,14 @@ pub fn handleRead(args: args_mod.Args) !void {
 
 pub fn handleShell(args: args_mod.Args) !void {
     try shell_mod.handleShell(args.remaining);
+}
+
+pub fn handleWrite(args: args_mod.Args) !void {
+    try write_mod.handleWrite(args.remaining);
+}
+
+pub fn handleEdit(args: args_mod.Args) !void {
+    try write_mod.handleEdit(args.remaining);
 }
 
 pub fn handleList(args: args_mod.Args) !void {
@@ -62,6 +71,8 @@ pub fn printHelp() !void {
         \\  chat           Start interactive chat session
         \\  read <file>   Read file content
         \\  shell <cmd>   Execute shell command
+        \\  write <path> <content>  Write content to file
+        \\  edit <file>   Edit/create a file
         \\  list           List providers or models
         \\  help           Show this help message
         \\  version        Show version information
@@ -76,6 +87,7 @@ pub fn printHelp() !void {
         \\  crushcode chat --provider openai --model gpt-4o
         \\  crushcode read src/main.zig
         \\  crushcode shell "ls -la"
+        \\  crushcode write test.txt "Hello World"
         \\  crushcode list --provider openai
         \\
     , .{});

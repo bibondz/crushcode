@@ -52,9 +52,15 @@ pub const Args = struct {
                 } else if (std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "-i")) {
                     result.interactive = true;
                 }
-            } else if (result.command.len == 0 or std.mem.eql(u8, result.command, "chat")) {
-                // First non-flag is the command
-                result.command = arg;
+            } else if (std.mem.eql(u8, result.command, "chat")) {
+                // Still at default command - this should be the actual command
+                // Check if it looks like a flag (starts with -)
+                if (!std.mem.startsWith(u8, arg, "-")) {
+                    result.command = arg;
+                } else {
+                    // Flag-like argument goes to remaining
+                    try remaining_list.append(allocator, try allocator.dupe(u8, arg));
+                }
             } else {
                 // Everything else goes to remaining
                 try remaining_list.append(allocator, try allocator.dupe(u8, arg));
