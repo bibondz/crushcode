@@ -60,6 +60,14 @@ pub const ExtendedUsage = struct {
     estimated_cost_usd: f64 = 0.0,
 };
 
+/// Callback type for streaming tokens
+pub const StreamCallback = *const fn (token: []const u8, done: bool) void;
+
+const StreamFormat = enum {
+    ndjson,
+    sse,
+};
+
 pub const AIClient = struct {
     allocator: std.mem.Allocator,
     provider: registry_mod.Provider,
@@ -100,6 +108,107 @@ pub const AIClient = struct {
     /// Send chat with conversation history
     pub fn sendChatWithHistory(self: *AIClient, messages: []const ChatMessage) !ChatResponse {
         return self.sendChatWithOptions(null, messages, true);
+    }
+
+    /// Send chat with streaming, calling callback for each token chunk.
+    pub fn sendChatStreaming(self: *AIClient, messages: []const ChatMessage, callback: StreamCallback) !ChatResponse {
+        if (messages.len == 0) {
+            return error.InvalidRequest;
+        }
+
+        if (self.model.len == 0) {
+            return error.ConfigurationError;
+        }
+
+        const has_key = self.api_key.len > 0;
+        const is_local = std.mem.eql(u8, self.provider.name, "ollama") or
+            std.mem.eql(u8, self.provider.name, "lm_studio") or
+            std.mem.eql(u8, self.provider.name, "llama_cpp") or
+            std.mem.eql(u8, self.provider.name, "opencode-zen") or
+            std.mem.eql(u8, self.provider.name, "opencode-go");
+
+        if (!has_key and !is_local) {
+            return error.AuthenticationError;
+        }
+
+        const allocator = self.allocator;
+        const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, self.getChatPath() });
+        defer allocator.free(endpoint);
+
+        const uri = try std.Uri.parse(endpoint);
+        const json_body = try self.buildStreamingBodyFromMessages(messages);
+        defer allocator.free(json_body);
+
+        const headers = try self.buildHeaders();
+        defer freeHeaders(allocator, headers);
+
+        var client: std.http.Client = .{ .allocator = allocator };
+        defer client.deinit();
+
+        var server_header_buffer: [8192]u8 = undefined;
+        var request = client.open(.POST, uri, .{
+            .server_header_buffer = &server_header_buffer,
+            .extra_headers = headers,
+        }) catch return error.NetworkError;
+        defer request.deinit();
+
+        request.transfer_encoding = .{ .content_length = json_body.len };
+        request.send() catch return error.NetworkError;
+        request.writeAll(json_body) catch return error.NetworkError;
+        request.finish() catch return error.NetworkError;
+        request.wait() catch return error.NetworkError;
+
+        var response_reader = request.reader();
+        if (request.response.status != .ok) {
+            var error_body = std.ArrayList(u8).init(allocator);
+            defer error_body.deinit();
+
+            var error_chunk: [4096]u8 = undefined;
+            while (true) {
+                const bytes_read = response_reader.read(&error_chunk) catch return error.NetworkError;
+                if (bytes_read == 0) break;
+                try error_body.appendSlice(error_chunk[0..bytes_read]);
+            }
+
+            return error.ServerError;
+        }
+
+        var partial_line = std.ArrayList(u8).init(allocator);
+        defer partial_line.deinit();
+
+        var full_content = std.ArrayList(u8).init(allocator);
+        defer full_content.deinit();
+
+        var finish_reason: ?[]const u8 = null;
+        defer if (finish_reason) |reason| allocator.free(reason);
+
+        var usage: ?Usage = null;
+
+        var chunk_buf: [4096]u8 = undefined;
+        var saw_done = false;
+
+        while (true) {
+            const bytes_read = response_reader.read(&chunk_buf) catch return error.NetworkError;
+            if (bytes_read == 0) break;
+
+            try self.processStreamChunk(
+                &partial_line,
+                chunk_buf[0..bytes_read],
+                &full_content,
+                &finish_reason,
+                &usage,
+                callback,
+                &saw_done,
+            );
+        }
+
+        try self.processStreamChunk(&partial_line, "\n", &full_content, &finish_reason, &usage, callback, &saw_done);
+
+        if (!saw_done) {
+            callback("", true);
+        }
+
+        return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage);
     }
 
     /// Internal method with options
@@ -647,6 +756,421 @@ pub const AIClient = struct {
     fn estimateTokens(text: []const u8) u32 {
         const len = @min(text.len, 100);
         return @as(u32, @divTrunc(len, 4));
+    }
+
+    fn detectStreamingFormat(self: *AIClient) StreamFormat {
+        if (std.mem.eql(u8, self.provider.name, "ollama") or
+            std.mem.eql(u8, self.provider.name, "lm_studio") or
+            std.mem.eql(u8, self.provider.name, "llama_cpp"))
+        {
+            return .ndjson;
+        }
+        return .sse;
+    }
+
+    fn jsonU32(value: ?std.json.Value) u32 {
+        if (value) |v| {
+            switch (v) {
+                .integer => |n| {
+                    if (n > 0) {
+                        return @intCast(n);
+                    }
+                },
+                else => {},
+            }
+        }
+        return 0;
+    }
+
+    fn setFinishReason(allocator: std.mem.Allocator, finish_reason: *?[]const u8, reason: []const u8) !void {
+        if (finish_reason.*) |existing| {
+            allocator.free(existing);
+        }
+        finish_reason.* = try allocator.dupe(u8, reason);
+    }
+
+    fn appendStreamingToken(full_content: *std.ArrayList(u8), token: []const u8, callback: StreamCallback) !void {
+        if (token.len == 0) {
+            return;
+        }
+        try full_content.appendSlice(token);
+        callback(token, false);
+    }
+
+    fn markStreamDone(
+        allocator: std.mem.Allocator,
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        reason: []const u8,
+        maybe_usage: ?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        try setFinishReason(allocator, finish_reason, reason);
+        if (maybe_usage) |stream_usage| {
+            usage.* = stream_usage;
+        }
+        if (!saw_done.*) {
+            saw_done.* = true;
+            callback("", true);
+        }
+    }
+
+    fn parseUsage(usage_value: std.json.Value) ?Usage {
+        if (usage_value != .object) {
+            return null;
+        }
+
+        const prompt_tokens = jsonU32(usage_value.object.get("prompt_tokens"));
+        const completion_tokens = jsonU32(usage_value.object.get("completion_tokens"));
+
+        return Usage{
+            .prompt_tokens = prompt_tokens,
+            .completion_tokens = completion_tokens,
+            .total_tokens = prompt_tokens + completion_tokens,
+        };
+    }
+
+    fn processOpenAIStreamingPayload(
+        self: *AIClient,
+        root: std.json.Value,
+        full_content: *std.ArrayList(u8),
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        if (root != .object) {
+            return;
+        }
+
+        const choices = root.object.get("choices") orelse return;
+        if (choices != .array or choices.array.items.len == 0) {
+            return;
+        }
+
+        const first_choice = choices.array.items[0];
+        if (first_choice != .object) {
+            return;
+        }
+
+        if (first_choice.object.get("finish_reason")) |finish_value| {
+            const reason = switch (finish_value) {
+                .string => |s| s,
+                .null => "",
+                else => "",
+            };
+
+            if (reason.len > 0 and !std.mem.eql(u8, reason, "null")) {
+                const parsed_usage = if (root.object.get("usage")) |usage_value|
+                    parseUsage(usage_value)
+                else
+                    null;
+                try markStreamDone(self.allocator, finish_reason, usage, reason, parsed_usage, callback, saw_done);
+                return;
+            }
+        }
+
+        const delta = first_choice.object.get("delta") orelse return;
+        if (delta != .object) {
+            return;
+        }
+
+        if (delta.object.get("content")) |content_value| {
+            const token = switch (content_value) {
+                .string => |s| s,
+                else => return,
+            };
+            try appendStreamingToken(full_content, token, callback);
+        }
+    }
+
+    fn processNDJSONLine(
+        self: *AIClient,
+        line: []const u8,
+        full_content: *std.ArrayList(u8),
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{
+            .ignore_unknown_fields = true,
+        }) catch return;
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) {
+            return;
+        }
+
+        const message_value = root.object.get("message");
+        const done_value = root.object.get("done");
+        if (message_value != null and done_value != null) {
+            const is_done = switch (done_value.?) {
+                .bool => |done| done,
+                else => false,
+            };
+
+            if (is_done) {
+                const prompt_tokens = jsonU32(root.object.get("prompt_eval_count"));
+                const completion_tokens = jsonU32(root.object.get("eval_count"));
+                const stream_usage = if (prompt_tokens > 0 or completion_tokens > 0)
+                    Usage{
+                        .prompt_tokens = prompt_tokens,
+                        .completion_tokens = completion_tokens,
+                        .total_tokens = prompt_tokens + completion_tokens,
+                    }
+                else
+                    null;
+                try markStreamDone(self.allocator, finish_reason, usage, "stop", stream_usage, callback, saw_done);
+                return;
+            }
+
+            if (message_value.? == .object) {
+                if (message_value.?.object.get("content")) |content_value| {
+                    const token = switch (content_value) {
+                        .string => |s| s,
+                        else => return,
+                    };
+                    try appendStreamingToken(full_content, token, callback);
+                }
+            }
+            return;
+        }
+
+        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done);
+    }
+
+    fn processSSELine(
+        self: *AIClient,
+        line: []const u8,
+        full_content: *std.ArrayList(u8),
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        const data = if (std.mem.startsWith(u8, line, "data: "))
+            line["data: ".len..]
+        else if (std.mem.startsWith(u8, line, "data:"))
+            line["data:".len..]
+        else
+            return;
+
+        if (std.mem.eql(u8, data, "[DONE]")) {
+            try markStreamDone(self.allocator, finish_reason, usage, "stop", null, callback, saw_done);
+            return;
+        }
+
+        var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{
+            .ignore_unknown_fields = true,
+        }) catch return;
+        defer parsed.deinit();
+
+        const root = parsed.value;
+        if (root != .object) {
+            return;
+        }
+
+        if (root.object.get("type")) |type_value| {
+            if (type_value == .string) {
+                const event_type = type_value.string;
+                if (std.mem.eql(u8, event_type, "content_block_delta")) {
+                    const delta = root.object.get("delta") orelse return;
+                    if (delta != .object) {
+                        return;
+                    }
+
+                    const delta_type = delta.object.get("type") orelse return;
+                    if (delta_type != .string) {
+                        return;
+                    }
+
+                    if (std.mem.eql(u8, delta_type.string, "text_delta")) {
+                        const text = delta.object.get("text") orelse return;
+                        const token = switch (text) {
+                            .string => |s| s,
+                            else => return,
+                        };
+                        try appendStreamingToken(full_content, token, callback);
+                    }
+                    return;
+                }
+
+                if (std.mem.eql(u8, event_type, "message_delta")) {
+                    const delta = root.object.get("delta") orelse return;
+                    if (delta != .object) {
+                        return;
+                    }
+
+                    const stop_reason_value = delta.object.get("stop_reason") orelse return;
+                    const reason = switch (stop_reason_value) {
+                        .string => |s| s,
+                        else => return,
+                    };
+
+                    const stream_usage = if (root.object.get("usage")) |usage_value|
+                        Usage{
+                            .prompt_tokens = 0,
+                            .completion_tokens = jsonU32(usage_value.object.get("output_tokens")),
+                            .total_tokens = jsonU32(usage_value.object.get("output_tokens")),
+                        }
+                    else
+                        null;
+
+                    try markStreamDone(self.allocator, finish_reason, usage, reason, stream_usage, callback, saw_done);
+                    return;
+                }
+            }
+        }
+
+        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done);
+    }
+
+    fn processStreamLine(
+        self: *AIClient,
+        line: []const u8,
+        full_content: *std.ArrayList(u8),
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        if (line.len == 0) {
+            return;
+        }
+
+        const trimmed = std.mem.trimRight(u8, line, "\r");
+        if (trimmed.len == 0) {
+            return;
+        }
+
+        switch (self.detectStreamingFormat()) {
+            .ndjson => try self.processNDJSONLine(trimmed, full_content, finish_reason, usage, callback, saw_done),
+            .sse => try self.processSSELine(trimmed, full_content, finish_reason, usage, callback, saw_done),
+        }
+    }
+
+    fn processStreamChunk(
+        self: *AIClient,
+        partial_line: *std.ArrayList(u8),
+        chunk: []const u8,
+        full_content: *std.ArrayList(u8),
+        finish_reason: *?[]const u8,
+        usage: *?Usage,
+        callback: StreamCallback,
+        saw_done: *bool,
+    ) !void {
+        try partial_line.appendSlice(chunk);
+
+        var start: usize = 0;
+        for (partial_line.items, 0..) |byte, i| {
+            if (byte == '\n') {
+                try self.processStreamLine(partial_line.items[start..i], full_content, finish_reason, usage, callback, saw_done);
+                start = i + 1;
+            }
+        }
+
+        if (start > 0) {
+            const remaining = partial_line.items[start..];
+            const kept = try self.allocator.dupe(u8, remaining);
+            defer self.allocator.free(kept);
+            partial_line.clearRetainingCapacity();
+            try partial_line.appendSlice(kept);
+        }
+    }
+
+    fn appendEscapedJsonString(json_body: *std.ArrayList(u8), value: []const u8) !void {
+        for (value) |c| {
+            switch (c) {
+                '"' => try json_body.appendSlice("\\\""),
+                '\\' => try json_body.appendSlice("\\\\"),
+                '\n' => try json_body.appendSlice("\\n"),
+                '\r' => try json_body.appendSlice("\\r"),
+                '\t' => try json_body.appendSlice("\\t"),
+                else => try json_body.append(c),
+            }
+        }
+    }
+
+    fn freeHeaders(allocator: std.mem.Allocator, headers: []std.http.Header) void {
+        for (headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+
+    fn buildStreamingBodyFromMessages(self: *AIClient, messages: []const ChatMessage) ![]const u8 {
+        const allocator = self.allocator;
+        var json_body = std.ArrayList(u8).init(allocator);
+        defer json_body.deinit();
+
+        try json_body.appendSlice("{\"model\":\"");
+        try json_body.appendSlice(self.getApiModelName());
+        try json_body.appendSlice("\",\"messages\":[");
+
+        var needs_comma = false;
+        if (self.system_prompt) |sys_prompt| {
+            if (sys_prompt.len > 0) {
+                try json_body.appendSlice("{\"role\":\"system\",\"content\":\"");
+                try appendEscapedJsonString(&json_body, sys_prompt);
+                try json_body.appendSlice("\"}");
+                needs_comma = true;
+            }
+        }
+
+        for (messages) |msg| {
+            if (needs_comma) {
+                try json_body.appendSlice(",");
+            }
+            try json_body.appendSlice("{\"role\":\"");
+            try json_body.appendSlice(msg.role);
+            try json_body.appendSlice("\",\"content\":\"");
+            try appendEscapedJsonString(&json_body, msg.content orelse "");
+            try json_body.appendSlice("\"}");
+            needs_comma = true;
+        }
+
+        try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7,\"stream\":true}");
+        return allocator.dupe(u8, json_body.items);
+    }
+
+    fn buildStreamingResponse(self: *AIClient, content_slice: []const u8, final_finish_reason: []const u8, usage: ?Usage) !ChatResponse {
+        const allocator = self.allocator;
+        const content = try allocator.dupe(u8, content_slice);
+        errdefer allocator.free(content);
+
+        const role = try allocator.dupe(u8, "assistant");
+        errdefer allocator.free(role);
+
+        const finish_reason = try allocator.dupe(u8, final_finish_reason);
+        errdefer allocator.free(finish_reason);
+
+        const choices = try allocator.alloc(ChatChoice, 1);
+        errdefer allocator.free(choices);
+
+        choices[0] = .{
+            .index = 0,
+            .message = .{
+                .role = role,
+                .content = content,
+            },
+            .finish_reason = finish_reason,
+        };
+
+        return ChatResponse{
+            .id = try allocator.dupe(u8, "streaming-response"),
+            .object = try allocator.dupe(u8, "chat.completion"),
+            .created = @intCast(std.time.timestamp()),
+            .model = try allocator.dupe(u8, self.model),
+            .choices = choices,
+            .usage = usage,
+            .provider = try allocator.dupe(u8, self.provider.name),
+            .cost = null,
+            .system_fingerprint = null,
+        };
     }
 
     /// Extract extended usage from a ChatResponse for usage tracking

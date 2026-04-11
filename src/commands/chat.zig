@@ -5,14 +5,11 @@ const config_mod = @import("config");
 const client_mod = @import("client");
 const intent_gate_mod = @import("intent_gate");
 const lifecycle_hooks_mod = @import("lifecycle_hooks");
-const streaming_mod = @import("streaming");
 
 const Config = config_mod.Config;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
-const StreamingSession = streaming_mod.StreamingSession;
-const StreamOptions = streaming_mod.types.StreamOptions;
 
 fn preRequestHook(ctx: *HookContext) !void {
     std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
@@ -48,6 +45,14 @@ fn clampU64ToU32(value: u64) u32 {
         return std.math.maxInt(u32);
     }
     return @as(u32, @intCast(value));
+}
+
+fn freeLastMessage(messages: *std.ArrayList(client_mod.ChatMessage), allocator: std.mem.Allocator) void {
+    const removed = messages.pop().?;
+    allocator.free(removed.role);
+    if (removed.content) |content| {
+        allocator.free(content);
+    }
 }
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
@@ -292,7 +297,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             .content = try allocator.dupe(u8, user_message),
         });
 
-        // Send request with history (using non-streaming buffered mode for reliability)
+        // Send request with history using real token streaming.
         var pre_request_ctx = HookContext.init(allocator);
         defer pre_request_ctx.deinit();
         pre_request_ctx.phase = .pre_request;
@@ -303,21 +308,25 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
 
-        const response = client.sendChatWithHistory(messages.items) catch |err| {
+        const response = client.sendChatStreaming(messages.items, struct {
+            fn onToken(token: []const u8, done: bool) void {
+                _ = done;
+                const stdout = std.io.getStdOut().writer();
+                stdout.print("{s}", .{token}) catch {};
+            }
+        }.onToken) catch |err| {
             std.debug.print("\n\nError: {}\n", .{err});
-            _ = messages.pop();
+            freeLastMessage(&messages, allocator);
             continue;
         };
 
         if (response.choices.len == 0) {
             std.debug.print("\n\nError: Empty response from AI\n", .{});
-            _ = messages.pop();
+            freeLastMessage(&messages, allocator);
             continue;
         }
 
-        // Print response content
         const content = response.choices[0].message.content orelse "";
-        std.debug.print("{s}", .{content});
 
         // Track usage
         if (response.usage) |usage| {
