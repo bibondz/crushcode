@@ -1,7 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
-const MCPClient = @import("client.zig").MCPClient;
-const MCPServerConfig = @import("client.zig").MCPServerConfig;
+const MCPClient = @import("mcp_client").MCPClient;
+const MCPServerConfig = @import("mcp_client").MCPServerConfig;
 
 const Allocator = std.mem.Allocator;
 
@@ -33,7 +33,7 @@ pub const MCPDiscovery = struct {
         return results.toOwnedSlice();
     }
 
-    pub fn addDefaultServers(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult)) !void {
+    pub fn addDefaultServers(_: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult)) !void {
         // GitHub MCP server
         try results.append(MCPDiscoveryResult{
             .name = "GitHub",
@@ -94,10 +94,6 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchUnix(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        _ = self;
-        _ = results;
-        _ = term;
-
         // Search common installation directories
         const search_paths = [_][]const u8{
             "/usr/local/bin",
@@ -146,7 +142,7 @@ pub const MCPDiscovery = struct {
         return false;
     }
 
-    fn isMCPServer(self: *MCPDiscovery, filename: []const u8, term: []const u8) bool {
+    fn isMCPServer(_: *MCPDiscovery, filename: []const u8, term: []const u8) bool {
         _ = term;
 
         const lower_filename = std.ascii.lowerString(filename);
@@ -164,9 +160,7 @@ pub const MCPDiscovery = struct {
     }
 
     fn getServerDescription(self: *MCPDiscovery, path: []const u8) ![]const u8 {
-        _ = self;
-
-        const file = std.fs.openFileAbsolute(path, .{}) catch |err| {
+        const file = std.fs.openFileAbsolute(path, .{}) catch {
             return try self.allocator.dupe(u8, "Failed to read file");
         };
         defer file.close();
@@ -204,8 +198,6 @@ pub const MCPDiscovery = struct {
     }
 
     fn detectServerCapabilities(self: *MCPDiscovery, path: []const u8) ![]const u8 {
-        _ = self;
-
         // For local servers, assume basic capabilities
         var capabilities = std.ArrayList([]const u8).init(self.allocator);
         defer capabilities.deinit();
@@ -227,10 +219,6 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchPackageManagers(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        _ = self;
-        _ = results;
-        _ = term;
-
         // Search npm global packages for MCP servers
         const npm_path = try std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{std.process.getEnvVar("HOME") orelse "/home/user"});
         if (self.searchDirectory(results, npm_path, term)) {
@@ -258,7 +246,6 @@ pub const MCPDiscovery = struct {
 
     pub fn validateServer(self: *MCPDiscovery, config: MCPServerConfig) !bool {
         _ = self;
-        _ = config;
 
         // Basic validation
         if (config.name.len == 0) {

@@ -417,12 +417,37 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // MCP (Model Context Protocol) client modules
+    const mcp_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const mcp_discovery_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/discovery.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_discovery_mod.addImport("mcp_client", mcp_client_mod);
+
+    const mcp_bridge_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/bridge.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_bridge_mod.addImport("mcp_client", mcp_client_mod);
+    mcp_bridge_mod.addImport("discovery", mcp_discovery_mod);
+    mcp_bridge_mod.addImport("client", client_mod);
+
     // Register Phase 23-27 modules on main
     main_mod.addImport("graph", graph_mod);
     main_mod.addImport("agent_loop", agent_loop_mod);
     main_mod.addImport("workflow", workflow_mod);
     main_mod.addImport("compaction", compaction_mod);
     main_mod.addImport("scaffold", scaffold_mod);
+    main_mod.addImport("mcp_client", mcp_client_mod);
+    main_mod.addImport("mcp_discovery", mcp_discovery_mod);
+    main_mod.addImport("mcp_bridge", mcp_bridge_mod);
 
     // Wire Phase 23-27 into handlers
     handlers_mod.addImport("graph", graph_mod);
@@ -430,10 +455,12 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("workflow", workflow_mod);
     handlers_mod.addImport("compaction", compaction_mod);
     handlers_mod.addImport("scaffold", scaffold_mod);
+    handlers_mod.addImport("mcp_bridge", mcp_bridge_mod);
 
     // Wire compaction into chat for auto-compaction
     chat_mod.addImport("compaction", compaction_mod);
     chat_mod.addImport("graph", graph_mod);
+    chat_mod.addImport("mcp_bridge", mcp_bridge_mod);
 
     // Executable
     const exe = b.addExecutable(.{

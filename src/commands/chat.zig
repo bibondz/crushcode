@@ -7,6 +7,7 @@ const intent_gate_mod = @import("intent_gate");
 const lifecycle_hooks_mod = @import("lifecycle_hooks");
 const compaction_mod = @import("compaction");
 const graph_mod = @import("graph");
+const mcp_bridge_mod = @import("mcp_bridge");
 
 const Config = config_mod.Config;
 const HookContext = lifecycle_hooks_mod.HookContext;
@@ -14,6 +15,7 @@ const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
 const ContextCompactor = compaction_mod.ContextCompactor;
 const KnowledgeGraph = graph_mod.KnowledgeGraph;
+const Bridge = mcp_bridge_mod.Bridge;
 
 fn preRequestHook(ctx: *HookContext) !void {
     std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
@@ -608,6 +610,51 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         },
     };
     client.setTools(&tool_schemas);
+
+    // Initialize MCP bridge if MCP servers are configured
+    var mcp_client = mcp_bridge_mod.MCPClient.init(allocator);
+    var mcp_bridge: ?Bridge = if (config.mcp_servers.len > 0) Bridge.init(allocator, &mcp_client) catch null else null;
+    defer {
+        if (mcp_bridge != null) {
+            mcp_bridge.?.deinit();
+        }
+        mcp_client.deinit();
+    }
+
+    // Connect to MCP servers and discover tools
+    if (mcp_bridge) |*bridge| {
+        for (config.mcp_servers) |server_config| {
+            const bridge_config = mcp_bridge_mod.MCPServerConfig{
+                .transport = if (std.mem.eql(u8, server_config.transport orelse "stdio", "sse"))
+                    mcp_bridge_mod.TransportType.sse
+                else if (std.mem.eql(u8, server_config.transport orelse "stdio", "http"))
+                    mcp_bridge_mod.TransportType.http
+                else
+                    mcp_bridge_mod.TransportType.stdio,
+                .command = server_config.command,
+                .url = server_config.url,
+            };
+            bridge.addServer(bridge_config) catch |err| {
+                std.log.warn("Failed to add MCP server '{s}': {}", .{ server_config.name, err });
+                continue;
+            };
+        }
+        bridge.connectAll(&[_]mcp_bridge_mod.MCPServerConfig{});
+
+        const mcp_schemas = bridge.getToolSchemas(allocator) catch &[_]client_mod.ToolSchema{};
+        if (mcp_schemas.len > 0) {
+            var all_tools = std.ArrayList(client_mod.ToolSchema).init(allocator);
+            for (&tool_schemas) |*ts| {
+                try all_tools.append(ts.*);
+            }
+            for (mcp_schemas) |ts| {
+                try all_tools.append(ts);
+            }
+            const combined = try all_tools.toOwnedSlice();
+            client.setTools(combined);
+            std.log.info("Loaded {d} MCP tools from {d} servers", .{ mcp_schemas.len, bridge.getStats().servers });
+        }
+    }
 
     // Build codebase knowledge graph and inject into system prompt
     var kg = KnowledgeGraph.init(allocator);
