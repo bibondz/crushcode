@@ -664,7 +664,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     std.debug.print("=== Interactive Chat Mode (Streaming) ===\n", .{});
     std.debug.print("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
     std.debug.print("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    std.debug.print("Commands: /usage | /clear | /hooks | /exit\n", .{});
+    std.debug.print("Commands: /usage | /clear | /hooks | /compact | /graph | /exit\n", .{});
     std.debug.print("--------------------------------------------\n\n", .{});
 
     const stdin = std.io.getStdIn();
@@ -714,6 +714,68 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         if (std.mem.eql(u8, user_message, "/hooks")) {
             hooks.printHooks();
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/compact")) {
+            std.debug.print("\n=== Manual Compaction ===\n", .{});
+            compactor.printStatus(total_input_tokens + total_output_tokens);
+
+            if (messages.items.len > 12) {
+                std.debug.print("  Compacting now...\n", .{});
+                var compact_msgs = std.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
+                defer compact_msgs.deinit();
+                for (messages.items) |msg| {
+                    compact_msgs.appendAssumeCapacity(.{
+                        .role = msg.role,
+                        .content = msg.content orelse "",
+                        .timestamp = null,
+                    });
+                }
+                const result = compactor.compact(compact_msgs.items) catch |err| {
+                    std.debug.print("  Compaction failed: {}\n", .{err});
+                    continue;
+                };
+                if (result.messages_summarized > 0) {
+                    for (messages.items) |msg| {
+                        freeChatMessage(msg, allocator);
+                    }
+                    messages.clearRetainingCapacity();
+                    const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch continue;
+                    messages.append(.{
+                        .role = allocator.dupe(u8, "system") catch continue,
+                        .content = summary_content,
+                        .tool_call_id = null,
+                        .tool_calls = null,
+                    }) catch continue;
+                    for (result.messages) |compact_msg| {
+                        messages.append(.{
+                            .role = allocator.dupe(u8, compact_msg.role) catch continue,
+                            .content = if (compact_msg.content.len > 0) allocator.dupe(u8, compact_msg.content) catch continue else null,
+                            .tool_call_id = null,
+                            .tool_calls = null,
+                        }) catch continue;
+                    }
+                    allocator.free(result.summary);
+                    std.debug.print("  Compacted {d} messages, saved ~{d} tokens.\n", .{
+                        result.messages_summarized,
+                        result.tokens_saved,
+                    });
+                }
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/graph")) {
+            std.debug.print("\n=== Knowledge Graph Status ===\n", .{});
+            std.debug.print("  Files indexed: {d}\n", .{kg.file_count});
+            std.debug.print("  Nodes: {d}\n", .{kg.nodes.count()});
+            std.debug.print("  Edges: {d}\n", .{kg.edges.items.len});
+            std.debug.print("  Communities: {d}\n", .{kg.communities.items.len});
+            if (kg.compressionRatio() > 0) {
+                std.debug.print("  Compression: {d:.1}x\n", .{kg.compressionRatio()});
+            }
+            std.debug.print("  [graph context already injected into system prompt]\n", .{});
             continue;
         }
 
