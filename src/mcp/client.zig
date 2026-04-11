@@ -9,6 +9,7 @@ pub const MCPClient = struct {
     servers: std.json.ObjectMap,
     tool_mappings: std.json.ObjectMap,
     connections: std.StringHashMap(MCPConnection), // Direct struct storage — process pointers survive
+    next_request_id: std.atomic.Value(u64),
 
     pub fn init(allocator: Allocator) MCPClient {
         return MCPClient{
@@ -16,6 +17,7 @@ pub const MCPClient = struct {
             .servers = std.json.ObjectMap.init(allocator),
             .tool_mappings = std.json.ObjectMap.init(allocator),
             .connections = std.StringHashMap(MCPConnection).init(allocator),
+            .next_request_id = std.atomic.Value(u64).init(1),
         };
     }
 
@@ -217,35 +219,28 @@ pub const MCPClient = struct {
 
         std.log.info("MCP server '{s}' initialized successfully", .{server_name});
 
-        // Send initialized notification (no id = notification)
-        const notif_params = json.ObjectMap.init(self.allocator);
-        const notif_request = MCPRequest{
-            .jsonrpc = "2.0",
-            .method = "notifications/initialized",
-            .params = .{ .object = notif_params },
-            .id = 0, // Notifications don't have IDs but our struct requires it
-        };
-
-        // Fire and forget — notifications don't expect responses
-        const notif_json = try notif_request.toJson(self.allocator);
+        // Send initialized notification (notifications have no id field)
+        const notif_json = try std.fmt.allocPrint(self.allocator,
+            \\{{"jsonrpc":"2.0","method":"notifications/initialized","params":{{}}}}
+        , .{});
         defer self.allocator.free(notif_json);
 
         if (self.connections.getPtr(server_name)) |conn| {
             if (conn.transport == .stdio and conn.process != null) {
-                self.sendStdioNotification(conn, notif_json) catch |err| {
+                self.sendStdioRaw(conn, notif_json) catch |err| {
                     std.log.warn("Failed to send initialized notification: {}", .{err});
                 };
             }
         }
     }
 
-    /// Send a notification (no response expected) over stdio
-    fn sendStdioNotification(self: *MCPClient, connection: *MCPConnection, notification: []const u8) !void {
+    /// Send raw data over stdio as newline-delimited JSON (no response expected)
+    fn sendStdioRaw(self: *MCPClient, connection: *MCPConnection, data: []const u8) !void {
+        _ = self;
         const process_ptr = connection.process orelse return error.ProcessNotStarted;
         const child = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
-        try child.stdin.?.writer().writeAll(notification);
+        try child.stdin.?.writer().writeAll(data);
         try child.stdin.?.writer().writeByte('\n');
-        _ = self; // Used for allocator access in future
     }
 
     // Send JSON-RPC 2.0 request
@@ -267,10 +262,11 @@ pub const MCPClient = struct {
 
     // Discover tools from server
     pub fn discoverTools(self: *MCPClient, server_name: []const u8) ![]MCPTool {
+        const empty_params = json.ObjectMap.init(self.allocator);
         const request = MCPRequest{
             .jsonrpc = "2.0",
             .method = "tools/list",
-            .params = .{ .null = {} },
+            .params = .{ .object = empty_params },
             .id = self.generateRequestId(),
         };
 
@@ -342,6 +338,7 @@ pub const MCPClient = struct {
 
         return MCPToolResult{
             .success = false,
+            .result = null,
             .error_message = "No result from tool execution",
             .error_code = null,
         };
@@ -412,31 +409,33 @@ pub const MCPClient = struct {
         };
     }
 
-    // Send stdio request
+    // Send stdio request (newline-delimited JSON)
     fn sendStdioRequest(self: *MCPClient, connection: MCPConnection, request: []const u8) !json.Value {
         const process_ptr = connection.process orelse return error.ProcessNotStarted;
-        const process = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
+        const child = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
 
-        // Write request to stdin
-        try process.stdin.?.writer().writeAll(request);
-        try process.stdin.?.writer().writeByte('\n');
+        // Write request to stdin as newline-delimited JSON
+        try child.stdin.?.writer().writeAll(request);
+        try child.stdin.?.writer().writeByte('\n');
 
-        // Read response from stdout
+        // Read response from stdout (newline-delimited JSON)
         var response_buf = std.ArrayList(u8).init(self.allocator);
         defer response_buf.deinit();
 
-        var reader = process.stdout.?.reader();
+        const reader = child.stdout.?.reader();
         while (true) {
             const byte = reader.readByte() catch break;
             try response_buf.append(byte);
-            // Simple delimiter - newline indicates end of JSON-RPC response
             if (byte == '\n') break;
         }
 
+        // Trim trailing whitespace
+        const trimmed = std.mem.trimRight(u8, response_buf.items, "\r\n ");
+
         // Parse JSON response
-        var response_json = json.parseFromSlice(json.Value, self.allocator, response_buf.items, .{}) catch |err| {
+        var response_json = json.parseFromSlice(json.Value, self.allocator, trimmed, .{}) catch |err| {
             std.log.err("Failed to parse stdio response: {!}", .{err});
-            return json.Value{ .string = response_buf.items };
+            return json.Value{ .string = try self.allocator.dupe(u8, trimmed) };
         };
         defer response_json.deinit();
 
@@ -590,7 +589,7 @@ pub const MCPClient = struct {
         process.env_map = &env_map;
         process.stdin_behavior = .Pipe;
         process.stdout_behavior = .Pipe;
-        process.stderr_behavior = .Pipe;
+        process.stderr_behavior = .Close;
 
         try process.spawn();
 
@@ -603,8 +602,7 @@ pub const MCPClient = struct {
 
     // Generate unique request ID
     fn generateRequestId(self: *MCPClient) u64 {
-        _ = self;
-        return @intCast(std.time.timestamp() * 1000);
+        return self.next_request_id.fetchAdd(1, .monotonic);
     }
 };
 
@@ -622,6 +620,7 @@ pub const MCPConnection = struct {
     initialized: bool,
 
     /// Clean up connection resources (kill process, free owned strings)
+    /// Note: only frees slices that were heap-allocated
     pub fn deinit(self: *MCPConnection, allocator: Allocator) void {
         // Kill child process if running
         if (self.process) |proc_ptr| {
@@ -630,11 +629,9 @@ pub const MCPConnection = struct {
             allocator.destroy(child);
             self.process = null;
         }
-        // Free owned slices
-        if (self.url) |u| allocator.free(u);
-        allocator.free(self.server_name);
-        allocator.free(self.method);
-        if (self.command) |c| allocator.free(c);
+        // Free owned slices (only those that were heap-allocated)
+        // Note: server_name, url, command, method may be string literals
+        // so we don't free them — the caller manages their lifetime
         self.headers.deinit();
     }
 };
@@ -1042,4 +1039,163 @@ pub fn getOAuthTokens(
     // TODO: Load tokens from storage
     // For now, return error indicating tokens need to be obtained
     return error.TokensNotFound;
+}
+
+// =============================================================================
+// Tests
+// =============================================================================
+
+const testing = std.testing;
+
+test "MCPClient - init and deinit" {
+    var client = MCPClient.init(testing.allocator);
+    defer client.deinit();
+    try testing.expect(client.connections.count() == 0);
+    try testing.expect(client.servers.count() == 0);
+}
+
+test "MCPClient - connectToServer stdio with mcp-server-filesystem" {
+    // E2E test — requires:
+    //   1. RUN_MCP_E2E_TESTS=1 env var
+    //   2. mcp-server-filesystem installed and on PATH
+    // This test spawns a real MCP server process and exercises:
+    //   connect → initialize → discoverTools → executeTool
+    const e2e_env = std.process.getEnvVarOwned(testing.allocator, "RUN_MCP_E2E_TESTS") catch null;
+    if (e2e_env) |v| testing.allocator.free(v) else return error.SkipZigTest;
+
+    var client = MCPClient.init(testing.allocator);
+    defer client.deinit();
+
+    const tmp_dir = "/tmp/crushcode-mcp-test";
+
+    const server_path = std.process.getEnvVarOwned(testing.allocator, "MCP_SERVER_FILESYSTEM_PATH") catch
+        try std.fmt.allocPrint(testing.allocator, "mcp-server-filesystem", .{});
+    defer testing.allocator.free(server_path);
+
+    var server_args = std.ArrayList([]const u8).init(testing.allocator);
+    defer server_args.deinit();
+    try server_args.append(tmp_dir);
+
+    const config = MCPServerConfig{
+        .transport = .stdio,
+        .command = server_path,
+        .args = server_args.items,
+    };
+
+    // Create temp directory
+    std.fs.cwd().makePath(tmp_dir) catch {};
+
+    // Connect (spawns process + initialize handshake)
+    _ = try client.connectToServer("filesystem", config);
+
+    // Verify connection was stored
+    const stored_conn = client.connections.getPtr("filesystem") orelse
+        return error.ServerNotConnected;
+    try testing.expect(stored_conn.transport == .stdio);
+    try testing.expect(stored_conn.process != null);
+
+    // Discover tools
+    const tools = try client.discoverTools("filesystem");
+    defer testing.allocator.free(tools);
+
+    try testing.expect(tools.len > 0);
+    std.debug.print("Discovered {d} tools from MCP filesystem server\n", .{tools.len});
+    for (tools[0..@min(3, tools.len)]) |tool| {
+        std.debug.print("  - {s}\n", .{tool.name});
+    }
+
+    // Verify expected tools exist
+    var found_list_directory = false;
+    for (tools) |tool| {
+        if (std.mem.eql(u8, tool.name, "list_directory")) found_list_directory = true;
+    }
+    try testing.expect(found_list_directory);
+
+    // Create a test file
+    {
+        const f = try std.fs.cwd().createFile(tmp_dir ++ "/hello.txt", .{});
+        defer f.close();
+        try f.writer().writeAll("Hello from Crushcode MCP test!");
+    }
+
+    // Execute tool: list_directory
+    {
+        var list_args = json.ObjectMap.init(testing.allocator);
+        defer list_args.deinit();
+        try list_args.put("path", .{ .string = tmp_dir });
+        const result = try client.executeTool("filesystem", "list_directory", list_args);
+        try testing.expect(result.success);
+    }
+
+    // Execute tool: read_text_file
+    {
+        var read_args = json.ObjectMap.init(testing.allocator);
+        defer read_args.deinit();
+        try read_args.put("path", .{ .string = tmp_dir ++ "/hello.txt" });
+        const result = try client.executeTool("filesystem", "read_text_file", read_args);
+        try testing.expect(result.success);
+    }
+
+    // Clean up
+    std.fs.cwd().deleteFile(tmp_dir ++ "/hello.txt") catch {};
+    std.fs.cwd().deleteDir(tmp_dir) catch {};
+}
+
+test "MCPRequest - toJson" {
+    const req = MCPRequest{
+        .jsonrpc = "2.0",
+        .method = "tools/list",
+        .params = .{ .null = {} },
+        .id = 42,
+    };
+
+    const json_str = try req.toJson(testing.allocator);
+    defer testing.allocator.free(json_str);
+
+    // Verify it contains expected fields
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"jsonrpc\":\"2.0\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"method\":\"tools/list\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"id\":42") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "null") != null);
+}
+
+test "MCPRequest - toJson with object params" {
+    var params = json.ObjectMap.init(testing.allocator);
+    defer params.deinit();
+    try params.put("path", .{ .string = "/tmp/test" });
+
+    const req = MCPRequest{
+        .jsonrpc = "2.0",
+        .method = "tools/call",
+        .params = .{ .object = params },
+        .id = 99,
+    };
+
+    const json_str = try req.toJson(testing.allocator);
+    defer testing.allocator.free(json_str);
+
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"method\":\"tools/call\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "/tmp/test") != null);
+}
+
+test "MCPResponse - fromJson" {
+    const response_str = "{\"jsonrpc\":\"2.0\",\"result\":{\"tools\":[]},\"id\":1}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, response_str, .{});
+    defer parsed.deinit();
+
+    const response = try MCPResponse.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, response.jsonrpc, "2.0"));
+    try testing.expect(response.result != null);
+    try testing.expect(response.json_error == null);
+    try testing.expect(response.id == 1);
+}
+
+test "MCPTool - fromJson" {
+    const tool_json = "{\"name\":\"read_file\",\"description\":\"Read a file\",\"inputSchema\":{\"type\":\"object\"}}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, tool_json, .{});
+    defer parsed.deinit();
+
+    const tool = try MCPTool.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, tool.name, "read_file"));
+    try testing.expect(std.mem.eql(u8, tool.description, "Read a file"));
 }

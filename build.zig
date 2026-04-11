@@ -469,4 +469,19 @@ pub fn build(b: *std.Build) !void {
     });
 
     b.installArtifact(exe);
+
+    // Tests
+    const mcp_client_tests = b.addTest(.{
+        .root_module = mcp_client_mod,
+    });
+
+    const test_step = b.step("test", "Run tests");
+    test_step.dependOn(&mcp_client_tests.step);
+
+    // E2E test step (requires RUN_MCP_E2E_TESTS=1 env var)
+    const mcp_e2e_tests = b.addTest(.{
+        .root_module = mcp_client_mod,
+    });
+    const e2e_step = b.step("test-e2e", "Run E2E tests with MCP server (requires RUN_MCP_E2E_TESTS=1)");
+    e2e_step.dependOn(&mcp_e2e_tests.step);
 }
