@@ -433,6 +433,7 @@ pub fn build(b: *std.Build) !void {
 
     // Wire compaction into chat for auto-compaction
     chat_mod.addImport("compaction", compaction_mod);
+    chat_mod.addImport("graph", graph_mod);
 
     // Executable
     const exe = b.addExecutable(.{
