@@ -9,11 +9,11 @@
 ## Phases
 
 - [x] **Phase 1: Core Infrastructure** - Config, AI chat, CLI, build system
-- [x] **Phase 2: Shell Execution** - Command execution with PTY and timeouts
+- [x] **Phase 2: Shell Execution** - Command execution with PTYand timeouts
 - [x] **Phase 3: AI File Operations** - AI-driven file write/edit with glob patterns
-- [ ] **Phase 4: Skills System** - Built-in commands and extensibility
-- [ ] **Phase 5: Terminal UI** - Rich interactive interface
-- [ ] **Phase 6: MCP Integration** - Model Context Protocol support
+- [x] **Phase 4: Skills System** - Built-in commands and extensibility
+- [x] **Phase 5: Terminal UI** - Rich interactive interface
+- [x] **Phase 6: MCP Integration** - Model Context Protocol support
 
 ---
 
@@ -156,7 +156,7 @@
 
 ## v2 Improvements (New Phases)
 
-### Phase 7: MCP Authentication
+### Phase 7: MCP Authentication ✅
 
 **Goal:** OAuth 2.0 support for MCP servers with dynamic client registration
 
@@ -169,16 +169,16 @@
 - CSRF state validation
 
 **Success Criteria:**
-1. OAuth flow completes for MCP servers requiring auth
-2. Tokens are stored and automatically refreshed
-3. CSRF protection prevents attacks
+1. OAuth flow completes for MCP servers requiring auth ✅
+2. Tokens are stored and automatically refreshed ✅
+3. CSRF protection prevents attacks ✅
 
 **Plans:** 1 plan
-- [ ] 07-01-PLAN.md — OAuth authentication for MCP
+- [x] 07-01-PLAN.md — OAuth authentication for MCP ✅
 
 ---
 
-### Phase 8: Permission System
+### Phase 8: Permission System ✅
 
 **Goal:** Pattern-based permission allow/deny/ask rules for tool safety
 
@@ -191,12 +191,12 @@
 - User prompt for "ask" actions
 
 **Success Criteria:**
-1. Tools can be allowed/denied by pattern
-2. User is prompted for confirmation when needed
-3. Auto-approval works for trusted operations
+1. Tools can be allowed/denied by pattern ✅
+2. User is prompted for confirmation when needed ✅
+3. Auto-approval works for trusted operations ✅
 
 **Plans:** 1 plan
-- [ ] 08-01-PLAN.md — Permission evaluation system
+- [x] 08-01-PLAN.md — Permission evaluation system ✅
 
 ---
 

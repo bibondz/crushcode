@@ -154,6 +154,13 @@ pub fn build(b: *std.Build) !void {
     key_quant_mod.addImport("rotation", quantization_mod);
     value_quant_mod.addImport("bitpack", bitpack_mod);
 
+    // Skills loader module (SKILL.md parsing)
+    const skills_loader_mod = b.createModule(.{
+        .root_source_file = b.path("src/skills/types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Handlers module
     const handlers_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/handlers.zig"),
@@ -172,6 +179,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("tui", tui_mod);
     handlers_mod.addImport("install", install_mod);
     handlers_mod.addImport("jobs", jobs_mod);
+    handlers_mod.addImport("skills_loader", skills_loader_mod);
 
     // Main module
     const main_mod = b.createModule(.{

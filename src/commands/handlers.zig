@@ -11,6 +11,7 @@ const skills_mod = @import("skills");
 const tui_mod = @import("tui");
 const install_mod = @import("install");
 const jobs_mod = @import("jobs");
+const skills_loader_mod = @import("skills_loader");
 
 const Config = config_mod.Config;
 
@@ -52,6 +53,69 @@ pub fn handleInstall(args: args_mod.Args) !void {
 
 pub fn handleJobs(args: args_mod.Args) !void {
     try jobs_mod.handleJobs(args.remaining);
+}
+
+pub fn handleSkillsLoad(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var loader = skills_loader_mod.SkillLoader.init(allocator);
+    defer loader.deinit();
+
+    // Default skills directory
+    const skills_dir = if (args.remaining.len > 0)
+        args.remaining[0]
+    else
+        "skills";
+
+    loader.loadFromDirectory(skills_dir) catch |err| {
+        std.debug.print("Error loading skills from '{s}': {}\n", .{ skills_dir, err });
+        return;
+    };
+
+    const skills = loader.getSkills();
+
+    if (skills.len == 0) {
+        std.debug.print("No skills found in '{s}'\n", .{skills_dir});
+        std.debug.print("Create SKILL.md files in subdirectories.\n", .{});
+        return;
+    }
+
+    std.debug.print("Loaded {} skills from '{s}':\n\n", .{ skills.len, skills_dir });
+
+    for (skills) |skill| {
+        std.debug.print("  {s}", .{skill.name});
+        if (skill.description.len > 0) {
+            std.debug.print(" - {s}", .{skill.description});
+        }
+        std.debug.print("\n", .{});
+
+        if (skill.triggers.len > 0) {
+            std.debug.print("    Triggers: ", .{});
+            for (skill.triggers, 0..) |trigger, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{trigger});
+            }
+            std.debug.print("\n", .{});
+        }
+
+        if (skill.tools.len > 0) {
+            std.debug.print("    Tools: ", .{});
+            for (skill.tools, 0..) |tool, i| {
+                if (i > 0) std.debug.print(", ", .{});
+                std.debug.print("{s}", .{tool});
+            }
+            std.debug.print("\n", .{});
+        }
+    }
+
+    // Show XML preview
+    std.debug.print("\n--- AI Prompt XML Preview ---\n", .{});
+    const xml = loader.toPromptXml(allocator) catch |err| {
+        std.debug.print("Error generating XML: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(xml);
+    std.debug.print("{s}\n", .{xml});
 }
 
 pub fn handleList(args: args_mod.Args) !void {
@@ -100,6 +164,7 @@ pub fn printHelp() !void {
         \\  edit <file>   Edit/create a file
         \\  git <subcmd>  Git operations (status, add, commit, push, pull, branch)
         \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
+        \\  skills-load [dir]  Load and list SKILL.md files (default: skills/)
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
         \\  jobs         Job control (background jobs)
