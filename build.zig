@@ -73,6 +73,13 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("provider_config", provider_config_mod);
     chat_mod.addImport("plugin", plugin_mod);
 
+    // Shell module
+    const shell_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/shell.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Handlers module
     const handlers_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/handlers.zig"),
@@ -84,6 +91,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("config", config_mod);
     handlers_mod.addImport("chat", chat_mod);
     handlers_mod.addImport("read", read_mod);
+    handlers_mod.addImport("shell", shell_mod);
 
     // Main module
     const main_mod = b.createModule(.{

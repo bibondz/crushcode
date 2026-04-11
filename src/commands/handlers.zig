@@ -4,6 +4,7 @@ const registry_mod = @import("registry");
 const config_mod = @import("config");
 const chat_mod = @import("chat");
 const read_mod = @import("read");
+const shell_mod = @import("shell");
 
 const Config = config_mod.Config;
 
@@ -13,6 +14,10 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
 pub fn handleRead(args: args_mod.Args) !void {
     try read_mod.handleRead(args.remaining);
+}
+
+pub fn handleShell(args: args_mod.Args) !void {
+    try shell_mod.handleShell(args.remaining);
 }
 
 pub fn handleList(args: args_mod.Args) !void {
@@ -56,6 +61,7 @@ pub fn printHelp() !void {
         \\Commands:
         \\  chat           Start interactive chat session
         \\  read <file>   Read file content
+        \\  shell <cmd>   Execute shell command
         \\  list           List providers or models
         \\  help           Show this help message
         \\  version        Show version information
@@ -69,6 +75,7 @@ pub fn printHelp() !void {
         \\  crushcode chat
         \\  crushcode chat --provider openai --model gpt-4o
         \\  crushcode read src/main.zig
+        \\  crushcode shell "ls -la"
         \\  crushcode list --provider openai
         \\
     , .{});

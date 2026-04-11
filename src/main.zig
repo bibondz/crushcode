@@ -33,6 +33,7 @@ fn cleanupParsedArgs(allocator: std.mem.Allocator, parsed_args: args_mod.Args) v
 fn isCommandRecognized(command: []const u8) bool {
     return std.mem.eql(u8, command, "chat") or
         std.mem.eql(u8, command, "read") or
+        std.mem.eql(u8, command, "shell") or
         std.mem.eql(u8, command, "list") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
@@ -110,6 +111,8 @@ pub fn main() !void {
         try commands.handleChat(parsed_args, &config);
     } else if (std.mem.eql(u8, parsed_args.command, "read")) {
         try commands.handleRead(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "shell")) {
+        try commands.handleShell(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "list")) {
         try commands.handleList(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "help") or

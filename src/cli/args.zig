@@ -52,7 +52,7 @@ pub const Args = struct {
                 } else if (std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "-i")) {
                     result.interactive = true;
                 }
-            } else if (result.command[0] == 0 or result.command.ptr == "chat".ptr) {
+            } else if (result.command.len == 0 or std.mem.eql(u8, result.command, "chat")) {
                 // First non-flag is the command
                 result.command = arg;
             } else {
