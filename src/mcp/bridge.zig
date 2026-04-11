@@ -75,7 +75,7 @@ pub const Bridge = struct {
         for (self.servers.items, 0..) |server, idx| {
             if (std.mem.eql(u8, server.name, name)) {
                 _ = self.client.connectToServer(name, config) catch |err| {
-                    std.log.warn("Failed to connect to MCP server '{s}': {}", .{ name, err });
+                    std.log.warn("Failed to connect to MCP server '{s}': {any}", .{ name, err });
                     return BridgeError.ConnectionFailed;
                 };
                 self.servers.items[idx].connected = true;
@@ -88,7 +88,7 @@ pub const Bridge = struct {
     pub fn connectAll(self: *Bridge, configs: []const mcp_client.MCPServerConfig) void {
         for (self.servers.items) |*server| {
             self.connectServer(server.name, mcp_client.MCPServerConfig{ .transport = .stdio }) catch |err| {
-                std.log.warn("Failed to connect to MCP server '{s}': {}", .{ server.name, err });
+                std.log.warn("Failed to connect to MCP server '{s}': {any}", .{ server.name, err });
             };
         }
         _ = configs;
@@ -111,7 +111,7 @@ pub const Bridge = struct {
         defer tool_arguments.deinit();
 
         const result = self.client.executeTool(server.name, tool_name, tool_arguments) catch |err| {
-            std.log.err("Tool execution failed: {}", .{err});
+            std.log.err("Tool execution failed: {any}", .{err});
             return BridgeError.ExecutionFailed;
         };
 
@@ -120,9 +120,14 @@ pub const Bridge = struct {
         }
 
         if (result.result) |value| {
-            return json.stringifyAlloc(self.allocator, value, .{}) catch {
-                return BridgeError.ExecutionFailed;
-            };
+            switch (value) {
+                .string => |s| return try self.allocator.dupe(u8, s),
+                .null => return "",
+                else => {
+                    // Fallback: return a placeholder for complex types
+                    return try std.fmt.allocPrint(self.allocator, "{any}", .{value});
+                },
+            }
         }
 
         return "";

@@ -8,21 +8,27 @@ pub const MCPClient = struct {
     allocator: Allocator,
     servers: std.json.ObjectMap,
     tool_mappings: std.json.ObjectMap,
-    connections: std.json.ObjectMap, // Store active connections
+    connections: std.StringHashMap(MCPConnection), // Direct struct storage — process pointers survive
 
     pub fn init(allocator: Allocator) MCPClient {
         return MCPClient{
             .allocator = allocator,
             .servers = std.json.ObjectMap.init(allocator),
             .tool_mappings = std.json.ObjectMap.init(allocator),
-            .connections = std.json.ObjectMap.init(allocator),
+            .connections = std.StringHashMap(MCPConnection).init(allocator),
         };
     }
 
     pub fn deinit(self: *MCPClient) void {
+        // Clean up connections — kill processes, free owned memory
+        var conn_iter = self.connections.iterator();
+        while (conn_iter.next()) |entry| {
+            var conn = entry.value_ptr;
+            conn.deinit(self.allocator);
+        }
+        self.connections.deinit();
         self.servers.deinit();
         self.tool_mappings.deinit();
-        self.connections.deinit();
     }
 
     fn cloneJsonValue(allocator: Allocator, value: json.Value) !json.Value {
@@ -145,25 +151,115 @@ pub const MCPClient = struct {
             .websocket => try self.createWebSocketConnection(name, config_mut),
         };
 
-        // Store connection
-        try self.connections.put(name, try connection.toJson(self.allocator));
+        // Store connection directly (preserves process pointer)
+        const name_owned = try self.allocator.dupe(u8, name);
+        try self.connections.put(name_owned, connection);
+
+        // Send MCP initialize handshake for stdio transport
+        if (connection.transport == .stdio) {
+            self.initializeServer(name) catch |err| {
+                std.log.warn("MCP initialize failed for '{s}': {}", .{ name, err });
+                // Non-fatal — some servers don't require init
+            };
+        }
+
+        // Update server info
+        if (self.servers.getPtr(name)) |info| {
+            if (info.* == .object) {
+                try info.*.object.put("connected", .{ .bool = true });
+                try info.*.object.put("initialized", .{ .bool = true });
+            }
+        }
 
         return connection;
     }
 
+    /// Send MCP initialize handshake (initialize request + initialized notification)
+    fn initializeServer(self: *MCPClient, server_name: []const u8) !void {
+        // Send initialize request
+        var params = json.ObjectMap.init(self.allocator);
+        try params.put("protocolVersion", .{ .string = "2024-11-05" });
+
+        var client_info = json.ObjectMap.init(self.allocator);
+        try client_info.put("name", .{ .string = "crushcode" });
+        try client_info.put("version", .{ .string = "0.1.0" });
+        try params.put("clientInfo", .{ .object = client_info });
+
+        var capabilities = json.ObjectMap.init(self.allocator);
+        try capabilities.put("tools", .{ .object = json.ObjectMap.init(self.allocator) });
+        try params.put("capabilities", .{ .object = capabilities });
+
+        const init_request = MCPRequest{
+            .jsonrpc = "2.0",
+            .method = "initialize",
+            .params = .{ .object = params },
+            .id = self.generateRequestId(),
+        };
+
+        const init_response = self.sendRequest(server_name, init_request) catch |err| {
+            std.log.warn("MCP initialize request failed: {}", .{err});
+            return err;
+        };
+
+        if (init_response.json_error) |err_obj| {
+            if (err_obj == .object) {
+                if (err_obj.object.get("message")) |m| {
+                    const msg = if (m == .string) m.string else "unknown";
+                    std.log.warn("MCP initialize error: {s}", .{msg});
+                } else {
+                    std.log.warn("MCP initialize error: unknown", .{});
+                }
+            } else {
+                std.log.warn("MCP initialize error: unknown", .{});
+            }
+            return error.InitializationFailed;
+        }
+
+        std.log.info("MCP server '{s}' initialized successfully", .{server_name});
+
+        // Send initialized notification (no id = notification)
+        const notif_params = json.ObjectMap.init(self.allocator);
+        const notif_request = MCPRequest{
+            .jsonrpc = "2.0",
+            .method = "notifications/initialized",
+            .params = .{ .object = notif_params },
+            .id = 0, // Notifications don't have IDs but our struct requires it
+        };
+
+        // Fire and forget — notifications don't expect responses
+        const notif_json = try notif_request.toJson(self.allocator);
+        defer self.allocator.free(notif_json);
+
+        if (self.connections.getPtr(server_name)) |conn| {
+            if (conn.transport == .stdio and conn.process != null) {
+                self.sendStdioNotification(conn, notif_json) catch |err| {
+                    std.log.warn("Failed to send initialized notification: {}", .{err});
+                };
+            }
+        }
+    }
+
+    /// Send a notification (no response expected) over stdio
+    fn sendStdioNotification(self: *MCPClient, connection: *MCPConnection, notification: []const u8) !void {
+        const process_ptr = connection.process orelse return error.ProcessNotStarted;
+        const child = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
+        try child.stdin.?.writer().writeAll(notification);
+        try child.stdin.?.writer().writeByte('\n');
+        _ = self; // Used for allocator access in future
+    }
+
     // Send JSON-RPC 2.0 request
     pub fn sendRequest(self: *MCPClient, server_name: []const u8, request: MCPRequest) !MCPResponse {
-        const connection_data = self.connections.get(server_name) orelse return error.ServerNotConnected;
-        const connection = MCPConnection.fromJson(self.allocator, connection_data) catch return error.InvalidConnectionData;
+        const connection = self.connections.getPtr(server_name) orelse return error.ServerNotConnected;
 
         const json_request = try request.toJson(self.allocator);
         defer self.allocator.free(json_request);
 
         const response_json = switch (connection.transport) {
-            .stdio => try self.sendStdioRequest(connection, json_request),
-            .sse => try self.sendSSERequest(connection, json_request),
-            .http => try self.sendHTTPRequest(connection, json_request),
-            .websocket => try self.sendWebSocketRequest(connection, json_request),
+            .stdio => try self.sendStdioRequest(connection.*, json_request),
+            .sse => try self.sendSSERequest(connection.*, json_request),
+            .http => try self.sendHTTPRequest(connection.*, json_request),
+            .websocket => try self.sendWebSocketRequest(connection.*, json_request),
         };
 
         return MCPResponse.fromJson(self.allocator, response_json) catch return error.InvalidResponse;
@@ -381,7 +477,7 @@ pub const MCPClient = struct {
             break :blk 0;
         };
 
-        std.log.info("Sending HTTP {} request to {s}", .{ method, connection.url.? });
+        std.log.info("Sending HTTP {s} request to {s}", .{ method, connection.url.? });
 
         // Build HTTP request
         const uri = try std.Uri.parse(connection.url.?);
@@ -426,10 +522,10 @@ pub const MCPClient = struct {
         };
 
         if (fetch_result.status != .ok) {
-            std.log.err("HTTP response status: {}", .{fetch_result.status});
+            std.log.err("HTTP response status: {any}", .{fetch_result.status});
             var error_obj2 = std.json.ObjectMap.init(allocator);
             try error_obj2.put("code", .{ .integer = -32001 });
-            try error_obj2.put("message", .{ .string = try std.fmt.allocPrint(allocator, "Server returned {}", .{fetch_result.status}) });
+            try error_obj2.put("message", .{ .string = try std.fmt.allocPrint(allocator, "Server returned {any}", .{fetch_result.status}) });
 
             var response_obj2 = std.json.ObjectMap.init(allocator);
             try response_obj2.put("jsonrpc", .{ .string = "2.0" });
@@ -525,107 +621,21 @@ pub const MCPConnection = struct {
     process: ?*anyopaque = null,
     initialized: bool,
 
-    pub fn toJson(self: MCPConnection, allocator: Allocator) !json.Value {
-        var obj = json.ObjectMap.init(allocator);
-
-        try obj.put("transport", .{ .string = @tagName(self.transport) });
-        try obj.put("server_name", .{ .string = self.server_name });
-
-        if (self.url) |url| {
-            try obj.put("url", .{ .string = url });
+    /// Clean up connection resources (kill process, free owned strings)
+    pub fn deinit(self: *MCPConnection, allocator: Allocator) void {
+        // Kill child process if running
+        if (self.process) |proc_ptr| {
+            const child = @as(*std.process.Child, @ptrCast(@alignCast(proc_ptr)));
+            _ = child.kill() catch {};
+            allocator.destroy(child);
+            self.process = null;
         }
-
-        if (self.command) |cmd| {
-            try obj.put("command", .{ .string = cmd });
-        }
-
-        if (self.env_vars) |env| {
-            var env_array = json.Array.init(allocator);
-            for (env) |env_var| {
-                try env_array.append(.{ .string = env_var });
-            }
-
-            try obj.put("env_vars", .{ .array = env_array });
-        }
-
-        if (self.args) |args| {
-            var args_array = json.Array.init(allocator);
-            for (args) |arg| {
-                try args_array.append(.{ .string = arg });
-            }
-
-            try obj.put("args", .{ .array = args_array });
-        }
-
-        try obj.put("headers", .{ .object = self.headers });
-
-        try obj.put("method", .{ .string = self.method });
-        try obj.put("initialized", .{ .bool = self.initialized });
-        try obj.put("process", .{ .null = {} });
-
-        return .{ .object = obj };
-    }
-
-    pub fn fromJson(allocator: Allocator, value: json.Value) !MCPConnection {
-        const obj = if (value == .object) value.object else return error.InvalidConnectionData;
-        const transport_str = MCPClient.jsonString(obj.get("transport") orelse return error.InvalidConnectionData) orelse return error.InvalidConnectionData;
-        const transport = std.meta.stringToEnum(TransportType, transport_str) orelse return error.InvalidConnectionData;
-
-        var headers = json.ObjectMap.init(allocator);
-        if (obj.get("headers")) |headers_value| {
-            if (headers_value != .object) return error.InvalidConnectionData;
-            headers = switch (try MCPClient.cloneJsonValue(allocator, headers_value)) {
-                .object => |cloned| cloned,
-                else => unreachable,
-            };
-        }
-
-        var env_vars: ?[][]const u8 = null;
-        if (obj.get("env_vars")) |env_value| {
-            if (env_value != .array) return error.InvalidConnectionData;
-            var env_list = std.ArrayList([]const u8).init(allocator);
-            for (env_value.array.items) |item| {
-                if (item != .string) return error.InvalidConnectionData;
-                try env_list.append(try allocator.dupe(u8, item.string));
-            }
-            env_vars = try env_list.toOwnedSlice();
-        }
-
-        var args: ?[][]const u8 = null;
-        if (obj.get("args")) |args_value| {
-            if (args_value != .array) return error.InvalidConnectionData;
-            var args_list = std.ArrayList([]const u8).init(allocator);
-            for (args_value.array.items) |item| {
-                if (item != .string) return error.InvalidConnectionData;
-                try args_list.append(try allocator.dupe(u8, item.string));
-            }
-            args = try args_list.toOwnedSlice();
-        }
-
-        return MCPConnection{
-            .transport = transport,
-            .server_name = try allocator.dupe(u8, MCPClient.jsonString(obj.get("server_name") orelse return error.InvalidConnectionData) orelse return error.InvalidConnectionData),
-            .url = if (obj.get("url")) |url_value|
-                if (url_value == .string) try allocator.dupe(u8, url_value.string) else null
-            else
-                null,
-            .headers = headers,
-            .method = if (obj.get("method")) |method_value|
-                if (method_value == .string) try allocator.dupe(u8, method_value.string) else try allocator.dupe(u8, "POST")
-            else
-                try allocator.dupe(u8, "POST"),
-            .command = if (obj.get("command")) |command_value|
-                if (command_value == .string) try allocator.dupe(u8, command_value.string) else null
-            else
-                null,
-            .env_vars = env_vars,
-            .args = args,
-            .process = null,
-            .initialized = if (obj.get("initialized")) |initialized_value|
-                if (initialized_value == .bool) initialized_value.bool else false
-            else
-                false,
-        };
+        // Free owned slices
+        if (self.url) |u| allocator.free(u);
+        allocator.free(self.server_name);
+        allocator.free(self.method);
+        if (self.command) |c| allocator.free(c);
+        self.headers.deinit();
     }
 };
 
@@ -694,16 +704,18 @@ pub const MCPRequest = struct {
     id: u64,
 
     pub fn toJson(self: MCPRequest, allocator: Allocator) ![]const u8 {
-        var obj = json.ObjectMap.init(allocator);
-        defer obj.deinit();
+        // Build JSON-RPC request string manually to avoid stringifyAlloc
+        // comptime resolution issues with anyopaque types in scope
+        const params_str = switch (self.params) {
+            .null => "null",
+            else => blk: {
+                break :blk try json.stringifyAlloc(allocator, self.params, .{});
+            },
+        };
 
-        try obj.put("jsonrpc", .{ .string = self.jsonrpc });
-        try obj.put("method", .{ .string = self.method });
-        try obj.put("params", self.params);
-        try obj.put("id", .{ .integer = @intCast(self.id) });
-
-        const string = try json.stringifyAlloc(allocator, .{ .object = obj }, .{});
-        return string;
+        return try std.fmt.allocPrint(allocator,
+            \\{{"jsonrpc":"{s}","method":"{s}","params":{s},"id":{d}}}
+        , .{ self.jsonrpc, self.method, params_str, self.id });
     }
 };
 
