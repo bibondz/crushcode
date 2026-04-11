@@ -49,10 +49,165 @@ fn clampU64ToU32(value: u64) u32 {
 
 fn freeLastMessage(messages: *std.ArrayList(client_mod.ChatMessage), allocator: std.mem.Allocator) void {
     const removed = messages.pop().?;
-    allocator.free(removed.role);
-    if (removed.content) |content| {
+    freeChatMessage(removed, allocator);
+}
+
+fn freeToolCallInfos(tool_calls: ?[]const client_mod.ToolCallInfo, allocator: std.mem.Allocator) void {
+    if (tool_calls) |calls| {
+        for (calls) |tool_call| {
+            allocator.free(tool_call.id);
+            allocator.free(tool_call.name);
+            allocator.free(tool_call.arguments);
+        }
+        allocator.free(calls);
+    }
+}
+
+fn freeChatMessage(message: client_mod.ChatMessage, allocator: std.mem.Allocator) void {
+    allocator.free(message.role);
+    if (message.content) |content| {
         allocator.free(content);
     }
+    if (message.tool_call_id) |tool_call_id| {
+        allocator.free(tool_call_id);
+    }
+    freeToolCallInfos(message.tool_calls, allocator);
+}
+
+fn rollbackMessagesTo(messages: *std.ArrayList(client_mod.ChatMessage), allocator: std.mem.Allocator, target_len: usize) void {
+    while (messages.items.len > target_len) {
+        freeLastMessage(messages, allocator);
+    }
+}
+
+fn duplicateToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const client_mod.ToolCallInfo) !?[]const client_mod.ToolCallInfo {
+    const source = tool_calls orelse return null;
+    const copied = try allocator.alloc(client_mod.ToolCallInfo, source.len);
+    for (source, 0..) |tool_call, i| {
+        copied[i] = .{
+            .id = try allocator.dupe(u8, tool_call.id),
+            .name = try allocator.dupe(u8, tool_call.name),
+            .arguments = try allocator.dupe(u8, tool_call.arguments),
+        };
+    }
+    return copied;
+}
+
+fn appendResponseMessage(messages: *std.ArrayList(client_mod.ChatMessage), allocator: std.mem.Allocator, message: client_mod.ChatMessage) !void {
+    try messages.append(.{
+        .role = try allocator.dupe(u8, message.role),
+        .content = if (message.content) |content| try allocator.dupe(u8, content) else null,
+        .tool_call_id = if (message.tool_call_id) |tool_call_id| try allocator.dupe(u8, tool_call_id) else null,
+        .tool_calls = try duplicateToolCallInfos(allocator, message.tool_calls),
+    });
+}
+
+const ToolExecution = struct {
+    display: []const u8,
+    result: []const u8,
+};
+
+fn buildToolFailure(allocator: std.mem.Allocator, tool_call: client_mod.ParsedToolCall, err: anyerror) !ToolExecution {
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 {s} → error: {s}\n", .{ tool_call.name, @errorName(err) }),
+        .result = try std.fmt.allocPrint(allocator, "Tool execution failed: {s}", .{@errorName(err)}),
+    };
+}
+
+fn executeReadFileTool(allocator: std.mem.Allocator, tool_call: client_mod.ParsedToolCall) !ToolExecution {
+    const ReadFileArgs = struct { path: []const u8 };
+
+    var parsed = try std.json.parseFromSlice(ReadFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const file = try std.fs.cwd().openFile(parsed.value.path, .{});
+    defer file.close();
+
+    const stat = try file.stat();
+    if (stat.kind != .file) {
+        return error.NotAFile;
+    }
+
+    const content = try file.readToEndAlloc(allocator, stat.size);
+    defer allocator.free(content);
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 read_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, stat.size }),
+        .result = try std.fmt.allocPrint(allocator, "=== {s} ({d} bytes) ===\n{s}", .{ parsed.value.path, stat.size, content }),
+    };
+}
+
+fn executeShellTool(allocator: std.mem.Allocator, tool_call: client_mod.ParsedToolCall) !ToolExecution {
+    const ShellArgs = struct {
+        command: []const u8,
+        timeout: ?u32 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(ShellArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.timeout != null) {
+        return error.ToolTimeoutUnsupported;
+    }
+
+    const argv: [3][]const u8 = .{ "sh", "-c", parsed.value.command };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    _ = try child.spawn();
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+    const term = try child.wait();
+    const exit_code: u8 = switch (term) {
+        .Exited => |code| @intCast(code),
+        .Signal => |code| @intCast(code),
+        else => 1,
+    };
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\") → exit {d}\n", .{ parsed.value.command, exit_code }),
+        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, stdout.items, stderr.items }),
+    };
+}
+
+fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: client_mod.ParsedToolCall) !ToolExecution {
+    const WriteFileArgs = struct {
+        path: []const u8,
+        content: []const u8,
+    };
+
+    var parsed = try std.json.parseFromSlice(WriteFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const file = try std.fs.cwd().createFile(parsed.value.path, .{});
+    defer file.close();
+    try file.writeAll(parsed.value.content);
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 write_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, parsed.value.content.len }),
+        .result = try std.fmt.allocPrint(allocator, "Wrote {d} bytes to {s}", .{ parsed.value.content.len, parsed.value.path }),
+    };
+}
+
+fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: client_mod.ParsedToolCall) !ToolExecution {
+    if (std.mem.eql(u8, tool_call.name, "read_file")) {
+        return executeReadFileTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "shell")) {
+        return executeShellTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "write_file")) {
+        return executeWriteFileTool(allocator, tool_call);
+    }
+    return error.UnsupportedTool;
 }
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
@@ -211,8 +366,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var messages = std.ArrayList(client_mod.ChatMessage).init(allocator);
     defer {
         for (messages.items) |msg| {
-            allocator.free(msg.role);
-            if (msg.content) |c| allocator.free(c);
+            freeChatMessage(msg, allocator);
         }
         messages.deinit();
     }
@@ -263,8 +417,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         if (std.mem.eql(u8, user_message, "/clear")) {
             for (messages.items) |msg| {
-                allocator.free(msg.role);
-                if (msg.content) |c| allocator.free(c);
+                freeChatMessage(msg, allocator);
             }
             messages.clearRetainingCapacity();
             total_input_tokens = 0;
@@ -291,73 +444,143 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             intent.confidence,
         });
 
+        const turn_start_len = messages.items.len;
+
         // Add user message to history
         try messages.append(.{
             .role = try allocator.dupe(u8, "user"),
             .content = try allocator.dupe(u8, user_message),
+            .tool_call_id = null,
+            .tool_calls = null,
         });
 
-        // Send request with history using real token streaming.
-        var pre_request_ctx = HookContext.init(allocator);
-        defer pre_request_ctx.deinit();
-        pre_request_ctx.phase = .pre_request;
-        pre_request_ctx.provider = provider_name;
-        pre_request_ctx.model = model_name;
-        pre_request_ctx.token_count = clampUsizeToU32(user_message.len);
-        try hooks.execute(.pre_request, &pre_request_ctx);
+        var iteration: u32 = 0;
+        var turn_complete = false;
+        var turn_failed = false;
 
-        std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
+        while (iteration < 25) : (iteration += 1) {
+            const last_content_len = if (messages.items.len == 0)
+                user_message.len
+            else
+                (messages.items[messages.items.len - 1].content orelse "").len;
 
-        const response = client.sendChatStreaming(messages.items, struct {
-            fn onToken(token: []const u8, done: bool) void {
-                _ = done;
-                const stdout = std.io.getStdOut().writer();
-                stdout.print("{s}", .{token}) catch {};
+            var pre_request_ctx = HookContext.init(allocator);
+            defer pre_request_ctx.deinit();
+            pre_request_ctx.phase = .pre_request;
+            pre_request_ctx.provider = provider_name;
+            pre_request_ctx.model = model_name;
+            pre_request_ctx.token_count = clampUsizeToU32(last_content_len);
+            try hooks.execute(.pre_request, &pre_request_ctx);
+
+            std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
+
+            const response = (if (iteration == 0)
+                client.sendChatStreaming(messages.items, struct {
+                    fn onToken(token: []const u8, done: bool) void {
+                        _ = done;
+                        const stdout = std.io.getStdOut().writer();
+                        stdout.print("{s}", .{token}) catch {};
+                    }
+                }.onToken)
+            else
+                client.sendChatWithToolResults(messages.items, struct {
+                    fn onToken(token: []const u8, done: bool) void {
+                        _ = done;
+                        const stdout = std.io.getStdOut().writer();
+                        stdout.print("{s}", .{token}) catch {};
+                    }
+                }.onToken)) catch |err| {
+                std.debug.print("\n\nError: {}\n", .{err});
+                rollbackMessagesTo(&messages, allocator, turn_start_len);
+                turn_failed = true;
+                break;
+            };
+
+            if (response.choices.len == 0) {
+                std.debug.print("\n\nError: Empty response from AI\n", .{});
+                rollbackMessagesTo(&messages, allocator, turn_start_len);
+                turn_failed = true;
+                break;
             }
-        }.onToken) catch |err| {
-            std.debug.print("\n\nError: {}\n", .{err});
-            freeLastMessage(&messages, allocator);
-            continue;
-        };
 
-        if (response.choices.len == 0) {
-            std.debug.print("\n\nError: Empty response from AI\n", .{});
-            freeLastMessage(&messages, allocator);
-            continue;
-        }
-
-        const content = response.choices[0].message.content orelse "";
-
-        // Track usage
-        if (response.usage) |usage| {
-            total_input_tokens += usage.prompt_tokens;
-            total_output_tokens += usage.completion_tokens;
             request_count += 1;
-            std.debug.print("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
-                usage.prompt_tokens,
-                usage.completion_tokens,
-                total_input_tokens + total_output_tokens,
-            });
+            const choice = response.choices[0];
+            const content = choice.message.content orelse "";
+
+            if (response.usage) |usage| {
+                total_input_tokens += usage.prompt_tokens;
+                total_output_tokens += usage.completion_tokens;
+                std.debug.print("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
+                    usage.prompt_tokens,
+                    usage.completion_tokens,
+                    total_input_tokens + total_output_tokens,
+                });
+            }
+
+            var post_request_ctx = HookContext.init(allocator);
+            defer post_request_ctx.deinit();
+            post_request_ctx.phase = .post_request;
+            post_request_ctx.provider = provider_name;
+            post_request_ctx.model = model_name;
+            post_request_ctx.token_count = if (response.usage) |usage|
+                clampU64ToU32(usage.total_tokens)
+            else
+                clampUsizeToU32(content.len);
+            try hooks.execute(.post_request, &post_request_ctx);
+
+            try appendResponseMessage(&messages, allocator, choice.message);
+
+            const finish_reason = choice.finish_reason orelse "stop";
+            if (std.mem.eql(u8, finish_reason, "tool_calls")) {
+                const tool_calls = try client.extractToolCalls(&response);
+                defer if (tool_calls.len > 0) allocator.free(tool_calls);
+
+                if (tool_calls.len == 0) {
+                    std.debug.print("\n\nError: Model requested tool calls but none were parsed\n", .{});
+                    rollbackMessagesTo(&messages, allocator, turn_start_len);
+                    turn_failed = true;
+                    break;
+                }
+
+                const tool_outputs = try allocator.alloc([]const u8, tool_calls.len);
+                defer allocator.free(tool_outputs);
+
+                var output_count: usize = 0;
+                defer {
+                    for (tool_outputs[0..output_count]) |tool_output| {
+                        allocator.free(tool_output);
+                    }
+                }
+
+                for (tool_calls, 0..) |tool_call, idx| {
+                    const execution = executeBuiltinTool(allocator, tool_call) catch |err| try buildToolFailure(allocator, tool_call, err);
+                    defer allocator.free(execution.display);
+
+                    std.debug.print("\n{s}", .{execution.display});
+                    tool_outputs[idx] = execution.result;
+                    output_count += 1;
+                }
+
+                const tool_messages = try client.buildToolResultMessages(tool_calls, tool_outputs);
+                defer allocator.free(tool_messages);
+
+                for (tool_messages) |tool_message| {
+                    try messages.append(tool_message);
+                }
+
+                std.debug.print("\n", .{});
+                continue;
+            }
+
+            std.debug.print("\n", .{});
+            turn_complete = true;
+            break;
         }
 
-        var post_request_ctx = HookContext.init(allocator);
-        defer post_request_ctx.deinit();
-        post_request_ctx.phase = .post_request;
-        post_request_ctx.provider = provider_name;
-        post_request_ctx.model = model_name;
-        post_request_ctx.token_count = if (response.usage) |usage|
-            clampU64ToU32(usage.total_tokens)
-        else
-            clampUsizeToU32(content.len);
-        try hooks.execute(.post_request, &post_request_ctx);
-
-        // Add assistant response to history
-        try messages.append(.{
-            .role = try allocator.dupe(u8, "assistant"),
-            .content = try allocator.dupe(u8, content),
-        });
-
-        std.debug.print("\n", .{});
+        if (!turn_complete and !turn_failed) {
+            std.debug.print("\nError: Agent loop hit max iterations (25)\n", .{});
+            rollbackMessagesTo(&messages, allocator, turn_start_len);
+        }
     }
 }
 

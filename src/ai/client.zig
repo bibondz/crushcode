@@ -6,6 +6,21 @@ const error_handler_mod = @import("../ai/error_handler.zig");
 pub const ChatMessage = struct {
     role: []const u8,
     content: ?[]const u8 = null,
+    tool_call_id: ?[]const u8 = null,
+    tool_calls: ?[]const ToolCallInfo = null,
+};
+
+pub const ToolCallInfo = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
+};
+
+/// Parsed tool call from AI response
+pub const ParsedToolCall = struct {
+    id: []const u8,
+    name: []const u8,
+    arguments: []const u8,
 };
 
 pub const ChatRequest = struct {
@@ -58,6 +73,64 @@ pub const ExtendedUsage = struct {
     cache_read_tokens: u32 = 0,
     cache_write_tokens: u32 = 0,
     estimated_cost_usd: f64 = 0.0,
+};
+
+const APIFunctionCall = struct {
+    name: []const u8,
+    arguments: []const u8,
+};
+
+const APIToolCall = struct {
+    id: []const u8,
+    type: ?[]const u8 = null,
+    function: APIFunctionCall,
+};
+
+const APIChatMessage = struct {
+    role: []const u8,
+    content: ?[]const u8 = null,
+    tool_calls: ?[]const APIToolCall = null,
+};
+
+const APIChatChoice = struct {
+    index: u32,
+    message: APIChatMessage,
+    finish_reason: ?[]const u8 = null,
+};
+
+const APIChatResponse = struct {
+    id: []const u8,
+    object: []const u8,
+    created: u64,
+    model: []const u8,
+    choices: []APIChatChoice,
+    usage: ?Usage = null,
+    provider: ?[]const u8 = null,
+    cost: ?[]const u8 = null,
+    system_fingerprint: ?[]const u8 = null,
+};
+
+const StreamingToolCall = struct {
+    id: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    arguments_fragments: std.ArrayList([]const u8),
+
+    fn init(allocator: std.mem.Allocator) StreamingToolCall {
+        return .{
+            .id = null,
+            .name = null,
+            .arguments_fragments = std.ArrayList([]const u8).init(allocator),
+        };
+    }
+
+    fn deinit(self: *StreamingToolCall, allocator: std.mem.Allocator) void {
+        if (self.id) |id| allocator.free(id);
+        if (self.name) |name| allocator.free(name);
+        for (self.arguments_fragments.items) |fragment| {
+            allocator.free(fragment);
+        }
+        self.arguments_fragments.deinit();
+    }
 };
 
 /// Callback type for streaming tokens
@@ -179,6 +252,14 @@ pub const AIClient = struct {
         var full_content = std.ArrayList(u8).init(allocator);
         defer full_content.deinit();
 
+        var streaming_tool_calls = std.ArrayList(StreamingToolCall).init(allocator);
+        defer {
+            for (streaming_tool_calls.items) |*tool_call| {
+                tool_call.deinit(allocator);
+            }
+            streaming_tool_calls.deinit();
+        }
+
         var finish_reason: ?[]const u8 = null;
         defer if (finish_reason) |reason| allocator.free(reason);
 
@@ -199,16 +280,59 @@ pub const AIClient = struct {
                 &usage,
                 callback,
                 &saw_done,
+                &streaming_tool_calls,
             );
         }
 
-        try self.processStreamChunk(&partial_line, "\n", &full_content, &finish_reason, &usage, callback, &saw_done);
+        try self.processStreamChunk(&partial_line, "\n", &full_content, &finish_reason, &usage, callback, &saw_done, &streaming_tool_calls);
 
         if (!saw_done) {
             callback("", true);
         }
 
-        return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage);
+        return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage, streaming_tool_calls.items);
+    }
+
+    /// Send chat with tool results (for multi-turn agent loop)
+    pub fn sendChatWithToolResults(self: *AIClient, messages: []ChatMessage, callback: StreamCallback) !ChatResponse {
+        return self.sendChatStreaming(messages, callback);
+    }
+
+    /// Extract tool calls from a ChatResponse (non-streaming)
+    pub fn extractToolCalls(self: *AIClient, response: *const ChatResponse) ![]ParsedToolCall {
+        if (response.choices.len == 0) {
+            return &.{};
+        }
+
+        const tool_calls = response.choices[0].message.tool_calls orelse return &.{};
+        const parsed = try self.allocator.alloc(ParsedToolCall, tool_calls.len);
+        for (tool_calls, 0..) |tool_call, i| {
+            parsed[i] = .{
+                .id = tool_call.id,
+                .name = tool_call.name,
+                .arguments = tool_call.arguments,
+            };
+        }
+        return parsed;
+    }
+
+    /// Build tool result messages for the next request.
+    /// Format: {"role": "tool", "tool_call_id": "call_abc", "content": "file content..."}
+    pub fn buildToolResultMessages(self: *AIClient, tool_calls: []ParsedToolCall, results: []const []const u8) ![]ChatMessage {
+        if (tool_calls.len != results.len) {
+            return error.InvalidRequest;
+        }
+
+        const messages = try self.allocator.alloc(ChatMessage, tool_calls.len);
+        for (tool_calls, results, 0..) |tool_call, result, i| {
+            messages[i] = .{
+                .role = try self.allocator.dupe(u8, "tool"),
+                .content = try self.allocator.dupe(u8, result),
+                .tool_call_id = try self.allocator.dupe(u8, tool_call.id),
+                .tool_calls = null,
+            };
+        }
+        return messages;
     }
 
     /// Internal method with options
@@ -422,76 +546,11 @@ pub const AIClient = struct {
             };
         }
 
-        var json_parsed = try std.json.parseFromSlice(ChatResponse, allocator, response_slice, .{
+        var json_parsed = try std.json.parseFromSlice(APIChatResponse, allocator, response_slice, .{
             .ignore_unknown_fields = true,
         });
         defer json_parsed.deinit();
-
-        // Deep clone the response to avoid lifetime issues
-        const original = json_parsed.value;
-
-        // Clone id
-        const id_copy = try allocator.dupe(u8, original.id);
-
-        // Clone object
-        const object_copy = try allocator.dupe(u8, original.object);
-
-        // Clone model
-        const model_copy = try allocator.dupe(u8, original.model);
-
-        // Clone choices
-        const choices_copy = try allocator.alloc(ChatChoice, original.choices.len);
-
-        for (original.choices, 0..) |orig_choice, i| {
-            const role_copy = try allocator.dupe(u8, orig_choice.message.role);
-
-            const content_copy: ?[]const u8 = if (orig_choice.message.content) |c|
-                try allocator.dupe(u8, c)
-            else
-                null;
-
-            const finish_copy: ?[]const u8 = if (orig_choice.finish_reason) |fr|
-                try allocator.dupe(u8, fr)
-            else
-                null;
-
-            choices_copy[i] = .{
-                .index = orig_choice.index,
-                .message = .{
-                    .role = role_copy,
-                    .content = content_copy,
-                },
-                .finish_reason = finish_copy,
-            };
-        }
-
-        // Clone provider, cost, system_fingerprint if present
-        const provider_copy: ?[]const u8 = if (original.provider) |p|
-            try allocator.dupe(u8, p)
-        else
-            null;
-
-        const cost_copy: ?[]const u8 = if (original.cost) |c|
-            try allocator.dupe(u8, c)
-        else
-            null;
-
-        const sf_copy: ?[]const u8 = if (original.system_fingerprint) |sf|
-            try allocator.dupe(u8, sf)
-        else
-            null;
-
-        const cloned_response = ChatResponse{
-            .id = id_copy,
-            .object = object_copy,
-            .created = original.created,
-            .model = model_copy,
-            .choices = choices_copy,
-            .usage = original.usage,
-            .provider = provider_copy,
-            .cost = cost_copy,
-            .system_fingerprint = sf_copy,
-        };
+        const cloned_response = try cloneAPIChatResponse(allocator, json_parsed.value);
 
         return HTTPResult{
             .err = null,
@@ -676,76 +735,11 @@ pub const AIClient = struct {
             };
         }
 
-        var json_parsed = try std.json.parseFromSlice(ChatResponse, allocator, response_slice, .{
+        var json_parsed = try std.json.parseFromSlice(APIChatResponse, allocator, response_slice, .{
             .ignore_unknown_fields = true,
         });
         defer json_parsed.deinit();
-
-        // Deep clone the response to avoid lifetime issues (same as in performHttpRequest)
-        const original = json_parsed.value;
-
-        // Clone id
-        const id_copy = try allocator.dupe(u8, original.id);
-
-        // Clone object
-        const object_copy = try allocator.dupe(u8, original.object);
-
-        // Clone model
-        const model_copy = try allocator.dupe(u8, original.model);
-
-        // Clone choices
-        const choices_copy = try allocator.alloc(ChatChoice, original.choices.len);
-
-        for (original.choices, 0..) |orig_choice, i| {
-            const role_copy = try allocator.dupe(u8, orig_choice.message.role);
-
-            const content_copy: ?[]const u8 = if (orig_choice.message.content) |c|
-                try allocator.dupe(u8, c)
-            else
-                null;
-
-            const finish_copy: ?[]const u8 = if (orig_choice.finish_reason) |fr|
-                try allocator.dupe(u8, fr)
-            else
-                null;
-
-            choices_copy[i] = .{
-                .index = orig_choice.index,
-                .message = .{
-                    .role = role_copy,
-                    .content = content_copy,
-                },
-                .finish_reason = finish_copy,
-            };
-        }
-
-        // Clone provider, cost, system_fingerprint if present
-        const provider_copy: ?[]const u8 = if (original.provider) |p|
-            try allocator.dupe(u8, p)
-        else
-            null;
-
-        const cost_copy: ?[]const u8 = if (original.cost) |c|
-            try allocator.dupe(u8, c)
-        else
-            null;
-
-        const sf_copy: ?[]const u8 = if (original.system_fingerprint) |sf|
-            try allocator.dupe(u8, sf)
-        else
-            null;
-
-        const cloned_response = ChatResponse{
-            .id = id_copy,
-            .object = object_copy,
-            .created = original.created,
-            .model = model_copy,
-            .choices = choices_copy,
-            .usage = original.usage,
-            .provider = provider_copy,
-            .cost = cost_copy,
-            .system_fingerprint = sf_copy,
-        };
+        const cloned_response = try cloneAPIChatResponse(allocator, json_parsed.value);
 
         return HTTPResult{
             .err = null,
@@ -839,6 +833,7 @@ pub const AIClient = struct {
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
     ) !void {
         if (root != .object) {
             return;
@@ -876,12 +871,74 @@ pub const AIClient = struct {
             return;
         }
 
+        if (delta.object.get("tool_calls")) |tool_calls_value| {
+            try self.processOpenAIToolCallDelta(tool_calls_value, streaming_tool_calls);
+        }
+
         if (delta.object.get("content")) |content_value| {
             const token = switch (content_value) {
                 .string => |s| s,
                 else => return,
             };
             try appendStreamingToken(full_content, token, callback);
+        }
+    }
+
+    fn processOpenAIToolCallDelta(
+        self: *AIClient,
+        tool_calls_value: std.json.Value,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+    ) !void {
+        if (tool_calls_value != .array) {
+            return;
+        }
+
+        for (tool_calls_value.array.items) |tool_call_value| {
+            if (tool_call_value != .object) {
+                continue;
+            }
+
+            const index_value = tool_call_value.object.get("index") orelse continue;
+            const index = switch (index_value) {
+                .integer => |value| if (value >= 0) @as(usize, @intCast(value)) else continue,
+                else => continue,
+            };
+
+            while (streaming_tool_calls.items.len <= index) {
+                try streaming_tool_calls.append(StreamingToolCall.init(self.allocator));
+            }
+
+            var slot = &streaming_tool_calls.items[index];
+
+            if (tool_call_value.object.get("id")) |id_value| {
+                if (id_value == .string) {
+                    if (slot.id) |existing| {
+                        self.allocator.free(existing);
+                    }
+                    slot.id = try self.allocator.dupe(u8, id_value.string);
+                }
+            }
+
+            if (tool_call_value.object.get("function")) |function_value| {
+                if (function_value != .object) {
+                    continue;
+                }
+
+                if (function_value.object.get("name")) |name_value| {
+                    if (name_value == .string) {
+                        if (slot.name) |existing| {
+                            self.allocator.free(existing);
+                        }
+                        slot.name = try self.allocator.dupe(u8, name_value.string);
+                    }
+                }
+
+                if (function_value.object.get("arguments")) |arguments_value| {
+                    if (arguments_value == .string and arguments_value.string.len > 0) {
+                        try slot.arguments_fragments.append(try self.allocator.dupe(u8, arguments_value.string));
+                    }
+                }
+            }
         }
     }
 
@@ -893,6 +950,7 @@ pub const AIClient = struct {
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
     ) !void {
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{
             .ignore_unknown_fields = true,
@@ -939,7 +997,7 @@ pub const AIClient = struct {
             return;
         }
 
-        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done);
+        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
     }
 
     fn processSSELine(
@@ -950,6 +1008,7 @@ pub const AIClient = struct {
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
     ) !void {
         const data = if (std.mem.startsWith(u8, line, "data: "))
             line["data: ".len..]
@@ -1025,7 +1084,7 @@ pub const AIClient = struct {
             }
         }
 
-        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done);
+        try self.processOpenAIStreamingPayload(root, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
     }
 
     fn processStreamLine(
@@ -1036,6 +1095,7 @@ pub const AIClient = struct {
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
     ) !void {
         if (line.len == 0) {
             return;
@@ -1047,8 +1107,8 @@ pub const AIClient = struct {
         }
 
         switch (self.detectStreamingFormat()) {
-            .ndjson => try self.processNDJSONLine(trimmed, full_content, finish_reason, usage, callback, saw_done),
-            .sse => try self.processSSELine(trimmed, full_content, finish_reason, usage, callback, saw_done),
+            .ndjson => try self.processNDJSONLine(trimmed, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls),
+            .sse => try self.processSSELine(trimmed, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls),
         }
     }
 
@@ -1061,13 +1121,14 @@ pub const AIClient = struct {
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
+        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
     ) !void {
         try partial_line.appendSlice(chunk);
 
         var start: usize = 0;
         for (partial_line.items, 0..) |byte, i| {
             if (byte == '\n') {
-                try self.processStreamLine(partial_line.items[start..i], full_content, finish_reason, usage, callback, saw_done);
+                try self.processStreamLine(partial_line.items[start..i], full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
                 start = i + 1;
             }
         }
@@ -1094,15 +1155,50 @@ pub const AIClient = struct {
         }
     }
 
-    fn freeHeaders(allocator: std.mem.Allocator, headers: []std.http.Header) void {
-        for (headers) |header| {
-            allocator.free(header.name);
-            allocator.free(header.value);
-        }
-        allocator.free(headers);
+    fn appendToolCallJson(json_body: *std.ArrayList(u8), tool_call: ToolCallInfo) !void {
+        try json_body.appendSlice("{\"id\":\"");
+        try appendEscapedJsonString(json_body, tool_call.id);
+        try json_body.appendSlice("\",\"type\":\"function\",\"function\":{\"name\":\"");
+        try appendEscapedJsonString(json_body, tool_call.name);
+        try json_body.appendSlice("\",\"arguments\":\"");
+        try appendEscapedJsonString(json_body, tool_call.arguments);
+        try json_body.appendSlice("\"}}");
     }
 
-    fn buildStreamingBodyFromMessages(self: *AIClient, messages: []const ChatMessage) ![]const u8 {
+    fn appendChatMessageJson(json_body: *std.ArrayList(u8), msg: ChatMessage) !void {
+        try json_body.appendSlice("{\"role\":\"");
+        try appendEscapedJsonString(json_body, msg.role);
+        try json_body.appendSlice("\"");
+
+        if (msg.tool_call_id) |tool_call_id| {
+            try json_body.appendSlice(",\"tool_call_id\":\"");
+            try appendEscapedJsonString(json_body, tool_call_id);
+            try json_body.appendSlice("\"");
+        }
+
+        if (msg.content) |content| {
+            try json_body.appendSlice(",\"content\":\"");
+            try appendEscapedJsonString(json_body, content);
+            try json_body.appendSlice("\"");
+        } else {
+            try json_body.appendSlice(",\"content\":null");
+        }
+
+        if (msg.tool_calls) |tool_calls| {
+            try json_body.appendSlice(",\"tool_calls\":[");
+            for (tool_calls, 0..) |tool_call, i| {
+                if (i > 0) {
+                    try json_body.appendSlice(",");
+                }
+                try appendToolCallJson(json_body, tool_call);
+            }
+            try json_body.appendSlice("]");
+        }
+
+        try json_body.appendSlice("}");
+    }
+
+    fn buildRequestBodyFromMessages(self: *AIClient, messages: []const ChatMessage, stream: bool) ![]const u8 {
         const allocator = self.allocator;
         var json_body = std.ArrayList(u8).init(allocator);
         defer json_body.deinit();
@@ -1125,19 +1221,32 @@ pub const AIClient = struct {
             if (needs_comma) {
                 try json_body.appendSlice(",");
             }
-            try json_body.appendSlice("{\"role\":\"");
-            try json_body.appendSlice(msg.role);
-            try json_body.appendSlice("\",\"content\":\"");
-            try appendEscapedJsonString(&json_body, msg.content orelse "");
-            try json_body.appendSlice("\"}");
+            try appendChatMessageJson(&json_body, msg);
             needs_comma = true;
         }
 
-        try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7,\"stream\":true}");
+        try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7");
+        if (stream) {
+            try json_body.appendSlice(",\"stream\":true");
+        }
+        try json_body.appendSlice("}");
+
         return allocator.dupe(u8, json_body.items);
     }
 
-    fn buildStreamingResponse(self: *AIClient, content_slice: []const u8, final_finish_reason: []const u8, usage: ?Usage) !ChatResponse {
+    fn freeHeaders(allocator: std.mem.Allocator, headers: []std.http.Header) void {
+        for (headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+
+    fn buildStreamingBodyFromMessages(self: *AIClient, messages: []const ChatMessage) ![]const u8 {
+        return self.buildRequestBodyFromMessages(messages, true);
+    }
+
+    fn buildStreamingResponse(self: *AIClient, content_slice: []const u8, final_finish_reason: []const u8, usage: ?Usage, streaming_tool_calls: []const StreamingToolCall) !ChatResponse {
         const allocator = self.allocator;
         const content = try allocator.dupe(u8, content_slice);
         errdefer allocator.free(content);
@@ -1156,6 +1265,8 @@ pub const AIClient = struct {
             .message = .{
                 .role = role,
                 .content = content,
+                .tool_call_id = null,
+                .tool_calls = try cloneStreamingToolCalls(allocator, streaming_tool_calls),
             },
             .finish_reason = finish_reason,
         };
@@ -1170,6 +1281,84 @@ pub const AIClient = struct {
             .provider = try allocator.dupe(u8, self.provider.name),
             .cost = null,
             .system_fingerprint = null,
+        };
+    }
+
+    fn cloneToolCallInfosFromAPI(allocator: std.mem.Allocator, tool_calls: ?[]const APIToolCall) !?[]const ToolCallInfo {
+        const source = tool_calls orelse return null;
+        const copied = try allocator.alloc(ToolCallInfo, source.len);
+        for (source, 0..) |tool_call, i| {
+            copied[i] = .{
+                .id = try allocator.dupe(u8, tool_call.id),
+                .name = try allocator.dupe(u8, tool_call.function.name),
+                .arguments = try allocator.dupe(u8, tool_call.function.arguments),
+            };
+        }
+        return copied;
+    }
+
+    fn cloneStreamingToolCalls(allocator: std.mem.Allocator, tool_calls: []const StreamingToolCall) !?[]const ToolCallInfo {
+        if (tool_calls.len == 0) {
+            return null;
+        }
+
+        const copied = try allocator.alloc(ToolCallInfo, tool_calls.len);
+        for (tool_calls, 0..) |tool_call, i| {
+            var arguments = std.ArrayList(u8).init(allocator);
+            defer arguments.deinit();
+
+            for (tool_call.arguments_fragments.items) |fragment| {
+                try arguments.appendSlice(fragment);
+            }
+
+            copied[i] = .{
+                .id = try allocator.dupe(u8, tool_call.id orelse ""),
+                .name = try allocator.dupe(u8, tool_call.name orelse ""),
+                .arguments = try allocator.dupe(u8, arguments.items),
+            };
+        }
+        return copied;
+    }
+
+    fn cloneAPIChatResponse(allocator: std.mem.Allocator, original: APIChatResponse) !ChatResponse {
+        const id_copy = try allocator.dupe(u8, original.id);
+        const object_copy = try allocator.dupe(u8, original.object);
+        const model_copy = try allocator.dupe(u8, original.model);
+
+        const choices_copy = try allocator.alloc(ChatChoice, original.choices.len);
+        for (original.choices, 0..) |orig_choice, i| {
+            const role_copy = try allocator.dupe(u8, orig_choice.message.role);
+            const content_copy: ?[]const u8 = if (orig_choice.message.content) |content|
+                try allocator.dupe(u8, content)
+            else
+                null;
+            const finish_copy: ?[]const u8 = if (orig_choice.finish_reason) |finish|
+                try allocator.dupe(u8, finish)
+            else
+                null;
+
+            choices_copy[i] = .{
+                .index = orig_choice.index,
+                .message = .{
+                    .role = role_copy,
+                    .content = content_copy,
+                    .tool_call_id = null,
+                    .tool_calls = try cloneToolCallInfosFromAPI(allocator, orig_choice.message.tool_calls),
+                },
+                .finish_reason = finish_copy,
+            };
+        }
+
+        return ChatResponse{
+            .id = id_copy,
+            .object = object_copy,
+            .created = original.created,
+            .model = model_copy,
+            .choices = choices_copy,
+            .usage = original.usage,
+            .provider = if (original.provider) |provider| try allocator.dupe(u8, provider) else null,
+            .cost = if (original.cost) |cost| try allocator.dupe(u8, cost) else null,
+            .system_fingerprint = if (original.system_fingerprint) |fingerprint| try allocator.dupe(u8, fingerprint) else null,
         };
     }
 
