@@ -120,6 +120,23 @@ Based on research, suggested phase structure:
 
 ---
 
+### Additional Reference: Claude Code Source
+
+**Source:** https://github.com/777genius/claude-code-source-code-full (leaked, 2026-03-31) — TypeScript+Bun
+
+| Claude Code Pattern | Crushcode Application |
+|-------------------|-------------------|
+| Tool registry (~40 tools) | Plugin system ✓ |
+| Slash commands (~50) | Subcommands + aliases |
+| Zod input validation | Manual/std.json |
+| Per-tool permissions | Skip for v1 |
+| Service layer | MCP exists → v2 |
+| Bundled skills | v2 feature |
+
+**Key implementations to study:** Tool tool definition (`buildTool`), command pattern, service layer organization.
+
+---
+
 ## Sources
 
 - Claude Code vs Cursor (2026): https://claudefa.st/blog/tools/extensions/claude-code-vs-cursor
