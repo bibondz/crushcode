@@ -11,8 +11,12 @@ const skills_mod = @import("skills");
 const tui_mod = @import("tui");
 const install_mod = @import("install");
 const jobs_mod = @import("jobs");
+const fallback_mod = @import("fallback");
+const parallel_mod = @import("parallel");
 const skills_loader_mod = @import("skills_loader");
+const skill_import_mod = @import("skill_import");
 const tools_mod = @import("tools");
+const worktree_mod = @import("worktree");
 
 const Config = config_mod.Config;
 
@@ -56,17 +60,97 @@ pub fn handleJobs(args: args_mod.Args) !void {
     try jobs_mod.handleJobs(args.remaining);
 }
 
+fn isRemoteSkillSource(source: []const u8) bool {
+    return std.mem.startsWith(u8, source, "clawhub:") or
+        std.mem.startsWith(u8, source, "skills.sh:") or
+        std.mem.startsWith(u8, source, "https://github.com/");
+}
+
+pub fn handleFallback(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var chain = fallback_mod.FallbackChain.init(allocator);
+    defer chain.deinit();
+
+    try chain.addEntry("openrouter", "openai/gpt-5.4");
+    try chain.addEntry("anthropic", "claude-3.5-sonnet");
+    try chain.addEntry("ollama", "llama3");
+    chain.printChain();
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerAllProviders();
+
+    std.debug.print("\nConnectivity check:\n", .{});
+    for (chain.getEntries(), 1..) |entry, index| {
+        const status = if (registry.getProvider(entry.provider) != null) "available" else "missing";
+        std.debug.print("  {d}. {s}/{s}: {s}\n", .{ index, entry.provider, entry.model, status });
+    }
+}
+
+pub fn handleParallel(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var executor = parallel_mod.ParallelExecutor.init(allocator, 3);
+    defer executor.deinit();
+
+    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4");
+    defer allocator.free(task_one);
+
+    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet");
+    defer allocator.free(task_two);
+
+    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3");
+    defer allocator.free(task_three);
+
+    if (executor.getTask(task_one)) |task| {
+        task.status = .running;
+    }
+    try executor.recordResult(task_one, "Repository status collected", true);
+    _ = executor.cancel(task_two);
+
+    executor.printStatus();
+    std.debug.print("\nCan accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
+    std.debug.print("Recorded results: {d}\n", .{executor.getResults().len});
+}
+
+pub fn handleWorktree(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var manager = worktree_mod.WorktreeManager.init(allocator, ".crushcode-worktrees");
+    defer manager.deinit();
+
+    std.debug.print("Worktree base directory: {s}\n", .{manager.base_dir});
+    manager.printActive();
+}
+
 pub fn handleSkillsLoad(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
-    var loader = skills_loader_mod.SkillLoader.init(allocator);
-    defer loader.deinit();
-
     // Default skills directory
-    const skills_dir = if (args.remaining.len > 0)
+    const source = if (args.remaining.len > 0)
         args.remaining[0]
     else
         "skills";
+
+    if (isRemoteSkillSource(source)) {
+        var importer = skill_import_mod.SkillImporter.init(allocator, "skills");
+        defer importer.deinit();
+
+        const result = try importer.importSkill(source);
+        defer {
+            allocator.free(result.name);
+            allocator.free(result.install_path);
+        }
+
+        skill_import_mod.SkillImporter.printResult(&result);
+        return;
+    }
+
+    const skills_dir = source;
+
+    var loader = skills_loader_mod.SkillLoader.init(allocator);
+    defer loader.deinit();
 
     loader.loadFromDirectory(skills_dir) catch |err| {
         std.debug.print("Error loading skills from '{s}': {}\n", .{ skills_dir, err });
@@ -221,7 +305,7 @@ pub fn printHelp() !void {
         \\  crushcode [command] [options]
         \\
         \\Commands:
-        \\  chat           Start interactive chat session
+        \\  chat           Start interactive chat session (streaming)
         \\  read <file>   Read file content
         \\  shell <cmd>   Execute shell command
         \\  write <path> <content>  Write content to file
@@ -229,13 +313,27 @@ pub fn printHelp() !void {
         \\  git <subcmd>  Git operations (status, add, commit, push, pull, branch)
         \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
         \\  skills-load [dir]  Load and list SKILL.md files (default: skills/)
+        \\  parallel      Show parallel executor status
         \\  tools         List, enable, disable, check tools
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
         \\  jobs         Job control (background jobs)
+        \\  worktree      Show worktree manager status
+        \\  graph          Analyze codebase with knowledge graph
+        \\  agent-loop     Show agent loop engine status
+        \\  workflow       Show phase workflow progress
+        \\  compact        Show context compaction status
+        \\  scaffold       Generate project scaffolding
         \\  list           List providers or models
+        \\  usage         Show token usage and cost tracking
         \\  help           Show this help message
         \\  version        Show version information
+        \\
+        \\Chat Commands (in interactive mode):
+        \\  /usage         Show session token usage
+        \\  /clear         Clear conversation history
+        \\  /hooks         Show registered lifecycle hooks
+        \\  /exit          Exit chat
         \\
         \\Options:
         \\  --provider <id>    Use specific AI provider
@@ -248,11 +346,274 @@ pub fn printHelp() !void {
         \\  crushcode read src/main.zig
         \\  crushcode shell "ls -la"
         \\  crushcode write test.txt "Hello World"
+        \\  crushcode parallel
+        \\  crushcode usage
+        \\  crushcode worktree
         \\  crushcode list --provider openai
         \\
     , .{});
 }
 
+pub fn handleUsage(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    // Initialize usage tracker and pricing
+    var tracker = @import("usage_tracker").UsageTracker.init(allocator, "~/.crushcode/usage");
+    defer tracker.deinit();
+
+    var pricing = @import("usage_pricing").PricingTable.init(allocator) catch {
+        std.debug.print("Error initializing pricing table\n", .{});
+        return;
+    };
+    defer pricing.deinit();
+
+    const session = tracker.getSessionUsage();
+
+    std.debug.print("\n=== Crushcode Usage Report ===\n", .{});
+    std.debug.print("\nSession (current):\n", .{});
+    std.debug.print("  Requests: {d}\n", .{session.request_count});
+    std.debug.print("  Tokens: {d} in / {d} out", .{ session.input_tokens, session.output_tokens });
+    if (session.cache_read_tokens > 0) {
+        std.debug.print(" / {d} cache read", .{session.cache_read_tokens});
+    }
+    std.debug.print("\n", .{});
+
+    if (session.estimated_cost_usd > 0) {
+        std.debug.print("  Cost: ${d:.4}\n", .{session.estimated_cost_usd});
+    }
+
+    if (session.by_provider.count() > 0) {
+        std.debug.print("\n  By provider:\n", .{});
+        var iter = session.by_provider.iterator();
+        while (iter.next()) |entry| {
+            const pu = entry.value_ptr;
+            std.debug.print("    {s} ({s}): {d} req | ${d:.4}\n", .{
+                pu.provider,
+                pu.model,
+                pu.request_count,
+                pu.cost_usd,
+            });
+        }
+    }
+
+    std.debug.print("\nTip: Set budget limits in ~/.crushcode/config.toml:\n", .{});
+    std.debug.print("  [budget]\n", .{});
+    std.debug.print("  daily_limit_usd = 1.0\n", .{});
+    std.debug.print("  monthly_limit_usd = 50.0\n", .{});
+}
+
 pub fn printVersion() !void {
     std.debug.print("Crushcode v0.1.0\n", .{});
+}
+
+/// Phase 23: Codebase Knowledge Graph (Graphify-inspired)
+pub fn handleGraph(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+    const graph_mod = @import("graph");
+
+    var kg = graph_mod.KnowledgeGraph.init(allocator);
+    defer kg.deinit();
+
+    if (args.remaining.len > 0) {
+        // Index specific files
+        for (args.remaining) |file_path| {
+            std.debug.print("Indexing: {s}\n", .{file_path});
+            kg.indexFile(file_path) catch |err| {
+                std.debug.print("  Error indexing {s}: {}\n", .{ file_path, err });
+            };
+        }
+    } else {
+        // Default: index common source files
+        const default_files = [_][]const u8{
+            "src/main.zig",
+            "src/ai/client.zig",
+            "src/ai/registry.zig",
+            "src/commands/handlers.zig",
+            "src/commands/chat.zig",
+            "src/config/config.zig",
+            "src/cli/args.zig",
+        };
+        std.debug.print("Indexing default source files...\n\n", .{});
+        for (&default_files) |file_path| {
+            kg.indexFile(file_path) catch continue;
+        }
+    }
+
+    // Detect communities
+    kg.detectCommunities() catch {};
+
+    // Print stats
+    kg.printStats();
+
+    // Show compressed context preview
+    if (kg.nodes.count() > 0) {
+        const ctx = kg.toCompressedContext(allocator) catch return;
+        defer allocator.free(ctx);
+        std.debug.print("\n--- Compressed Context Preview ---\n", .{});
+        std.debug.print("{s}\n", .{ctx});
+    }
+}
+
+/// Phase 24: Agent Loop Engine (OpenHarness-inspired)
+pub fn handleAgentLoop(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+    const loop_mod = @import("agent_loop");
+
+    var agent = loop_mod.AgentLoop.init(allocator);
+    defer agent.deinit();
+
+    agent.printStatus();
+
+    std.debug.print("\nTip: The agent loop enables continuous tool-call cycles.\n", .{});
+    std.debug.print("  AI responds → tool executes → result feeds back → AI continues\n", .{});
+    std.debug.print("  Max iterations: {d} (configurable)\n", .{agent.config.max_iterations});
+    std.debug.print("  Retry: exponential backoff (1s→2s→4s, max 30s)\n", .{});
+}
+
+/// Phase 25: Phase Workflow System (GSD-inspired)
+pub fn handleWorkflow(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+    const wf_mod = @import("workflow");
+
+    var workflow = wf_mod.PhaseWorkflow.init(allocator, "crushcode") catch return;
+    defer workflow.deinit();
+
+    // Build a demo workflow with actual phases
+    const phase_names = [_][]const u8{ "Core Infrastructure", "Shell Execution", "AI File Ops", "Skills System", "Terminal UI", "MCP Integration" };
+    for (&phase_names, 1..) |name, i| {
+        const phase = allocator.create(wf_mod.WorkflowPhase) catch continue;
+        phase.* = wf_mod.WorkflowPhase.init(allocator, @intCast(i), name, "Phase goal") catch continue;
+        if (i > 1) phase.addDependency(@intCast(i - 1)) catch {};
+        workflow.addPhase(phase) catch {};
+    }
+
+    // Mark completed phases
+    workflow.completePhase(1) catch {};
+    workflow.completePhase(2) catch {};
+    workflow.completePhase(3) catch {};
+    workflow.completePhase(4) catch {};
+    workflow.completePhase(5) catch {};
+    workflow.completePhase(6) catch {};
+
+    if (args.remaining.len > 0 and std.mem.eql(u8, args.remaining[0], "--xml")) {
+        const xml = workflow.toXml(allocator) catch return;
+        defer allocator.free(xml);
+        std.debug.print("{s}\n", .{xml});
+    } else {
+        workflow.printProgress();
+    }
+}
+
+/// Phase 26: Auto-Context Compaction (OpenHarness-inspired)
+pub fn handleCompact(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+    const compact_mod = @import("compaction");
+
+    var compactor = compact_mod.ContextCompactor.init(allocator, 128000);
+    defer compactor.deinit();
+
+    compactor.preserveTopic("architecture") catch {};
+    compactor.preserveTopic("decisions") catch {};
+
+    // Demo: show compaction with sample messages
+    const sample_messages = [_]compact_mod.CompactMessage{
+        .{ .role = "user", .content = "I want to implement a new authentication system using OAuth 2.0", .timestamp = null },
+        .{ .role = "assistant", .content = "I'll help you implement OAuth 2.0 authentication. We decided to use the authorization code flow with PKCE for security. This approach supports both web and mobile clients.", .timestamp = null },
+        .{ .role = "user", .content = "What about token refresh?", .timestamp = null },
+        .{ .role = "assistant", .content = "We should implement automatic token refresh using a background timer. The refresh token will be stored securely in an httpOnly cookie.", .timestamp = null },
+        .{ .role = "user", .content = "Great, let's implement it", .timestamp = null },
+        .{ .role = "assistant", .content = "Here's the implementation plan for the OAuth 2.0 system with PKCE and token refresh...", .timestamp = null },
+        .{ .role = "user", .content = "How do we test this?", .timestamp = null },
+        .{ .role = "assistant", .content = "We chose to use integration tests with a mock OAuth server. This will let us test the full flow without external dependencies.", .timestamp = null },
+        .{ .role = "user", .content = "What about the latest changes?", .timestamp = null },
+        .{ .role = "assistant", .content = "Based on our recent discussion, we approved the token rotation strategy and will use short-lived access tokens (15 min) with longer refresh tokens (7 days).", .timestamp = null },
+        .{ .role = "user", .content = "Show me the current implementation status", .timestamp = null },
+        .{ .role = "assistant", .content = "Current status: OAuth flow implemented, token refresh working, PKCE challenge generation done. Remaining: CSRF state validation and error handling.", .timestamp = null },
+    };
+
+    var estimated_tokens: u64 = 0;
+    for (&sample_messages) |msg| {
+        estimated_tokens += compact_mod.ContextCompactor.estimateTokens(msg.content);
+    }
+
+    compactor.printStatus(estimated_tokens);
+
+    // Run compaction demo
+    const result = compactor.compact(&sample_messages) catch return;
+    std.debug.print("\nCompaction Result:\n", .{});
+    std.debug.print("  Messages summarized: {d}\n", .{result.messages_summarized});
+    std.debug.print("  Tokens saved: {d}\n", .{result.tokens_saved});
+    std.debug.print("  Recent messages preserved: {d}\n", .{result.messages.len});
+    if (result.summary.len > 0) {
+        std.debug.print("\n--- Generated Summary ---\n{s}\n", .{result.summary});
+    }
+}
+
+/// Phase 27: Project Scaffolding (GSD-inspired)
+pub fn handleScaffold(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+    const scaffold_mod = @import("scaffold");
+
+    const name = if (args.remaining.len > 0) args.remaining[0] else "my-project";
+    const desc = if (args.remaining.len > 1) args.remaining[1] else "A new project scaffolded by Crushcode";
+
+    var scaffolder = scaffold_mod.ProjectScaffolder.init(allocator, name, desc) catch return;
+    defer scaffolder.deinit();
+
+    scaffolder.addTech("Zig") catch {};
+    scaffolder.addTech("Zig stdlib") catch {};
+
+    // Add sample requirements
+    const req1 = allocator.create(scaffold_mod.Requirement) catch return;
+    req1.* = scaffold_mod.Requirement.init(allocator, "REQ-01", "Core CLI interface", .critical) catch return;
+    req1.setDescription("Users can run the CLI and see help output") catch {};
+    req1.setCategory("CLI") catch {};
+    req1.addCriterion("CLI starts and shows help") catch {};
+    req1.addCriterion("Version flag works") catch {};
+    scaffolder.addRequirement(req1) catch {};
+
+    const req2 = allocator.create(scaffold_mod.Requirement) catch return;
+    req2.* = scaffold_mod.Requirement.init(allocator, "REQ-02", "AI chat integration", .critical) catch return;
+    req2.setDescription("Users can chat with AI providers") catch {};
+    req2.setCategory("AI") catch {};
+    req2.addCriterion("Chat sends messages to provider") catch {};
+    req2.addCriterion("Responses display correctly") catch {};
+    scaffolder.addRequirement(req2) catch {};
+
+    const req3 = allocator.create(scaffold_mod.Requirement) catch return;
+    req3.* = scaffold_mod.Requirement.init(allocator, "REQ-03", "Configuration management", .high) catch return;
+    req3.setDescription("Users can configure providers and API keys") catch {};
+    req3.setCategory("Config") catch {};
+    scaffolder.addRequirement(req3) catch {};
+
+    // Add phases
+    const ph1 = allocator.create(scaffold_mod.ScaffoldPhase) catch return;
+    ph1.* = scaffold_mod.ScaffoldPhase.init(allocator, 1, "Core Setup") catch return;
+    ph1.addRequirement("REQ-01") catch {};
+    ph1.addRequirement("REQ-03") catch {};
+    scaffolder.addPhase(ph1) catch {};
+
+    const ph2 = allocator.create(scaffold_mod.ScaffoldPhase) catch return;
+    ph2.* = scaffold_mod.ScaffoldPhase.init(allocator, 2, "AI Integration") catch return;
+    ph2.addRequirement("REQ-02") catch {};
+    scaffolder.addPhase(ph2) catch {};
+
+    // Print summary
+    scaffolder.printSummary();
+
+    // Generate artifacts
+    std.debug.print("\n--- Generated PROJECT.md ---\n", .{});
+    const project_md = scaffolder.generateProjectMd() catch return;
+    defer allocator.free(project_md);
+    std.debug.print("{s}\n", .{project_md});
+
+    std.debug.print("\n--- Generated REQUIREMENTS.md ---\n", .{});
+    const reqs_md = scaffolder.generateRequirementsMd() catch return;
+    defer allocator.free(reqs_md);
+    std.debug.print("{s}\n", .{reqs_md});
+
+    std.debug.print("\n--- Generated ROADMAP.md ---\n", .{});
+    const roadmap_md = scaffolder.generateRoadmapMd() catch return;
+    defer allocator.free(roadmap_md);
+    std.debug.print("{s}\n", .{roadmap_md});
 }

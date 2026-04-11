@@ -39,11 +39,19 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "git") or
         std.mem.eql(u8, command, "skill") or
         std.mem.eql(u8, command, "skills-load") or
+        std.mem.eql(u8, command, "parallel") or
         std.mem.eql(u8, command, "tools") or
         std.mem.eql(u8, command, "tui") or
         std.mem.eql(u8, command, "install") or
         std.mem.eql(u8, command, "jobs") or
+        std.mem.eql(u8, command, "worktree") or
+        std.mem.eql(u8, command, "graph") or
+        std.mem.eql(u8, command, "agent-loop") or
+        std.mem.eql(u8, command, "workflow") or
+        std.mem.eql(u8, command, "compact") or
+        std.mem.eql(u8, command, "scaffold") or
         std.mem.eql(u8, command, "list") or
+        std.mem.eql(u8, command, "usage") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
         std.mem.eql(u8, command, "-h") or
@@ -132,6 +140,8 @@ pub fn main() !void {
         try commands.handleSkill(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
         try commands.handleSkillsLoad(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
+        try commands.handleParallel(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
         try commands.handleTools(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
@@ -140,8 +150,22 @@ pub fn main() !void {
         try commands.handleInstall(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
         try commands.handleJobs(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "worktree")) {
+        try commands.handleWorktree(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "graph")) {
+        try commands.handleGraph(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "agent-loop")) {
+        try commands.handleAgentLoop(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "workflow")) {
+        try commands.handleWorkflow(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "compact")) {
+        try commands.handleCompact(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "scaffold")) {
+        try commands.handleScaffold(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "list")) {
         try commands.handleList(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "usage")) {
+        try commands.handleUsage(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "help") or
         std.mem.eql(u8, parsed_args.command, "--help") or
         std.mem.eql(u8, parsed_args.command, "-h"))

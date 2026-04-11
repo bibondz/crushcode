@@ -140,9 +140,9 @@ pub const ToolRegistry = struct {
     }
 
     /// Get a tool by name (checks aliases too)
-    pub fn get(self: *ToolRegistry, name: []const u8) ?*const Tool {
+    pub fn get(self: *ToolRegistry, name: []const u8) ?Tool {
         // Direct lookup first
-        if (self.tools.get(name)) |*tool| {
+        if (self.tools.get(name)) |tool| {
             return tool;
         }
         // Check aliases
