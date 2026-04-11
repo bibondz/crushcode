@@ -6,6 +6,11 @@ const chat_mod = @import("chat");
 const read_mod = @import("read");
 const shell_mod = @import("shell");
 const write_mod = @import("write");
+const git_mod = @import("git");
+const skills_mod = @import("skills");
+const tui_mod = @import("tui");
+const install_mod = @import("install");
+const jobs_mod = @import("jobs");
 
 const Config = config_mod.Config;
 
@@ -27,6 +32,26 @@ pub fn handleWrite(args: args_mod.Args) !void {
 
 pub fn handleEdit(args: args_mod.Args) !void {
     try write_mod.handleEdit(args.remaining);
+}
+
+pub fn handleGit(args: args_mod.Args) !void {
+    try git_mod.handleGit(args.remaining);
+}
+
+pub fn handleSkill(args: args_mod.Args) !void {
+    try skills_mod.handleSkill(args.remaining);
+}
+
+pub fn handleTUI(_: args_mod.Args) !void {
+    try tui_mod.runInteractive();
+}
+
+pub fn handleInstall(args: args_mod.Args) !void {
+    try install_mod.handleInstall(args.remaining);
+}
+
+pub fn handleJobs(args: args_mod.Args) !void {
+    try jobs_mod.handleJobs(args.remaining);
 }
 
 pub fn handleList(args: args_mod.Args) !void {
@@ -73,6 +98,11 @@ pub fn printHelp() !void {
         \\  shell <cmd>   Execute shell command
         \\  write <path> <content>  Write content to file
         \\  edit <file>   Edit/create a file
+        \\  git <subcmd>  Git operations (status, add, commit, push, pull, branch)
+        \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
+        \\  tui          Launch interactive terminal UI
+        \\  install      Show installation instructions
+        \\  jobs         Job control (background jobs)
         \\  list           List providers or models
         \\  help           Show this help message
         \\  version        Show version information

@@ -36,6 +36,11 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "shell") or
         std.mem.eql(u8, command, "write") or
         std.mem.eql(u8, command, "edit") or
+        std.mem.eql(u8, command, "git") or
+        std.mem.eql(u8, command, "skill") or
+        std.mem.eql(u8, command, "tui") or
+        std.mem.eql(u8, command, "install") or
+        std.mem.eql(u8, command, "jobs") or
         std.mem.eql(u8, command, "list") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
@@ -119,6 +124,16 @@ pub fn main() !void {
         try commands.handleWrite(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "edit")) {
         try commands.handleEdit(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "git")) {
+        try commands.handleGit(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "skill")) {
+        try commands.handleSkill(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
+        try commands.handleTUI(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "install")) {
+        try commands.handleInstall(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
+        try commands.handleJobs(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "list")) {
         try commands.handleList(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "help") or

@@ -1,5 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
+const MCPClient = @import("client.zig").MCPClient;
+const MCPServerConfig = @import("client.zig").MCPServerConfig;
 
 const Allocator = std.mem.Allocator;
 

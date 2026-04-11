@@ -7,9 +7,112 @@ pub const ShellResult = struct {
     stderr: []const u8,
 };
 
+/// Redirection types (using integers to avoid enum parsing issues)
+const RT_OUTPUT: u8 = 0;
+const RT_APPEND: u8 = 1;
+const RT_INPUT: u8 = 2;
+const RT_ERROR: u8 = 3;
+const RT_ERROR_APPEND: u8 = 4;
+const RT_BOTH: u8 = 5;
+
+const ParsedRedirect = struct {
+    redirect_type: u8,
+    target: []const u8,
+    is_pipe: bool,
+};
+
+/// Parse command string and extract redirections (strips them from command)
+fn parseRedirections(command: []const u8, allocator: std.mem.Allocator) struct { command: []const u8, redirections: []const ParsedRedirect } {
+    var redirections = std.ArrayList(ParsedRedirect).init(allocator);
+    var clean_command = std.ArrayList(u8).init(allocator);
+    var i: usize = 0;
+
+    while (i < command.len) {
+        const char = command[i];
+        if (i + 1 < command.len) {
+            const next = command[i + 1];
+
+            if (char == '|') {
+                redirections.append(.{ .redirect_type = RT_OUTPUT, .target = "", .is_pipe = true }) catch {};
+                i += 1;
+                continue;
+            }
+
+            if (char == '>' and next == '>') {
+                const ts = i + 2;
+                var te = ts;
+                while (te < command.len and command[te] == ' ') te += 1;
+                while (te < command.len and command[te] != ' ') te += 1;
+                if (te > ts) {
+                    redirections.append(.{ .redirect_type = RT_APPEND, .target = std.mem.trim(u8, command[ts..te], " "), .is_pipe = false }) catch {};
+                }
+                i = te;
+                continue;
+            }
+
+            if (char == '>') {
+                const ts = i + 1;
+                var te = ts;
+                while (te < command.len and command[te] == ' ') te += 1;
+                while (te < command.len and command[te] != ' ') te += 1;
+                if (te > ts) {
+                    redirections.append(.{ .redirect_type = RT_OUTPUT, .target = std.mem.trim(u8, command[ts..te], " "), .is_pipe = false }) catch {};
+                }
+                i = te;
+                continue;
+            }
+
+            if (char == '2' and next == '>') {
+                const rs = i + 2;
+                if (rs < command.len and command[rs] == '>') {
+                    const ts = rs + 1;
+                    var te = ts;
+                    while (te < command.len and command[te] == ' ') te += 1;
+                    while (te < command.len and command[te] != ' ') te += 1;
+                    if (te > ts) {
+                        redirections.append(.{ .redirect_type = RT_ERROR_APPEND, .target = std.mem.trim(u8, command[ts..te], " "), .is_pipe = false }) catch {};
+                    }
+                    i = te;
+                    continue;
+                } else {
+                    var te = rs;
+                    while (te < command.len and command[te] == ' ') te += 1;
+                    while (te < command.len and command[te] != ' ') te += 1;
+                    if (te > rs) {
+                        redirections.append(.{ .redirect_type = RT_ERROR, .target = std.mem.trim(u8, command[rs..te], " "), .is_pipe = false }) catch {};
+                    }
+                    i = te;
+                    continue;
+                }
+            }
+
+            if (char == '<') {
+                const ts = i + 1;
+                var te = ts;
+                while (te < command.len and command[te] == ' ') te += 1;
+                while (te < command.len and command[te] != ' ') te += 1;
+                if (te > ts) {
+                    redirections.append(.{ .redirect_type = RT_INPUT, .target = std.mem.trim(u8, command[ts..te], " "), .is_pipe = false }) catch {};
+                }
+                i = te;
+                continue;
+            }
+        }
+
+        clean_command.append(char) catch {};
+        i += 1;
+    }
+
+    return .{ .command = clean_command.toOwnedSlice() catch command, .redirections = redirections.toOwnedSlice() catch &.{} };
+}
+
 /// Execute shell command via std.process.Child with optional timeout
 pub fn executeShellCommand(command: []const u8, timeout_seconds: ?u32) !ShellResult {
-    const argv: [3][]const u8 = .{ "sh", "-c", command };
+    const allocator = std.heap.page_allocator;
+    const parsed = parseRedirections(command, allocator);
+    const cmd = parsed.command;
+
+    const argv: [3][]const u8 = .{ "sh", "-c", cmd };
     var child = std.process.Child.init(&argv, std.heap.page_allocator);
 
     _ = try child.spawn();

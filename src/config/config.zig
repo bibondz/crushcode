@@ -1,4 +1,5 @@
 const std = @import("std");
+const QuantizationConfig = @import("quantization_config.zig").QuantizationConfig;
 
 pub const Config = struct {
     allocator: std.mem.Allocator,
@@ -6,6 +7,7 @@ pub const Config = struct {
     default_model: []const u8,
     system_prompt: []const u8,
     api_keys: std.StringHashMap([]const u8),
+    quantization: QuantizationConfig,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -14,6 +16,7 @@ pub const Config = struct {
             .default_model = "",
             .system_prompt = "",
             .api_keys = std.StringHashMap([]const u8).init(allocator),
+            .quantization = QuantizationConfig.init(allocator),
         };
     }
 
@@ -27,6 +30,7 @@ pub const Config = struct {
         if (self.default_provider.len > 0) self.allocator.free(self.default_provider);
         if (self.default_model.len > 0) self.allocator.free(self.default_model);
         if (self.system_prompt.len > 0) self.allocator.free(self.system_prompt);
+        self.quantization.deinit();
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -70,18 +74,40 @@ pub const Config = struct {
 
     fn parseToml(self: *Config, content: []const u8) !void {
         var line_iter = std.mem.splitScalar(u8, content, '\n');
+        var in_quantization_section = false;
+        var quantization_content = std.ArrayList(u8).init(self.allocator);
+        defer quantization_content.deinit();
 
         while (line_iter.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r");
             if (trimmed.len == 0 or trimmed[0] == '#') continue;
 
             if (std.mem.startsWith(u8, trimmed, "[")) {
+                // Section handling
+                if (std.mem.eql(u8, trimmed, "[quantization]")) {
+                    in_quantization_section = true;
+                    continue;
+                } else if (in_quantization_section) {
+                    // End of quantization section
+                    in_quantization_section = false;
+                }
                 continue;
             }
 
             if (std.mem.indexOfScalar(u8, trimmed, '=') != null) {
-                try parseKeyValue(self, trimmed);
+                if (in_quantization_section) {
+                    // Collect quantization config
+                    try quantization_content.appendSlice(trimmed);
+                    try quantization_content.append('\n');
+                } else {
+                    try parseKeyValue(self, trimmed);
+                }
             }
+        }
+
+        // Parse quantization config if we collected any
+        if (quantization_content.items.len > 0) {
+            try self.quantization.loadFromToml(quantization_content.items);
         }
     }
 
@@ -133,7 +159,10 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
     const file = try std.fs.cwd().createFile(config_path, .{});
     defer file.close();
 
-    const default_content =
+    var default_config = Config.init(std.heap.page_allocator);
+    defer default_config.deinit();
+
+    const api_keys_section =
         \\# Crushcode Configuration File
         \\
         \\# Default provider and model
@@ -163,7 +192,17 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
         \\opencode_go = "your-opencode-go-api-key"
     ;
 
-    _ = try file.writeAll(default_content);
+    const quantization_section = default_config.quantization.defaultToml();
+
+    var default_content = std.ArrayList(u8).init(std.heap.page_allocator);
+    defer default_content.deinit();
+
+    try default_content.appendSlice(api_keys_section);
+    try default_content.append('\n');
+    try default_content.append('\n');
+    try default_content.appendSlice(quantization_section);
+
+    _ = try file.writeAll(default_content.items);
 }
 
 pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
