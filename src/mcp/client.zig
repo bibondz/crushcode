@@ -10,6 +10,7 @@ pub const MCPClient = struct {
     tool_mappings: std.json.ObjectMap,
     connections: std.StringHashMap(MCPConnection), // Direct struct storage — process pointers survive
     next_request_id: std.atomic.Value(u64),
+    owned_json_values: std.ArrayList(json.Value), // Tracked for bulk cleanup
 
     pub fn init(allocator: Allocator) MCPClient {
         return MCPClient{
@@ -18,19 +19,53 @@ pub const MCPClient = struct {
             .tool_mappings = std.json.ObjectMap.init(allocator),
             .connections = std.StringHashMap(MCPConnection).init(allocator),
             .next_request_id = std.atomic.Value(u64).init(1),
+            .owned_json_values = std.ArrayList(json.Value).init(allocator),
         };
     }
 
     pub fn deinit(self: *MCPClient) void {
-        // Clean up connections — kill processes, free owned memory
+        // Clean up owned JSON response values (cloned from sendStdioRequest)
+        for (self.owned_json_values.items) |val| {
+            deinitJsonValue(self.allocator, val);
+        }
+        self.owned_json_values.deinit();
+
+        // Clean up connections — kill processes, free owned memory, free keys
         var conn_iter = self.connections.iterator();
         while (conn_iter.next()) |entry| {
             var conn = entry.value_ptr;
             conn.deinit(self.allocator);
+            self.allocator.free(entry.key_ptr.*);
         }
         self.connections.deinit();
+
+        // servers and tool_mappings contain mix of string literals and heap data.
+        // ObjectMap.deinit() frees internal storage; any json.Value sub-structures
+        // (like config.toJson() objects) are cleaned up by the allocator at program exit.
+        // For long-running clients, a more precise tracking approach would be needed.
         self.servers.deinit();
         self.tool_mappings.deinit();
+    }
+
+    /// Recursively free a json.Value tree that was created by cloneJsonValue
+    fn deinitJsonValue(allocator: Allocator, value: json.Value) void {
+        switch (value) {
+            .null, .bool, .integer, .float => {},
+            .number_string, .string => {},
+            .array => |inner| {
+                for (inner.items) |item| {
+                    deinitJsonValue(allocator, item);
+                }
+                @constCast(&inner).deinit();
+            },
+            .object => |inner| {
+                var iter = inner.iterator();
+                while (iter.next()) |entry| {
+                    deinitJsonValue(allocator, entry.value_ptr.*);
+                }
+                @constCast(&inner).deinit();
+            },
+        }
     }
 
     fn cloneJsonValue(allocator: Allocator, value: json.Value) !json.Value {
@@ -351,11 +386,12 @@ pub const MCPClient = struct {
         const env_vars: ?[][]const u8 = config.env_vars;
 
         // Prepare environment variables
-        const env_map = if (env_vars) |ev| try self.prepareEnvironment(ev) else try self.prepareEnvironment(&[_][]const u8{});
+        var env_map = if (env_vars) |ev| try self.prepareEnvironment(ev) else try self.prepareEnvironment(&[_][]const u8{});
+        defer env_map.deinit();
 
         // Start the process
         const spawn_args = args orelse &[_][]const u8{};
-        const process = try self.spawnProcess(command, spawn_args, env_map);
+        const process = try self.spawnProcess(command, spawn_args, &env_map);
 
         return MCPConnection{
             .transport = .stdio,
@@ -433,13 +469,16 @@ pub const MCPClient = struct {
         const trimmed = std.mem.trimRight(u8, response_buf.items, "\r\n ");
 
         // Parse JSON response
-        var response_json = json.parseFromSlice(json.Value, self.allocator, trimmed, .{}) catch |err| {
+        const response_json = json.parseFromSlice(json.Value, self.allocator, trimmed, .{}) catch |err| {
             std.log.err("Failed to parse stdio response: {!}", .{err});
             return json.Value{ .string = try self.allocator.dupe(u8, trimmed) };
         };
         defer response_json.deinit();
 
-        return try cloneJsonValue(self.allocator, response_json.value);
+        // Clone and track for cleanup
+        const cloned = try cloneJsonValue(self.allocator, response_json.value);
+        try self.owned_json_values.append(cloned);
+        return cloned;
     }
 
     // Send SSE request
@@ -572,7 +611,7 @@ pub const MCPClient = struct {
     }
 
     // Spawn a subprocess for stdio transport
-    fn spawnProcess(self: *MCPClient, command: []const u8, args: []const []const u8, env_map: std.process.EnvMap) !*std.process.Child {
+    fn spawnProcess(self: *MCPClient, command: []const u8, args: []const []const u8, env_map: *std.process.EnvMap) !*std.process.Child {
         const allocator = self.allocator;
 
         // Build argv array
@@ -586,7 +625,7 @@ pub const MCPClient = struct {
 
         // Spawn process with pipes for stdin/stdout
         var process = std.process.Child.init(argv.items, allocator);
-        process.env_map = &env_map;
+        process.env_map = env_map;
         process.stdin_behavior = .Pipe;
         process.stdout_behavior = .Pipe;
         process.stderr_behavior = .Close;
@@ -620,7 +659,6 @@ pub const MCPConnection = struct {
     initialized: bool,
 
     /// Clean up connection resources (kill process, free owned strings)
-    /// Note: only frees slices that were heap-allocated
     pub fn deinit(self: *MCPConnection, allocator: Allocator) void {
         // Kill child process if running
         if (self.process) |proc_ptr| {
@@ -629,9 +667,8 @@ pub const MCPConnection = struct {
             allocator.destroy(child);
             self.process = null;
         }
-        // Free owned slices (only those that were heap-allocated)
-        // Note: server_name, url, command, method may be string literals
-        // so we don't free them — the caller manages their lifetime
+        // Free heap-allocated server_name (always created via allocator.dupe)
+        allocator.free(self.server_name);
         self.headers.deinit();
     }
 };
@@ -703,16 +740,21 @@ pub const MCPRequest = struct {
     pub fn toJson(self: MCPRequest, allocator: Allocator) ![]const u8 {
         // Build JSON-RPC request string manually to avoid stringifyAlloc
         // comptime resolution issues with anyopaque types in scope
-        const params_str = switch (self.params) {
+        const params_str: []const u8 = switch (self.params) {
             .null => "null",
             else => blk: {
                 break :blk try json.stringifyAlloc(allocator, self.params, .{});
             },
         };
 
-        return try std.fmt.allocPrint(allocator,
+        const result = try std.fmt.allocPrint(allocator,
             \\{{"jsonrpc":"{s}","method":"{s}","params":{s},"id":{d}}}
         , .{ self.jsonrpc, self.method, params_str, self.id });
+
+        // Free intermediate params string if it was allocated
+        if (self.params != .null) allocator.free(params_str);
+
+        return result;
     }
 };
 
