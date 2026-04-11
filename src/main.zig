@@ -39,6 +39,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "git") or
         std.mem.eql(u8, command, "skill") or
         std.mem.eql(u8, command, "skills-load") or
+        std.mem.eql(u8, command, "tools") or
         std.mem.eql(u8, command, "tui") or
         std.mem.eql(u8, command, "install") or
         std.mem.eql(u8, command, "jobs") or
@@ -131,6 +132,8 @@ pub fn main() !void {
         try commands.handleSkill(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
         try commands.handleSkillsLoad(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
+        try commands.handleTools(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
         try commands.handleTUI(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "install")) {

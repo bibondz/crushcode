@@ -12,6 +12,7 @@ const tui_mod = @import("tui");
 const install_mod = @import("install");
 const jobs_mod = @import("jobs");
 const skills_loader_mod = @import("skills_loader");
+const tools_mod = @import("tools");
 
 const Config = config_mod.Config;
 
@@ -118,6 +119,69 @@ pub fn handleSkillsLoad(args: args_mod.Args) !void {
     std.debug.print("{s}\n", .{xml});
 }
 
+pub fn handleTools(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var registry = tools_mod.ToolRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.registerBuiltinTools();
+
+    // Handle subcommands
+    if (args.remaining.len > 0) {
+        const subcmd = args.remaining[0];
+
+        if (std.mem.eql(u8, subcmd, "enable") and args.remaining.len > 1) {
+            registry.enable(args.remaining[1]);
+            std.debug.print("Enabled tool: {s}\n", .{args.remaining[1]});
+            return;
+        } else if (std.mem.eql(u8, subcmd, "disable") and args.remaining.len > 1) {
+            registry.disable(args.remaining[1]);
+            std.debug.print("Disabled tool: {s}\n", .{args.remaining[1]});
+            return;
+        } else if (std.mem.eql(u8, subcmd, "check") and args.remaining.len > 1) {
+            const tool_name = args.remaining[1];
+            if (registry.isAvailable(tool_name)) {
+                std.debug.print("Tool '{s}' is available ✓\n", .{tool_name});
+            } else if (registry.get(tool_name) != null) {
+                std.debug.print("Tool '{s}' is registered but disabled ✗\n", .{tool_name});
+            } else {
+                std.debug.print("Tool '{s}' not found\n", .{tool_name});
+            }
+            return;
+        } else if (std.mem.eql(u8, subcmd, "category") and args.remaining.len > 1) {
+            const cat_name = args.remaining[1];
+            const category = parseCategory(cat_name) orelse {
+                std.debug.print("Unknown category: {s}\n", .{cat_name});
+                std.debug.print("Categories: file_ops, shell, git, network, ai, mcp, system, custom\n", .{});
+                return;
+            };
+            const tools_in_cat = registry.getByCategory(allocator, category) catch return;
+            defer allocator.free(tools_in_cat);
+            std.debug.print("Tools in {s}:\n", .{cat_name});
+            for (tools_in_cat) |t| {
+                std.debug.print("  - {s}\n", .{t});
+            }
+            return;
+        }
+    }
+
+    // Default: list all tools
+    registry.printTools();
+}
+
+fn parseCategory(name: []const u8) ?tools_mod.Tool.ToolCategory {
+    if (std.mem.eql(u8, name, "file_ops")) return .file_ops;
+    if (std.mem.eql(u8, name, "shell")) return .shell;
+    if (std.mem.eql(u8, name, "git")) return .git;
+    if (std.mem.eql(u8, name, "network")) return .network;
+    if (std.mem.eql(u8, name, "ai")) return .ai;
+    if (std.mem.eql(u8, name, "mcp")) return .mcp;
+    if (std.mem.eql(u8, name, "system")) return .system;
+    if (std.mem.eql(u8, name, "custom")) return .custom;
+    return null;
+}
+
 pub fn handleList(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
@@ -165,6 +229,7 @@ pub fn printHelp() !void {
         \\  git <subcmd>  Git operations (status, add, commit, push, pull, branch)
         \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
         \\  skills-load [dir]  Load and list SKILL.md files (default: skills/)
+        \\  tools         List, enable, disable, check tools
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
         \\  jobs         Job control (background jobs)

@@ -161,6 +161,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Tool registry module
+    const tools_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/registry.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Handlers module
     const handlers_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/handlers.zig"),
@@ -180,6 +187,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("install", install_mod);
     handlers_mod.addImport("jobs", jobs_mod);
     handlers_mod.addImport("skills_loader", skills_loader_mod);
+    handlers_mod.addImport("tools", tools_mod);
 
     // Main module
     const main_mod = b.createModule(.{
