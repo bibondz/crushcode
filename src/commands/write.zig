@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const fs = std.fs;
 
 pub const FileOperationResult = struct {
@@ -16,7 +17,7 @@ pub fn writeFile(path: []const u8, content: []const u8) !void {
 
 /// Write content to multiple files (for glob patterns)
 pub fn writeFiles(paths: []const []const u8, content: []const u8) FileOperationResult {
-    var errors_buf = std.ArrayList(u8).init(std.heap.page_allocator);
+    var errors_buf = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     defer errors_buf.deinit();
 
     var files_written: usize = 0;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -59,7 +60,7 @@ pub const ShellStrategyPlugin = struct {
     pub fn processArguments(self: *ShellStrategyPlugin, args: []const []const u8) ![][]const u8 {
         _ = self;
 
-        var processed_args = std.ArrayList([]const u8).init(self.allocator);
+        var processed_args = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer processed_args.deinit();
 
         for (args) |arg| {

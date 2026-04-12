@@ -1,4 +1,6 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -12,14 +14,14 @@ pub const Message = struct {
 /// Conversation memory that persists across sessions
 pub const Memory = struct {
     allocator: Allocator,
-    messages: std.ArrayList(Message),
+    messages: array_list_compat.ArrayList(Message),
     max_messages: usize,
     file_path: []const u8,
 
     pub fn init(allocator: Allocator, file_path: []const u8, max_messages: usize) Memory {
         return Memory{
             .allocator = allocator,
-            .messages = std.ArrayList(Message).init(allocator),
+            .messages = array_list_compat.ArrayList(Message).init(allocator),
             .max_messages = max_messages,
             .file_path = file_path,
         };
@@ -59,7 +61,7 @@ pub const Memory = struct {
 
     /// Get messages by role
     pub fn getByRole(self: *Memory, allocator: Allocator, role: []const u8) ![]const Message {
-        var matching = std.ArrayList(Message).init(allocator);
+        var matching = array_list_compat.ArrayList(Message).init(allocator);
         errdefer matching.deinit();
 
         for (self.messages.items) |msg| {
@@ -87,7 +89,7 @@ pub const Memory = struct {
             try std.fs.cwd().makePath(dir);
         }
 
-        const file = try std.fs.cwd().createFile(self.file_path, .{ .truncate = true });
+        const file = file_compat.wrap(try std.fs.cwd().createFile(self.file_path, .{ .truncate = true }));
         defer file.close();
 
         const writer = file.writer();

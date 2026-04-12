@@ -1,4 +1,5 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -85,7 +86,7 @@ pub const ConflictResolver = struct {
 
     /// Print conflict info to stderr
     pub fn printConflict(conflict: Conflict) void {
-        const stderr = std.io.getStdErr().writer();
+        const stderr = file_compat.File.stderr().writer();
         stderr.print("\x1b[33m⚠ Hashline conflict at line {d}:\x1b[0m\n", .{conflict.line_number}) catch {};
         stderr.print("  Expected hash: {x:0>8}\n", .{conflict.expected_hash}) catch {};
         stderr.print("  Actual hash:   {x:0>8}\n", .{conflict.actual_hash}) catch {};

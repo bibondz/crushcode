@@ -1,9 +1,9 @@
 const std = @import("std");
-const types = @import("types.zig");
-const buffer_mod = @import("buffer.zig");
-const display_mod = @import("display.zig");
-const ndjson_mod = @import("parsers/ndjson.zig");
-const sse_mod = @import("parsers/sse.zig");
+const types = @import("types");
+const buffer_mod = @import("buffer");
+const display_mod = @import("display");
+const ndjson_mod = @import("ndjson_mod");
+const sse_mod = @import("sse_mod");
 
 const StreamEvent = types.StreamEvent;
 const StreamFormat = types.StreamFormat;

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
@@ -22,7 +23,7 @@ pub const ParsedSymbol = struct {
     end_line: u32,
     signature: ?[]const u8,
     doc_comment: ?[]const u8,
-    references: std.ArrayList([]const u8), // Symbols this one references
+    references: array_list_compat.ArrayList([]const u8), // Symbols this one references
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, name: []const u8, symbol_type: types.NodeType, line: u32) !ParsedSymbol {
@@ -33,7 +34,7 @@ pub const ParsedSymbol = struct {
             .end_line = line,
             .signature = null,
             .doc_comment = null,
-            .references = std.ArrayList([]const u8).init(allocator),
+            .references = array_list_compat.ArrayList([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
@@ -51,8 +52,8 @@ pub const ParsedSymbol = struct {
 pub const ParseResult = struct {
     file_path: []const u8,
     language: SourceLanguage,
-    symbols: std.ArrayList(*ParsedSymbol),
-    imports: std.ArrayList([]const u8),
+    symbols: array_list_compat.ArrayList(*ParsedSymbol),
+    imports: array_list_compat.ArrayList([]const u8),
     total_lines: u32,
     allocator: Allocator,
 
@@ -60,8 +61,8 @@ pub const ParseResult = struct {
         return ParseResult{
             .file_path = allocator.dupe(u8, file_path) catch "",
             .language = language,
-            .symbols = std.ArrayList(*ParsedSymbol).init(allocator),
-            .imports = std.ArrayList([]const u8).init(allocator),
+            .symbols = array_list_compat.ArrayList(*ParsedSymbol).init(allocator),
+            .imports = array_list_compat.ArrayList([]const u8).init(allocator),
             .total_lines = 0,
             .allocator = allocator,
         };
@@ -119,11 +120,11 @@ pub const SourceParser = struct {
 
         // Parse based on language
         switch (language) {
-            .zig => self.parseZig(content, &result) catch {},
-            .typescript, .javascript => self.parseTypeScript(content, &result) catch {},
-            .python => self.parsePython(content, &result) catch {},
-            .go => self.parseGo(content, &result) catch {},
-            .rust => self.parseRust(content, &result) catch {},
+            .zig => self.parseZig(content, &result) catch |err| std.log.warn("Failed to parse Zig file: {}", .{err}),
+            .typescript, .javascript => self.parseTypeScript(content, &result) catch |err| std.log.warn("Failed to parse TS/JS file: {}", .{err}),
+            .python => self.parsePython(content, &result) catch |err| std.log.warn("Failed to parse Python file: {}", .{err}),
+            .go => self.parseGo(content, &result) catch |err| std.log.warn("Failed to parse Go file: {}", .{err}),
+            .rust => self.parseRust(content, &result) catch |err| std.log.warn("Failed to parse Rust file: {}", .{err}),
             .unknown => {},
         }
 
@@ -134,7 +135,7 @@ pub const SourceParser = struct {
     fn parseZig(self: *SourceParser, content: []const u8, result: *ParseResult) !void {
         var lines = std.mem.splitSequence(u8, content, "\n");
         var line_num: u32 = 0;
-        var doc_lines = std.ArrayList([]const u8).init(self.allocator);
+        var doc_lines = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer {
             for (doc_lines.items) |l| self.allocator.free(l);
             doc_lines.deinit();

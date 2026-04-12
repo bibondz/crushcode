@@ -1,5 +1,6 @@
 const std = @import("std");
-const types = @import("../types.zig");
+const array_list_compat = @import("array_list_compat");
+const types = @import("types");
 
 const StreamEvent = types.StreamEvent;
 const TokenUsage = types.TokenUsage;
@@ -10,18 +11,18 @@ const StreamError = types.StreamError;
 /// Each line is a complete JSON object followed by \n
 pub const NDJsonParser = struct {
     allocator: std.mem.Allocator,
-    partial_line: std.ArrayList(u8),
+    partial_line: array_list_compat.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) NDJsonParser {
         return NDJsonParser{
             .allocator = allocator,
-            .partial_line = std.ArrayList(u8).init(allocator),
+            .partial_line = array_list_compat.ArrayList(u8).init(allocator),
         };
     }
 
     /// Parse a chunk of NDJSON data, returning events for complete lines
     pub fn parse(self: *NDJsonParser, chunk: []const u8) ![]StreamEvent {
-        var events = std.ArrayList(StreamEvent).init(self.allocator);
+        var events = array_list_compat.ArrayList(StreamEvent).init(self.allocator);
         errdefer {
             for (events.items) |_| {}
             events.deinit();
@@ -51,13 +52,11 @@ pub const NDJsonParser = struct {
             }
         }
 
-        // Keep remaining partial line
+        // Keep remaining partial line (shift left in-place, no extra allocation)
         if (start > 0) {
             const remaining = self.partial_line.items[start..];
-            const kept = try self.allocator.dupe(u8, remaining);
-            self.partial_line.clearRetainingCapacity();
-            try self.partial_line.appendSlice(kept);
-            self.allocator.free(kept);
+            std.mem.copyForwards(u8, self.partial_line.items, remaining);
+            self.partial_line.shrinkRetainingCapacity(remaining.len);
         }
 
         return events.toOwnedSlice();
@@ -65,15 +64,13 @@ pub const NDJsonParser = struct {
 
     /// Parse a single NDJSON line into a StreamEvent
     fn parseLine(self: *NDJsonParser, line: []const u8) !StreamEvent {
-        _ = self;
-
         // Try Ollama format first
-        if (try parseOllamaFormat(line)) |event| {
+        if (self.parseOllamaFormat(line)) |event| {
             return event;
         }
 
         // Try generic OpenAI streaming format
-        if (try parseOpenAIStreamFormat(line)) |event| {
+        if (self.parseOpenAIStreamFormat(line)) |event| {
             return event;
         }
 
@@ -82,8 +79,8 @@ pub const NDJsonParser = struct {
 
     /// Parse Ollama NDJSON format
     /// {"model":"...","message":{"role":"assistant","content":"token"},"done":false}
-    fn parseOllamaFormat(line: []const u8) ?StreamEvent {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, line, .{
+    fn parseOllamaFormat(self: *NDJsonParser, line: []const u8) ?StreamEvent {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{
             .ignore_unknown_fields = true,
         }) catch return null;
         defer parsed.deinit();
@@ -135,8 +132,8 @@ pub const NDJsonParser = struct {
 
     /// Parse OpenAI-compatible streaming format
     /// {"id":"...","choices":[{"delta":{"content":"token"}}]}
-    fn parseOpenAIStreamFormat(line: []const u8) ?StreamEvent {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, line, .{
+    fn parseOpenAIStreamFormat(self: *NDJsonParser, line: []const u8) ?StreamEvent {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{
             .ignore_unknown_fields = true,
         }) catch return null;
         defer parsed.deinit();
@@ -224,14 +221,25 @@ pub const NDJsonParser = struct {
 
     fn parseOpenAIUsage(usage_val: std.json.Value) ?TokenUsage {
         if (usage_val != .object) return null;
+        const pt_val = usage_val.object.get("prompt_tokens") orelse return null;
+        const ct_val = usage_val.object.get("completion_tokens") orelse return null;
         return TokenUsage{
-            .input_tokens = usage_val.object.get("prompt_tokens") orelse return null,
-            .output_tokens = usage_val.object.get("completion_tokens") orelse return null,
+            .input_tokens = switch (pt_val) {
+                .integer => |v| @intCast(v),
+                else => return null,
+            },
+            .output_tokens = switch (ct_val) {
+                .integer => |v| @intCast(v),
+                else => return null,
+            },
             .cache_read_tokens = blk: {
                 const details = usage_val.object.get("prompt_tokens_details") orelse break :blk 0;
                 if (details != .object) break :blk 0;
                 const cached = details.object.get("cached_tokens") orelse break :blk 0;
-                break :blk cached;
+                break :blk switch (cached) {
+                    .integer => |v| @intCast(v),
+                    else => 0,
+                };
             },
         };
     }

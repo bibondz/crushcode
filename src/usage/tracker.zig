@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -84,7 +85,7 @@ pub const UsageTracker = struct {
     daily: DailyUsage,
 
     // Provider-model key for by_provider map
-    provider_keys: std.ArrayList([]const u8),
+    provider_keys: array_list_compat.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator, data_dir: []const u8) UsageTracker {
         // Allocate date buffer; if OOM, use a static fallback and skip formatting
@@ -104,7 +105,7 @@ pub const UsageTracker = struct {
                 .output_tokens = 0,
                 .estimated_cost_usd = 0.0,
             },
-            .provider_keys = std.ArrayList([]const u8).init(allocator),
+            .provider_keys = array_list_compat.ArrayList([]const u8).init(allocator),
         };
     }
 

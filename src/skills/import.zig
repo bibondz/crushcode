@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -139,7 +141,7 @@ pub const SkillImporter = struct {
 
     /// List available skills from remote registries
     pub fn listAvailable(self: *SkillImporter, _: []const u8) ![]RemoteSkill {
-        var skills = std.ArrayList(RemoteSkill).init(self.allocator);
+        var skills = array_list_compat.ArrayList(RemoteSkill).init(self.allocator);
         return skills.toOwnedSlice();
     }
 
@@ -157,7 +159,7 @@ pub const SkillImporter = struct {
 
     /// Print import result
     pub fn printResult(result: *const ImportResult) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         if (result.success) {
             stdout.print("✅ Imported skill '{s}' ({d} files)\n", .{ result.name, result.files_downloaded }) catch {};
             stdout.print("   Installed to: {s}\n", .{result.install_path}) catch {};

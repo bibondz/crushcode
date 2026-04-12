@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -44,7 +46,7 @@ pub const PhaseTask = struct {
     id: []const u8,
     description: []const u8,
     status: PhaseStatus,
-    depends_on: std.ArrayList([]const u8),
+    depends_on: array_list_compat.ArrayList([]const u8),
     output: ?[]const u8,
     allocator: Allocator,
 
@@ -53,7 +55,7 @@ pub const PhaseTask = struct {
             .id = try allocator.dupe(u8, id),
             .description = try allocator.dupe(u8, description),
             .status = .pending,
-            .depends_on = std.ArrayList([]const u8).init(allocator),
+            .depends_on = array_list_compat.ArrayList([]const u8).init(allocator),
             .output = null,
             .allocator = allocator,
         };
@@ -78,9 +80,9 @@ pub const WorkflowPhase = struct {
     name: []const u8,
     goal: []const u8,
     status: PhaseStatus,
-    depends_on: std.ArrayList(u32),
-    tasks: std.ArrayList(*PhaseTask),
-    criteria: std.ArrayList(*VerificationCriterion),
+    depends_on: array_list_compat.ArrayList(u32),
+    tasks: array_list_compat.ArrayList(*PhaseTask),
+    criteria: array_list_compat.ArrayList(*VerificationCriterion),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, number: u32, name: []const u8, goal: []const u8) !WorkflowPhase {
@@ -89,9 +91,9 @@ pub const WorkflowPhase = struct {
             .name = try allocator.dupe(u8, name),
             .goal = try allocator.dupe(u8, goal),
             .status = .pending,
-            .depends_on = std.ArrayList(u32).init(allocator),
-            .tasks = std.ArrayList(*PhaseTask).init(allocator),
-            .criteria = std.ArrayList(*VerificationCriterion).init(allocator),
+            .depends_on = array_list_compat.ArrayList(u32).init(allocator),
+            .tasks = array_list_compat.ArrayList(*PhaseTask).init(allocator),
+            .criteria = array_list_compat.ArrayList(*VerificationCriterion).init(allocator),
             .allocator = allocator,
         };
     }
@@ -117,7 +119,7 @@ pub const WorkflowPhase = struct {
     }
 
     /// Check if dependencies are all completed
-    pub fn dependenciesMet(self: *WorkflowPhase, phases: *const std.ArrayList(*WorkflowPhase)) bool {
+    pub fn dependenciesMet(self: *WorkflowPhase, phases: *const array_list_compat.ArrayList(*WorkflowPhase)) bool {
         for (self.depends_on.items) |dep_num| {
             for (phases.items) |phase| {
                 if (phase.number == dep_num) {
@@ -154,7 +156,7 @@ pub const WorkflowPhase = struct {
 pub const PhaseWorkflow = struct {
     allocator: Allocator,
     name: []const u8,
-    phases: std.ArrayList(*WorkflowPhase),
+    phases: array_list_compat.ArrayList(*WorkflowPhase),
     current_phase: ?u32,
     wave_mode: WaveMode,
     created_at: i64,
@@ -163,7 +165,7 @@ pub const PhaseWorkflow = struct {
         return PhaseWorkflow{
             .allocator = allocator,
             .name = try allocator.dupe(u8, name),
-            .phases = std.ArrayList(*WorkflowPhase).init(allocator),
+            .phases = array_list_compat.ArrayList(*WorkflowPhase).init(allocator),
             .current_phase = null,
             .wave_mode = .adaptive,
             .created_at = std.time.timestamp(),
@@ -233,7 +235,7 @@ pub const PhaseWorkflow = struct {
 
     /// Export workflow as XML plan
     pub fn toXml(self: *PhaseWorkflow, allocator: Allocator) ![]const u8 {
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf = array_list_compat.ArrayList(u8).init(allocator);
         const writer = buf.writer();
 
         try writer.print("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n", .{});
@@ -285,7 +287,7 @@ pub const PhaseWorkflow = struct {
 
     /// Print workflow progress
     pub fn printProgress(self: *PhaseWorkflow) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         const pct = self.progress();
 
         stdout.print("\n=== Workflow: {s} ({d:.0}% complete) ===\n\n", .{ self.name, pct }) catch {};
@@ -336,3 +338,337 @@ pub const PhaseWorkflow = struct {
         self.phases.deinit();
     }
 };
+
+// ============================================================
+// Tests
+// ============================================================
+
+const testing = std.testing;
+
+test "PhaseStatus - is enum" {
+    const status: PhaseStatus = .pending;
+    try testing.expectEqual(PhaseStatus.pending, status);
+}
+
+test "WaveMode - enum values" {
+    try testing.expectEqual(WaveMode.sequential, WaveMode.sequential);
+    try testing.expectEqual(WaveMode.parallel, WaveMode.parallel);
+    try testing.expectEqual(WaveMode.adaptive, WaveMode.adaptive);
+}
+
+test "VerificationCriterion - init and deinit" {
+    const c = try VerificationCriterion.init(testing.allocator, "Build passes");
+    defer {
+        var mutable = c;
+        mutable.deinit();
+    }
+    try testing.expectEqualStrings("Build passes", c.description);
+    try testing.expect(!c.passed);
+}
+
+test "PhaseTask - init and deinit" {
+    const task = try PhaseTask.init(testing.allocator, "T1", "Write module");
+    defer {
+        var mutable = task;
+        mutable.deinit();
+    }
+    try testing.expectEqualStrings("T1", task.id);
+    try testing.expectEqualStrings("Write module", task.description);
+    try testing.expectEqual(PhaseStatus.pending, task.status);
+    try testing.expectEqual(@as(usize, 0), task.depends_on.items.len);
+}
+
+test "PhaseTask - addDependency" {
+    var task = try PhaseTask.init(testing.allocator, "T1", "Write module");
+    defer task.deinit();
+    try task.addDependency("T0");
+    try testing.expectEqual(@as(usize, 1), task.depends_on.items.len);
+    try testing.expectEqualStrings("T0", task.depends_on.items[0]);
+}
+
+test "WorkflowPhase - init and deinit" {
+    const phase = try WorkflowPhase.init(testing.allocator, 1, "Setup", "Initialize project");
+    defer {
+        var mutable = phase;
+        mutable.deinit();
+    }
+    try testing.expectEqual(@as(u32, 1), phase.number);
+    try testing.expectEqualStrings("Setup", phase.name);
+    try testing.expectEqualStrings("Initialize project", phase.goal);
+    try testing.expectEqual(PhaseStatus.pending, phase.status);
+}
+
+test "WorkflowPhase - addDependency" {
+    var phase = try WorkflowPhase.init(testing.allocator, 2, "Build", "Build the thing");
+    defer phase.deinit();
+    try phase.addDependency(1);
+    try testing.expectEqual(@as(usize, 1), phase.depends_on.items.len);
+    try testing.expectEqual(@as(u32, 1), phase.depends_on.items[0]);
+}
+
+test "WorkflowPhase - isVerified with no criteria" {
+    const phase = try WorkflowPhase.init(testing.allocator, 1, "Test", "Goal");
+    defer {
+        var mutable = phase;
+        mutable.deinit();
+    }
+    // No criteria → not verified (returns false when empty)
+    try testing.expect(!phase.isVerified());
+}
+
+test "WorkflowPhase - isVerified with passing criteria" {
+    var phase = try WorkflowPhase.init(testing.allocator, 1, "Test", "Goal");
+    defer phase.deinit();
+
+    const c1 = try testing.allocator.create(VerificationCriterion);
+    c1.* = try VerificationCriterion.init(testing.allocator, "Test passes");
+    c1.passed = true;
+    try phase.addCriterion(c1);
+
+    const c2 = try testing.allocator.create(VerificationCriterion);
+    c2.* = try VerificationCriterion.init(testing.allocator, "Build passes");
+    c2.passed = true;
+    try phase.addCriterion(c2);
+
+    try testing.expect(phase.isVerified());
+}
+
+test "WorkflowPhase - isVerified with failing criteria" {
+    var phase = try WorkflowPhase.init(testing.allocator, 1, "Test", "Goal");
+    defer phase.deinit();
+
+    const c1 = try testing.allocator.create(VerificationCriterion);
+    c1.* = try VerificationCriterion.init(testing.allocator, "Test passes");
+    c1.passed = true;
+    try phase.addCriterion(c1);
+
+    const c2 = try testing.allocator.create(VerificationCriterion);
+    c2.* = try VerificationCriterion.init(testing.allocator, "Build passes");
+    c2.passed = false;
+    try phase.addCriterion(c2);
+
+    try testing.expect(!phase.isVerified());
+}
+
+test "WorkflowPhase - dependenciesMet with completed deps" {
+    var p1 = try WorkflowPhase.init(testing.allocator, 1, "Phase 1", "Goal 1");
+    defer p1.deinit();
+    p1.status = .completed;
+
+    var p2 = try WorkflowPhase.init(testing.allocator, 2, "Phase 2", "Goal 2");
+    defer p2.deinit();
+    try p2.addDependency(1);
+
+    var phases = array_list_compat.ArrayList(*WorkflowPhase).init(testing.allocator);
+    defer phases.deinit();
+    try phases.append(&p1);
+    try phases.append(&p2);
+
+    try testing.expect(p2.dependenciesMet(&phases));
+}
+
+test "WorkflowPhase - dependenciesMet with pending deps" {
+    var p1 = try WorkflowPhase.init(testing.allocator, 1, "Phase 1", "Goal 1");
+    defer p1.deinit();
+    p1.status = .pending;
+
+    var p2 = try WorkflowPhase.init(testing.allocator, 2, "Phase 2", "Goal 2");
+    defer p2.deinit();
+    try p2.addDependency(1);
+
+    var phases = array_list_compat.ArrayList(*WorkflowPhase).init(testing.allocator);
+    defer phases.deinit();
+    try phases.append(&p1);
+    try phases.append(&p2);
+
+    try testing.expect(!p2.dependenciesMet(&phases));
+}
+
+test "PhaseWorkflow - init and deinit" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test-project");
+    defer wf.deinit();
+    try testing.expectEqualStrings("test-project", wf.name);
+    try testing.expectEqual(@as(usize, 0), wf.phases.items.len);
+    try testing.expect(wf.current_phase == null);
+    try testing.expectEqual(WaveMode.adaptive, wf.wave_mode);
+}
+
+test "PhaseWorkflow - addPhase and getPhase" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    try wf.addPhase(p1);
+
+    const p2 = try testing.allocator.create(WorkflowPhase);
+    p2.* = try WorkflowPhase.init(testing.allocator, 2, "Second", "Goal 2");
+    try wf.addPhase(p2);
+
+    try testing.expectEqual(@as(usize, 2), wf.phases.items.len);
+    const found = wf.getPhase(1);
+    try testing.expect(found != null);
+    try testing.expectEqualStrings("First", found.?.name);
+
+    const not_found = wf.getPhase(99);
+    try testing.expect(not_found == null);
+}
+
+test "PhaseWorkflow - startPhase and completePhase" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    try wf.addPhase(p1);
+
+    try wf.startPhase(1);
+    try testing.expectEqual(PhaseStatus.in_progress, p1.status);
+    try testing.expect(wf.current_phase == 1);
+
+    try wf.completePhase(1);
+    try testing.expectEqual(PhaseStatus.completed, p1.status);
+    try testing.expect(wf.current_phase == null);
+}
+
+test "PhaseWorkflow - verifyPhase" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    try wf.addPhase(p1);
+
+    try wf.startPhase(1);
+    try wf.verifyPhase(1);
+    try testing.expectEqual(PhaseStatus.verified, p1.status);
+}
+
+test "PhaseWorkflow - nextPhase returns first pending with met deps" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    p1.status = .completed;
+    try wf.addPhase(p1);
+
+    const p2 = try testing.allocator.create(WorkflowPhase);
+    p2.* = try WorkflowPhase.init(testing.allocator, 2, "Second", "Goal 2");
+    try p2.addDependency(1);
+    try wf.addPhase(p2);
+
+    const next = wf.nextPhase();
+    try testing.expect(next != null);
+    try testing.expectEqual(@as(u32, 2), next.?.number);
+}
+
+test "PhaseWorkflow - nextPhase returns null when deps not met" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    p1.status = .pending;
+    try wf.addPhase(p1);
+
+    const p2 = try testing.allocator.create(WorkflowPhase);
+    p2.* = try WorkflowPhase.init(testing.allocator, 2, "Second", "Goal 2");
+    try p2.addDependency(1);
+    try wf.addPhase(p2);
+
+    // p2 depends on p1 which is pending, but p1 has no deps so it's next
+    const next = wf.nextPhase();
+    try testing.expect(next != null);
+    try testing.expectEqual(@as(u32, 1), next.?.number);
+}
+
+test "PhaseWorkflow - progress calculation" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test");
+    defer wf.deinit();
+
+    // No phases → 0%
+    try testing.expectEqual(@as(f64, 0.0), wf.progress());
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "First", "Goal 1");
+    p1.status = .completed;
+    try wf.addPhase(p1);
+
+    const p2 = try testing.allocator.create(WorkflowPhase);
+    p2.* = try WorkflowPhase.init(testing.allocator, 2, "Second", "Goal 2");
+    p2.status = .in_progress;
+    try wf.addPhase(p2);
+
+    const p3 = try testing.allocator.create(WorkflowPhase);
+    p3.* = try WorkflowPhase.init(testing.allocator, 3, "Third", "Goal 3");
+    p3.status = .pending;
+    try wf.addPhase(p3);
+
+    // completed(1.0) + in_progress(0.5) + pending(0) = 1.5/3 = 50%
+    const pct = wf.progress();
+    try testing.expect(pct > 49.0 and pct < 51.0);
+}
+
+test "PhaseWorkflow - toXml generates valid XML" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "test-wf");
+    defer wf.deinit();
+
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "Setup", "Init project");
+    p1.status = .completed;
+    try wf.addPhase(p1);
+
+    const xml = try wf.toXml(testing.allocator);
+    defer testing.allocator.free(xml);
+
+    try testing.expect(std.mem.indexOf(u8, xml, "<?xml") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "<workflow name=\"test-wf\">") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "completed") != null);
+    try testing.expect(std.mem.indexOf(u8, xml, "</workflow>") != null);
+}
+
+test "PhaseWorkflow - full lifecycle: add → start → complete → verify" {
+    var wf = try PhaseWorkflow.init(testing.allocator, "lifecycle-test");
+    defer wf.deinit();
+
+    // Add phases with dependencies
+    const p1 = try testing.allocator.create(WorkflowPhase);
+    p1.* = try WorkflowPhase.init(testing.allocator, 1, "Design", "Design phase");
+    try wf.addPhase(p1);
+
+    const p2 = try testing.allocator.create(WorkflowPhase);
+    p2.* = try WorkflowPhase.init(testing.allocator, 2, "Implement", "Implementation phase");
+    try p2.addDependency(1);
+    try wf.addPhase(p2);
+
+    const p3 = try testing.allocator.create(WorkflowPhase);
+    p3.* = try WorkflowPhase.init(testing.allocator, 3, "Test", "Testing phase");
+    try p3.addDependency(2);
+    try wf.addPhase(p3);
+
+    // Phase 1
+    try wf.startPhase(1);
+    try testing.expectEqual(PhaseStatus.in_progress, p1.status);
+    try wf.completePhase(1);
+    try testing.expectEqual(PhaseStatus.completed, p1.status);
+
+    // Phase 2
+    const next = wf.nextPhase();
+    try testing.expect(next != null);
+    try testing.expectEqual(@as(u32, 2), next.?.number);
+    try wf.startPhase(2);
+    try wf.completePhase(2);
+
+    // Phase 3
+    const next2 = wf.nextPhase();
+    try testing.expect(next2 != null);
+    try testing.expectEqual(@as(u32, 3), next2.?.number);
+    try wf.startPhase(3);
+    try wf.verifyPhase(3);
+
+    // All done
+    try testing.expect(wf.nextPhase() == null);
+    const pct = wf.progress();
+    try testing.expect(pct > 99.0);
+}

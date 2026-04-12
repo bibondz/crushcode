@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 /// Error types for AI client operations
 pub const AIClientError = error{
@@ -48,13 +49,13 @@ pub const RetryConfig = struct {
 pub const RateLimiter = struct {
     allocator: std.mem.Allocator,
     requests_per_minute: u32,
-    request_times: std.ArrayList(i64),
+    request_times: array_list_compat.ArrayList(i64),
 
     pub fn init(allocator: std.mem.Allocator, requests_per_minute: u32) !RateLimiter {
         return RateLimiter{
             .allocator = allocator,
             .requests_per_minute = requests_per_minute,
-            .request_times = std.ArrayList(i64).init(allocator),
+            .request_times = array_list_compat.ArrayList(i64).init(allocator),
         };
     }
 

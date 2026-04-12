@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -66,17 +68,17 @@ pub const ParallelTask = struct {
 /// Reference: oh-my-openagent background-agent system
 pub const ParallelExecutor = struct {
     allocator: Allocator,
-    tasks: std.ArrayList(*ParallelTask),
+    tasks: array_list_compat.ArrayList(*ParallelTask),
     max_concurrent: u32,
-    completed_results: std.ArrayList(TaskResult),
+    completed_results: array_list_compat.ArrayList(TaskResult),
     next_id: u32,
 
     pub fn init(allocator: Allocator, max_concurrent: u32) ParallelExecutor {
         return ParallelExecutor{
             .allocator = allocator,
-            .tasks = std.ArrayList(*ParallelTask).init(allocator),
+            .tasks = array_list_compat.ArrayList(*ParallelTask).init(allocator),
             .max_concurrent = max_concurrent,
-            .completed_results = std.ArrayList(TaskResult).init(allocator),
+            .completed_results = array_list_compat.ArrayList(TaskResult).init(allocator),
             .next_id = 1,
         };
     }
@@ -154,7 +156,7 @@ pub const ParallelExecutor = struct {
 
     /// Print executor status
     pub fn printStatus(self: *ParallelExecutor) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("\n=== Parallel Executor ===\n", .{}) catch {};
         stdout.print("  Max concurrent: {d}\n", .{self.max_concurrent}) catch {};
         stdout.print("  Pending: {d}\n", .{self.countByStatus(.pending)}) catch {};

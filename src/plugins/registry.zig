@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
@@ -83,7 +84,7 @@ pub const PluginRegistry = struct {
 
     // List all registered plugins
     pub fn listPlugins(self: *PluginRegistry) ![]PluginInfo {
-        var plugin_infos = std.ArrayList(PluginInfo).init(self.allocator);
+        var plugin_infos = array_list_compat.ArrayList(PluginInfo).init(self.allocator);
         defer plugin_infos.deinit();
 
         var iter = self.plugins.iterator();
@@ -169,7 +170,7 @@ pub const PluginRegistry = struct {
 
     // Get plugins by type
     pub fn getPluginsByType(self: *PluginRegistry, plugin_type: PluginType) ![]Plugin {
-        var plugins_of_type = std.ArrayList(Plugin).init(self.allocator);
+        var plugins_of_type = array_list_compat.ArrayList(Plugin).init(self.allocator);
         defer plugins_of_type.deinit();
 
         var iter = self.plugins.iterator();
@@ -184,7 +185,7 @@ pub const PluginRegistry = struct {
 
     // Get prioritized plugin list
     pub fn getPrioritizedPlugins(self: *PluginRegistry) ![]Plugin {
-        var prioritized = std.ArrayList(Plugin).init(self.allocator);
+        var prioritized = array_list_compat.ArrayList(Plugin).init(self.allocator);
         defer prioritized.deinit();
 
         var iter = self.plugins.iterator();

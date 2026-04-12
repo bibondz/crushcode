@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
 
 /// Terminal UI utilities for interactive sessions
@@ -75,12 +77,12 @@ pub fn getTerminalSize() ?struct { rows: u16, cols: u16 } {
 
 /// Simple line editor for interactive input
 pub const LineEditor = struct {
-    buffer: std.ArrayList(u8),
+    buffer: array_list_compat.ArrayList(u8),
     cursor_pos: usize,
 
     pub fn init(allocator: std.mem.Allocator) LineEditor {
         return .{
-            .buffer = std.ArrayList(u8).init(allocator),
+            .buffer = array_list_compat.ArrayList(u8).init(allocator),
             .cursor_pos = 0,
         };
     }
@@ -227,11 +229,11 @@ pub fn runInteractive() !void {
         printPrompt("crushcode> ");
 
         // For now, just read a line (would need raw mode for full editor)
-        var input = std.ArrayList(u8).init(allocator);
+        var input = array_list_compat.ArrayList(u8).init(allocator);
         defer input.deinit();
 
         // Read from stdin
-        const stdin = std.io.getStdIn();
+        const stdin = file_compat.File.stdin();
         const reader = stdin.reader();
 
         // Read a line

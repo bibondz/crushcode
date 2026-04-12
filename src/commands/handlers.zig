@@ -1,4 +1,5 @@
 const std = @import("std");
+const ai_types = @import("ai_types");
 const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
@@ -11,14 +12,47 @@ const skills_mod = @import("skills");
 const tui_mod = @import("tui");
 const install_mod = @import("install");
 const jobs_mod = @import("jobs");
+const plugin_command = @import("plugin_command");
 const fallback_mod = @import("fallback");
 const parallel_mod = @import("parallel");
 const skills_loader_mod = @import("skills_loader");
 const skill_import_mod = @import("skill_import");
 const tools_mod = @import("tools");
+const core_api = @import("core_api");
 const worktree_mod = @import("worktree");
+const agent_loop_mod = @import("agent_loop");
 
 const Config = config_mod.Config;
+
+pub fn tryHandlePluginCommand(command: []const u8) !bool {
+    const allocator = std.heap.page_allocator;
+
+    // Check plugin commands (config-driven)
+    const plugin_cmds = plugin_command.loadDefaultCommands(allocator) catch &[_]plugin_command.PluginCommand{};
+    defer plugin_command.freeCommands(allocator, plugin_cmds);
+
+    // Also try user commands
+    const user_cmds = plugin_command.loadUserCommands(allocator) catch &[_]plugin_command.PluginCommand{};
+    defer plugin_command.freeCommands(allocator, user_cmds);
+
+    // Check default commands first
+    if (plugin_command.findCommand(plugin_cmds, command)) |cmd| {
+        plugin_command.executeCommand(allocator, cmd) catch |err| {
+            std.debug.print("Error executing plugin command '{s}': {}\n", .{ command, err });
+        };
+        return true;
+    }
+
+    // Then check user commands (can override defaults)
+    if (plugin_command.findCommand(user_cmds, command)) |cmd| {
+        plugin_command.executeCommand(allocator, cmd) catch |err| {
+            std.debug.print("Error executing plugin command '{s}': {}\n", .{ command, err });
+        };
+        return true;
+    }
+
+    return false;
+}
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     try chat_mod.handleChat(args, config);
@@ -48,8 +82,45 @@ pub fn handleSkill(args: args_mod.Args) !void {
     try skills_mod.handleSkill(args.remaining);
 }
 
-pub fn handleTUI(_: args_mod.Args) !void {
-    try tui_mod.runInteractive();
+pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
+    _ = args;
+
+    // Import TUI module
+    const tui = @import("tui");
+
+    // Get provider and model from config
+    const allocator = std.heap.page_allocator;
+    const provider_name = config.default_provider;
+    const model_name = config.default_model;
+
+    // Initialize registry
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerAllProviders();
+
+    const provider = registry.getProvider(provider_name) orelse {
+        std.debug.print("Error: Provider '{s}' not found\n", .{provider_name});
+        return error.ProviderNotFound;
+    };
+
+    const api_key = config.getApiKey(provider_name) orelse "";
+
+    if (api_key.len == 0) {
+        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml\n", .{provider_name});
+        return error.MissingApiKey;
+    }
+
+    // Initialize AI client
+    var client = try core_api.AIClient.init(allocator, provider, model_name, api_key);
+    defer client.deinit();
+
+    // Set system prompt from config if available
+    if (config.getSystemPrompt()) |sys_prompt| {
+        client.setSystemPrompt(sys_prompt);
+    }
+
+    // Run TUI with real AI client
+    try tui.runTUIWithClient(allocator, &client);
 }
 
 pub fn handleInstall(args: args_mod.Args) !void {
@@ -462,12 +533,92 @@ pub fn handleAgentLoop(_: args_mod.Args) !void {
     var agent = loop_mod.AgentLoop.init(allocator);
     defer agent.deinit();
 
+    // Configure: suppress intermediate output for clean demo, low iterations
+    var config = loop_mod.LoopConfig.init();
+    config.max_iterations = 10;
+    config.show_intermediate = false;
+    agent.setConfig(config);
+
+    // Register demo tools
+    agent.registerTool("read_file", demoReadFileTool) catch {};
+    agent.registerTool("search", demoSearchTool) catch {};
+
     agent.printStatus();
 
-    std.debug.print("\nTip: The agent loop enables continuous tool-call cycles.\n", .{});
-    std.debug.print("  AI responds → tool executes → result feeds back → AI continues\n", .{});
-    std.debug.print("  Max iterations: {d} (configurable)\n", .{agent.config.max_iterations});
-    std.debug.print("  Retry: exponential backoff (1s→2s→4s, max 30s)\n", .{});
+    // Run a demo loop with a mock AI callback
+    std.debug.print("\n--- Running demo agent loop ---\n", .{});
+    var result = agent.run(demoAISend, "Find information about Zig programming language") catch {
+        std.debug.print("Error: agent loop failed\n", .{});
+        return;
+    };
+    defer result.deinit();
+
+    std.debug.print("\n--- Agent Loop Result ---\n", .{});
+    std.debug.print("  Final response: {s}\n", .{result.final_response});
+    std.debug.print("  Iterations: {d}\n", .{result.total_iterations});
+    std.debug.print("  Tool calls: {d}\n", .{result.total_tool_calls});
+    std.debug.print("  Retries: {d}\n", .{result.total_retries});
+    std.debug.print("  Steps: {d}\n", .{result.steps.items.len});
+
+    for (result.steps.items, 0..) |step, i| {
+        std.debug.print("\n  Step {d}:\n", .{i + 1});
+        std.debug.print("    AI: {s}\n", .{step.ai_response});
+        std.debug.print("    Finish: {s}\n", .{step.finish_reason});
+        if (step.has_tool_calls) {
+            for (step.tool_calls.items) |tc| {
+                std.debug.print("    Tool call: {s}({s})\n", .{ tc.name, tc.arguments });
+            }
+            for (step.tool_results.items) |tr| {
+                const status = if (tr.success) "OK" else "FAIL";
+                std.debug.print("    Tool result [{s}]: {s}\n", .{ status, tr.output });
+            }
+        }
+    }
+}
+
+// Demo tool: read_file
+fn demoReadFileTool(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) anyerror!agent_loop_mod.ToolResult {
+    _ = call_id;
+    _ = arguments;
+    return agent_loop_mod.ToolResult.init(allocator, "demo-read", "File content: Zig is a systems programming language...", true);
+}
+
+// Demo tool: search
+fn demoSearchTool(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) anyerror!agent_loop_mod.ToolResult {
+    _ = call_id;
+    _ = arguments;
+    return agent_loop_mod.ToolResult.init(allocator, "demo-search", "Search results: Zig homepage, Zig learn, Zig standard library docs", true);
+}
+
+// Demo AI send: returns tool calls on first 2 calls, then stops
+var demo_ai_call_count: u32 = 0;
+fn demoAISend(allocator: std.mem.Allocator, messages: []const agent_loop_mod.LoopMessage) anyerror!agent_loop_mod.AIResponse {
+    _ = allocator;
+    _ = messages;
+    demo_ai_call_count += 1;
+    if (demo_ai_call_count == 1) {
+        return agent_loop_mod.AIResponse{
+            .content = "Let me search for information.",
+            .finish_reason = .tool_calls,
+            .tool_calls = &[_]ai_types.ToolCallInfo{
+                .{ .id = "call-1", .name = "search", .arguments = "Zig programming language" },
+            },
+        };
+    }
+    if (demo_ai_call_count == 2) {
+        return agent_loop_mod.AIResponse{
+            .content = "Let me read more details.",
+            .finish_reason = .tool_calls,
+            .tool_calls = &[_]ai_types.ToolCallInfo{
+                .{ .id = "call-2", .name = "read_file", .arguments = "zig_intro.md" },
+            },
+        };
+    }
+    return agent_loop_mod.AIResponse{
+        .content = "Based on my research: Zig is a modern systems programming language designed to be a better alternative to C. It offers compile-time code execution, no hidden control flow, and optional types.",
+        .finish_reason = .stop,
+        .tool_calls = &.{},
+    };
 }
 
 /// Phase 25: Phase Workflow System (GSD-inspired)
@@ -539,7 +690,8 @@ pub fn handleCompact(_: args_mod.Args) !void {
     compactor.printStatus(estimated_tokens);
 
     // Run compaction demo
-    const result = compactor.compact(&sample_messages) catch return;
+    var result = compactor.compact(&sample_messages) catch return;
+    defer result.deinit();
     std.debug.print("\nCompaction Result:\n", .{});
     std.debug.print("  Messages summarized: {d}\n", .{result.messages_summarized});
     std.debug.print("  Tokens saved: {d}\n", .{result.tokens_saved});

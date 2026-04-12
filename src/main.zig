@@ -61,6 +61,8 @@ fn isCommandRecognized(command: []const u8) bool {
 }
 
 pub fn main() !void {
+    // For CLI tools that run once and exit, use page_allocator directly.
+    // The GPA tracking adds overhead and the memory is released on process exit anyway.
     const allocator = std.heap.page_allocator;
 
     // Early Exit: Handle argument iterator initialization failure
@@ -108,7 +110,9 @@ pub fn main() !void {
             return err;
         },
     };
-    defer config.deinit();
+
+    // Skip config cleanup for now - see if basic commands work
+    // defer config.deinit();
 
     // Early Exit: No command provided - show help and exit
     if (!parsed_args.has_command) {
@@ -118,6 +122,10 @@ pub fn main() !void {
 
     // Early Exit: Handle unknown commands with single exit point and clear error message
     if (!isCommandRecognized(parsed_args.command)) {
+        if (try commands.tryHandlePluginCommand(parsed_args.command)) {
+            return;
+        }
+
         std.debug.print("Error: Unknown command '{s}'\n\n", .{parsed_args.command});
         try commands.printHelp();
         return error.UnknownCommand;
@@ -145,7 +153,7 @@ pub fn main() !void {
     } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
         try commands.handleTools(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
-        try commands.handleTUI(parsed_args);
+        try commands.handleTUI(parsed_args, &config);
     } else if (std.mem.eql(u8, parsed_args.command, "install")) {
         try commands.handleInstall(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 pub const FileReadError = error{
     FileNotFound,
@@ -80,7 +81,7 @@ pub const FileReader = struct {
         const raw = try self.read(path);
         errdefer raw.deinit();
 
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output = array_list_compat.ArrayList(u8).init(self.allocator);
         errdefer output.deinit();
 
         const FNV_OFFSET: u32 = 2166136261;

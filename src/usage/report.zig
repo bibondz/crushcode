@@ -1,4 +1,5 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const tracker_mod = @import("tracker.zig");
 const budget_mod = @import("budget.zig");
 
@@ -17,7 +18,7 @@ pub const UsageReport = struct {
     /// Print a session usage report to stdout
     pub fn printSessionReport(self: *UsageReport, usage: *const SessionUsage) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         stdout.print("\n=== Session Usage ===\n", .{}) catch {};
         stdout.print("  Requests: {d}\n", .{usage.request_count}) catch {};
@@ -47,7 +48,7 @@ pub const UsageReport = struct {
     /// Print a daily usage report
     pub fn printDailyReport(self: *UsageReport, daily: *const DailyUsage) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         stdout.print("\n=== Daily Usage ({s}) ===\n", .{daily.date}) catch {};
         stdout.print("  Requests: {d}\n", .{daily.request_count}) catch {};
@@ -61,7 +62,7 @@ pub const UsageReport = struct {
         self.printDailyReport(daily);
 
         if (budget_status) |bs| {
-            const stdout = std.io.getStdOut().writer();
+            const stdout = file_compat.File.stdout().writer();
             stdout.print("\n=== Budget ===\n", .{}) catch {};
 
             if (bs.daily_limit > 0) {
@@ -103,7 +104,7 @@ pub const UsageReport = struct {
     /// Print a compact inline usage summary (for after each AI response)
     pub fn printInlineUsage(self: *UsageReport, input_tokens: u32, output_tokens: u32, cost: f64) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         if (cost > 0.001) {
             stdout.print("\x1b[2m({d} tokens in / {d} out | ${d:.4})\x1b[0m", .{ input_tokens, output_tokens, cost }) catch {};
         } else {

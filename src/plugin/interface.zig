@@ -1,6 +1,5 @@
 const std = @import("std");
-const registry_mod = @import("../ai/registry.zig");
-const error_handler = @import("../ai/error_handler.zig");
+const array_list_compat = @import("array_list_compat");
 
 /// Plugin interface for external tool integration
 pub const Plugin = struct {
@@ -13,9 +12,9 @@ pub const Plugin = struct {
     socket: ?std.net.Stream,
 
     // Lifecycle methods
-    init_fn: fn () !void,
+    init_fn: fn () anyerror!void,
     deinit_fn: fn () void,
-    handle_fn: fn (request: Request) !Response,
+    handle_fn: fn (request: Request) anyerror!Response,
     health_fn: fn () HealthStatus,
 
     allocator: std.mem.Allocator,
@@ -234,7 +233,7 @@ pub const PluginManager = struct {
     }
 
     pub fn getAllPlugins(self: Self) []const []const u8 {
-        var plugin_names = std.ArrayList([]const u8).init(self.allocator);
+        var plugin_names = array_list_compat.ArrayList([]const u8).init(self.allocator);
 
         var it = self.plugins.iterator();
         while (it.next()) |entry| {

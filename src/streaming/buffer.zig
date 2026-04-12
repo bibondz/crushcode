@@ -1,5 +1,6 @@
 const std = @import("std");
-const types = @import("types.zig");
+const array_list_compat = @import("array_list_compat");
+const types = @import("types");
 
 const StreamEvent = types.StreamEvent;
 const TokenUsage = types.TokenUsage;
@@ -9,9 +10,9 @@ const StreamError = types.StreamError;
 /// Response accumulator for collecting streaming chunks into a complete response
 pub const ResponseBuffer = struct {
     allocator: std.mem.Allocator,
-    content: std.ArrayList(u8),
-    thinking_content: std.ArrayList(u8),
-    tool_calls: std.ArrayList(ToolCallAccumulator),
+    content: array_list_compat.ArrayList(u8),
+    thinking_content: array_list_compat.ArrayList(u8),
+    tool_calls: array_list_compat.ArrayList(ToolCallAccumulator),
     finish_reason: ?[]const u8 = null,
     usage: ?TokenUsage = null,
     stream_error: ?StreamError = null,
@@ -21,16 +22,16 @@ pub const ResponseBuffer = struct {
     pub const ToolCallAccumulator = struct {
         id: []const u8,
         name: []const u8,
-        arguments: std.ArrayList(u8),
+        arguments: array_list_compat.ArrayList(u8),
         completed: bool,
     };
 
     pub fn init(allocator: std.mem.Allocator) ResponseBuffer {
         return ResponseBuffer{
             .allocator = allocator,
-            .content = std.ArrayList(u8).init(allocator),
-            .thinking_content = std.ArrayList(u8).init(allocator),
-            .tool_calls = std.ArrayList(ToolCallAccumulator).init(allocator),
+            .content = array_list_compat.ArrayList(u8).init(allocator),
+            .thinking_content = array_list_compat.ArrayList(u8).init(allocator),
+            .tool_calls = array_list_compat.ArrayList(ToolCallAccumulator).init(allocator),
         };
     }
 
@@ -38,30 +39,48 @@ pub const ResponseBuffer = struct {
     pub fn processEvent(self: *ResponseBuffer, event: StreamEvent) void {
         switch (event.event_type) {
             .token => {
-                self.content.appendSlice(event.token) catch {};
+                self.content.appendSlice(event.token) catch |err| {
+                    std.log.err("stream buffer: failed to append token: {}", .{err});
+                    return;
+                };
                 self.token_count += 1;
             },
             .thinking => {
-                self.thinking_content.appendSlice(event.thinking) catch {};
+                self.thinking_content.appendSlice(event.thinking) catch |err| {
+                    std.log.err("stream buffer: failed to append thinking: {}", .{err});
+                    return;
+                };
             },
             .tool_call => {
                 const tc = event.tool_call;
                 if (self.findToolCall(tc.index)) |existing| {
                     if (tc.arguments.len > 0) {
-                        existing.arguments.appendSlice(tc.arguments) catch {};
+                        existing.arguments.appendSlice(tc.arguments) catch |err| {
+                            std.log.err("stream buffer: failed to append tool arguments: {}", .{err});
+                        };
                     }
                 } else {
                     const accumulator = ToolCallAccumulator{
-                        .id = self.allocator.dupe(u8, tc.id) catch "",
-                        .name = self.allocator.dupe(u8, tc.name) catch "",
+                        .id = self.allocator.dupe(u8, tc.id) catch |err| blk: {
+                            std.log.err("stream buffer: failed to dupe tool id: {}", .{err});
+                            break :blk "";
+                        },
+                        .name = self.allocator.dupe(u8, tc.name) catch |err| blk: {
+                            std.log.err("stream buffer: failed to dupe tool name: {}", .{err});
+                            break :blk "";
+                        },
                         .arguments = blk: {
-                            var list = std.ArrayList(u8).init(self.allocator);
-                            if (tc.arguments.len > 0) list.appendSlice(tc.arguments) catch {};
+                            var list = array_list_compat.ArrayList(u8).init(self.allocator);
+                            if (tc.arguments.len > 0) list.appendSlice(tc.arguments) catch |err| {
+                                std.log.err("stream buffer: failed to append tool args: {}", .{err});
+                            };
                             break :blk list;
                         },
                         .completed = false,
                     };
-                    self.tool_calls.append(accumulator) catch {};
+                    self.tool_calls.append(accumulator) catch |err| {
+                        std.log.err("stream buffer: failed to append tool call: {}", .{err});
+                    };
                 }
             },
             .tool_result => {

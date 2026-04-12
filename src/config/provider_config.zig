@@ -1,6 +1,6 @@
 const std = @import("std");
 const registry_mod = @import("registry.zig");
-const config_mod = @import("../config/config.zig");
+const toml_mod = @import("toml");
 
 pub const ProviderConfig = struct {
     name: []const u8,
@@ -18,6 +18,12 @@ pub const ProviderType = enum {
     api,
     local,
     custom,
+
+    pub fn fromString(s: []const u8) ProviderType {
+        if (std.mem.eql(u8, s, "local")) return .local;
+        if (std.mem.eql(u8, s, "custom")) return .custom;
+        return .api;
+    }
 };
 
 pub const RateLimits = struct {
@@ -38,6 +44,13 @@ pub const AuthType = enum {
     bearer_token,
     basic_auth,
     oauth,
+
+    pub fn fromString(s: []const u8) AuthType {
+        if (std.mem.eql(u8, s, "bearer_token")) return .bearer_token;
+        if (std.mem.eql(u8, s, "basic_auth")) return .basic_auth;
+        if (std.mem.eql(u8, s, "oauth")) return .oauth;
+        return .api_key;
+    }
 };
 
 pub const FallbackConfig = struct {
@@ -81,11 +94,11 @@ pub const ExtendedConfig = struct {
     performance: PerformanceConfig,
 
     allocator: std.mem.Allocator,
+    toml_doc: ?toml_mod.TomlDocument,
 
     const Self = @This();
 
     pub fn init(allocator: std.mem.Allocator) !Self {
-        // Load default configuration
         return Self{
             .default = .{
                 .provider = "openai",
@@ -118,14 +131,19 @@ pub const ExtendedConfig = struct {
                 .compression = "gzip",
             },
             .allocator = allocator,
+            .toml_doc = null,
         };
     }
 
     pub fn deinit(self: *Self) void {
         self.providers.deinit();
         self.retry_policy.provider_overrides.deinit();
+        if (self.toml_doc) |*doc| {
+            doc.deinit();
+        }
     }
 
+    /// Load configuration from a TOML file using the real parser
     pub fn loadFromFile(self: *Self, file_path: []const u8) !void {
         const file = std.fs.cwd().openFile(file_path, .{}) catch |err| switch (err) {
             error.FileNotFound => {
@@ -139,49 +157,127 @@ pub const ExtendedConfig = struct {
         const contents = try file.readToEndAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(contents);
 
-        // Parse TOML (simplified - in real implementation use TOML parser)
-        // For now, we'll load from existing config module and extend
-        const base_config = try config_mod.Config.loadOrCreateConfig(self.allocator);
+        var doc = try toml_mod.TomlDocument.parse(self.allocator, contents);
+        errdefer doc.deinit();
 
-        // Apply defaults for extended configuration
-        // TODO: Implement full TOML parsing for provider configuration
+        // Extract root-level defaults
+        if (doc.root.getString("default_provider")) |p| {
+            self.default.provider = p;
+        }
+        if (doc.root.getString("default_model")) |m| {
+            self.default.model = m;
+        }
+
+        // Extract [fallback] section
+        if (doc.getSection("fallback")) |fallback| {
+            if (fallback.getBool("enabled")) |b| self.fallback.enabled = b;
+            if (fallback.getBool("retry_with_fallback")) |b| self.fallback.retry_with_fallback = b;
+        }
+
+        // Extract [retry_policy] section
+        if (doc.getSection("retry_policy")) |retry| {
+            if (retry.getInt("default_max_attempts")) |v| self.retry_policy.default_max_attempts = @intCast(v);
+            if (retry.getFloat("default_backoff_factor")) |v| self.retry_policy.default_backoff_factor = @floatCast(v);
+            if (retry.getInt("max_backoff_seconds")) |v| self.retry_policy.max_backoff_seconds = @intCast(v);
+            if (retry.getBool("jitter")) |b| self.retry_policy.jitter = b;
+        }
+
+        // Extract [error_handling] section
+        if (doc.getSection("error_handling")) |eh| {
+            if (eh.getBool("log_all_errors")) |b| self.error_handling.log_all_errors = b;
+            if (eh.getBool("log_success")) |b| self.error_handling.log_success = b;
+        }
+
+        // Extract [performance] section
+        if (doc.getSection("performance")) |perf| {
+            if (perf.getInt("request_timeout")) |v| self.performance.request_timeout = @intCast(v);
+            if (perf.getInt("connect_timeout")) |v| self.performance.connect_timeout = @intCast(v);
+            if (perf.getBool("keep_alive")) |b| self.performance.keep_alive = b;
+            if (perf.getString("compression")) |s| self.performance.compression = s;
+        }
+
+        self.toml_doc = doc;
     }
 
+    /// Get a provider configuration by name from parsed TOML
     pub fn getProviderConfig(self: Self, provider_name: []const u8) ?ProviderConfig {
-        if (self.providers.get(provider_name)) |provider_data| {
-            // Convert JSON to ProviderConfig
-            // TODO: Implement proper JSON parsing
-            return ProviderConfig{
-                .name = provider_name,
-                .type = .api, // Parse from config
-                .base_url = "https://api.openai.com/v1", // Parse from config
-                .models = &[_][]const u8{"gpt-4"}, // Parse from config
-                .default_model = "gpt-4", // Parse from config
-                .rate_limits = .{
-                    .requests_per_minute = 60,
-                    .tokens_per_minute = 150000,
-                    .concurrent_requests = 5,
-                },
-                .auth = .{
-                    .type = .api_key,
-                    .env_var = "OPENAI_API_KEY",
-                    .header_name = null,
-                    .header_value = null,
-                },
-                .headers = std.json.ObjectMap.init(self.allocator),
-                .timeout_seconds = 30,
-            };
+        if (self.toml_doc) |doc| {
+            // Try direct section: [providers.openai]
+            const section_key = std.fmt.allocPrint(self.allocator, "providers.{s}", .{provider_name}) catch return null;
+            defer self.allocator.free(section_key);
+
+            if (doc.getSection(section_key)) |provider_sec| {
+                return ProviderConfig{
+                    .name = provider_name,
+                    .type = if (provider_sec.getString("type")) |t| ProviderType.fromString(t) else .api,
+                    .base_url = provider_sec.getString("base_url") orelse "https://api.openai.com/v1",
+                    .models = &[_][]const u8{provider_sec.getString("default_model") orelse "gpt-4"},
+                    .default_model = provider_sec.getString("default_model") orelse "gpt-4",
+                    .rate_limits = .{
+                        .requests_per_minute = @intCast(provider_sec.getInt("requests_per_minute") orelse 60),
+                        .tokens_per_minute = if (provider_sec.getInt("tokens_per_minute")) |v| @intCast(v) else null,
+                        .concurrent_requests = @intCast(provider_sec.getInt("concurrent_requests") orelse 5),
+                    },
+                    .auth = .{
+                        .type = if (provider_sec.getString("auth_type")) |t| AuthType.fromString(t) else .api_key,
+                        .env_var = provider_sec.getString("env_var"),
+                        .header_name = provider_sec.getString("header_name"),
+                        .header_value = provider_sec.getString("header_value"),
+                    },
+                    .headers = std.json.ObjectMap.init(self.allocator),
+                    .timeout_seconds = @intCast(provider_sec.getInt("timeout_seconds") orelse 30),
+                };
+            }
         }
         return null;
     }
 
+    /// Update or add a provider configuration
     pub fn updateProvider(self: *Self, provider_config: ProviderConfig) !void {
-        // Add or update provider configuration
-        // TODO: Implement proper JSON serialization
+        if (self.toml_doc == null) {
+            self.toml_doc = toml_mod.TomlDocument.init(self.allocator);
+        }
+        var doc = &self.toml_doc.?;
+
+        // Create [providers.<name>] section with provider config values
+        const section_key = try std.fmt.allocPrint(self.allocator, "providers.{s}", .{provider_config.name});
+        defer self.allocator.free(section_key);
+
+        const table = try self.allocator.create(toml_mod.TomlTable);
+        table.* = toml_mod.TomlTable.init(self.allocator);
+
+        try table.put("type", .{ .string = try self.allocator.dupe(u8, @tagName(provider_config.type)) });
+        try table.put("base_url", .{ .string = try self.allocator.dupe(u8, provider_config.base_url) });
+        try table.put("default_model", .{ .string = try self.allocator.dupe(u8, provider_config.default_model) });
+        try table.put("requests_per_minute", .{ .integer = provider_config.rate_limits.requests_per_minute });
+        try table.put("concurrent_requests", .{ .integer = provider_config.rate_limits.concurrent_requests });
+        try table.put("timeout_seconds", .{ .integer = provider_config.timeout_seconds });
+
+        if (provider_config.auth.env_var) |ev| {
+            try table.put("env_var", .{ .string = try self.allocator.dupe(u8, ev) });
+        }
+
+        const key_copy = try self.allocator.dupe(u8, section_key);
+        try doc.sections.put(key_copy, table);
     }
 
+    /// Save configuration to a TOML file
     pub fn saveToFile(self: Self, file_path: []const u8) !void {
-        // Save configuration to TOML file
-        // TODO: Implement TOML serialization
+        var doc = if (self.toml_doc) |d| d else toml_mod.TomlDocument.init(self.allocator);
+
+        // Ensure root defaults are set
+        try doc.root.put("default_provider", .{ .string = try self.allocator.dupe(u8, self.default.provider) });
+        try doc.root.put("default_model", .{ .string = try self.allocator.dupe(u8, self.default.model) });
+
+        const output = try toml_mod.TomlDocument.serialize(&doc, self.allocator);
+        defer self.allocator.free(output);
+
+        const config_dir = std.fs.path.dirname(file_path) orelse return error.InvalidPath;
+        try std.fs.cwd().makePath(config_dir);
+
+        const file = try std.fs.cwd().createFile(file_path, .{});
+        defer file.close();
+
+        try file.writeAll(output);
     }
 };

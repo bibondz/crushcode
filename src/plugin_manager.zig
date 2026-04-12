@@ -143,7 +143,7 @@ pub const PluginManager = struct {
         const plugin = self.registry.findPluginForRequest(request_type) orelse {
             return PluginResponse{
                 .success = false,
-                .error = "No plugin registered to handle this request type",
+                .err = "No plugin registered to handle this request type",
             };
         };
         
@@ -153,14 +153,14 @@ pub const PluginManager = struct {
                 const pty = self.pty_plugin orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "PTY plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "PTY plugin instance not available",
+                        .err = std.fmt.allocPrint(self.allocator, "PTY plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "PTY plugin instance not available",
                     };
                 };
                 
                 const pty_method = @enumFromString(PTYMethod, method) orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Invalid PTY method '{s}' for request type '{s}'. Valid methods are: spawn, resize, kill", .{ method, request_type }) catch "Invalid PTY method",
+                        .err = std.fmt.allocPrint(self.allocator, "Invalid PTY method '{s}' for request type '{s}'. Valid methods are: spawn, resize, kill", .{ method, request_type }) catch "Invalid PTY method",
                     };
                 };
                 
@@ -172,7 +172,7 @@ pub const PluginManager = struct {
                 return pty.spawnPTY(pty_request) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "PTY plugin failed to spawn PTY session for request type '{s}' method '{s}': {}", .{ request_type, method, err }) catch "PTY spawn failed",
+                        .err = std.fmt.allocPrint(self.allocator, "PTY plugin failed to spawn PTY session for request type '{s}' method '{s}': {}", .{ request_type, method, err }) catch "PTY spawn failed",
                     };
                 };
             
@@ -180,14 +180,14 @@ pub const PluginManager = struct {
                 const formatter = self.table_formatter orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Table Formatter plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Table Formatter plugin instance not available",
+                        .err = std.fmt.allocPrint(self.allocator, "Table Formatter plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Table Formatter plugin instance not available",
                     };
                 };
                 
                 if (!std.mem.eql(u8, method, "format_tables")) {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Invalid method '{s}' for Table Formatter plugin. Only 'format_tables' method is supported", .{method}) catch "Invalid Table Formatter method",
+                        .err = std.fmt.allocPrint(self.allocator, "Invalid method '{s}' for Table Formatter plugin. Only 'format_tables' method is supported", .{method}) catch "Invalid Table Formatter method",
                     };
                 }
                 
@@ -195,14 +195,14 @@ pub const PluginManager = struct {
                 if (text.len == 0) {
                     return PluginResponse{
                         .success = false,
-                        .error = "Empty text provided to Table Formatter plugin",
+                        .err = "Empty text provided to Table Formatter plugin",
                     };
                 }
                 
                 return formatter.formatMarkdownTables(text) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Table Formatter plugin failed to format text: {}", .{err}) catch "Table formatting failed",
+                        .err = std.fmt.allocPrint(self.allocator, "Table Formatter plugin failed to format text: {}", .{err}) catch "Table formatting failed",
                     };
                 };
             },
@@ -211,14 +211,14 @@ pub const PluginManager = struct {
                 const notifier = self.notifier orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Notifier plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Notifier plugin instance not available",
+                        .err = std.fmt.allocPrint(self.allocator, "Notifier plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Notifier plugin instance not available",
                     };
                 };
                 
                 const event_type = @enumFromString(EventType, method) orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Invalid Notifier event type '{s}' for request type '{s}'", .{ method, request_type }) catch "Invalid Notifier event type",
+                        .err = std.fmt.allocPrint(self.allocator, "Invalid Notifier event type '{s}' for request type '{s}'", .{ method, request_type }) catch "Invalid Notifier event type",
                     };
                 };
                 
@@ -235,7 +235,7 @@ pub const PluginManager = struct {
                 return notifier.handleEvent(event) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Notifier plugin failed to handle event: {}", .{err}) catch "Notifier event handling failed",
+                        .err = std.fmt.allocPrint(self.allocator, "Notifier plugin failed to handle event: {}", .{err}) catch "Notifier event handling failed",
                     };
                 };
             },
@@ -244,7 +244,7 @@ pub const PluginManager = struct {
                 const shell = self.shell_strategy orelse {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Shell Strategy plugin instance not available",
+                        .err = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Shell Strategy plugin instance not available",
                     };
                 };
                 
@@ -254,14 +254,14 @@ pub const PluginManager = struct {
                 if (command.len == 0) {
                     return PluginResponse{
                         .success = false,
-                        .error = "Empty command provided to Shell Strategy plugin",
+                        .err = "Empty command provided to Shell Strategy plugin",
                     };
                 }
                 
                 return shell.processCommand(command, cmd_args) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .error = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin failed to process command: {}", .{err}) catch "Shell command processing failed",
+                        .err = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin failed to process command: {}", .{err}) catch "Shell command processing failed",
                     };
                 };
             },

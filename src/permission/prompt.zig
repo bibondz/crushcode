@@ -1,4 +1,5 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
@@ -133,7 +134,7 @@ pub const PromptHandler = struct {
     fn displayPrompt(self: *PromptHandler, prompt: *const PermissionPrompt) !void {
         _ = self;
         _ = self;
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         try stdout.print("\n", .{});
         try stdout.print("╔══════════════════════════════════════════════════════════╗\n", .{});
@@ -184,12 +185,12 @@ pub const PromptHandler = struct {
         const start_time = std.time.milliTimestamp();
         const timeout_ms = timeout * 1000;
 
-        var stdin = std.io.getStdIn().reader();
+        var stdin = file_compat.File.stdin().reader();
         var buffer: [256]u8 = undefined;
 
         while (std.time.milliTimestamp() - start_time < timeout_ms) {
             // Check if data is available (non-blocking)
-            var fds = std.os.poll_fd{ .fd = std.io.getStdIn().handle, .events = std.os.POLL.IN, .revents = 0 };
+            var fds = std.os.poll_fd{ .fd = file_compat.File.stdin().handle, .events = std.os.POLL.IN, .revents = 0 };
             const ready = std.os.poll(&[_]std.os.poll_fd{fds}, 100) catch continue; // 100ms poll
 
             if (ready > 0 and (fds.revents & std.os.POLL.IN) != 0) {

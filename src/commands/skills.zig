@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const shell = @import("shell");
 
 /// Skill definition - a callable command with description
@@ -37,7 +38,7 @@ pub fn getAllSkills() []const Skill {
 
 fn skillEcho(args: []const []const u8) !shell.ShellResult {
     const allocator = std.heap.page_allocator;
-    var output = std.ArrayList(u8).init(allocator);
+    var output = array_list_compat.ArrayList(u8).init(allocator);
     defer output.deinit();
 
     for (args, 0..) |arg, i| {

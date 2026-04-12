@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -70,7 +71,7 @@ pub const ConfigBackup = struct {
 
     /// List available backups for a config file
     pub fn listBackups(self: *ConfigBackup, allocator: Allocator, config_basename: []const u8) ![][]const u8 {
-        var backups = std.ArrayList([]const u8).init(allocator);
+        var backups = array_list_compat.ArrayList([]const u8).init(allocator);
         errdefer {
             for (backups.items) |b| allocator.free(b);
             backups.deinit();
@@ -96,7 +97,7 @@ pub const ConfigBackup = struct {
         defer dir.close();
 
         // Collect backup files
-        var backup_names = std.ArrayList([]const u8).init(self.allocator);
+        var backup_names = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer backup_names.deinit();
 
         var iter = dir.iterate();
@@ -150,7 +151,7 @@ pub const ConfigMigrator = struct {
 
     /// Migrate config from old version to current
     pub fn migrate(self: *ConfigMigrator, content: []const u8, from_version: u32) ![]u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output = array_list_compat.ArrayList(u8).init(self.allocator);
         errdefer output.deinit();
 
         const writer = output.writer();
@@ -174,7 +175,7 @@ pub const ConfigMigrator = struct {
         if (self.getConfigVersion(output.items)) |v| {
             if (v < CURRENT_CONFIG_VERSION) {
                 // Replace version line
-                var final_output = std.ArrayList(u8).init(self.allocator);
+                var final_output = array_list_compat.ArrayList(u8).init(self.allocator);
                 defer output.deinit();
                 const final_writer = final_output.writer();
 
@@ -210,7 +211,7 @@ pub const ConfigMigrator = struct {
 
     /// V0 -> V1: Add config_version field
     fn migrateV0toV1(self: *ConfigMigrator, content: []const u8) ![]const u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = output.writer();
 
         try writer.writeAll(content);
@@ -221,7 +222,7 @@ pub const ConfigMigrator = struct {
 
     /// V1 -> V2: Add [quantization] section
     fn migrateV1toV2(self: *ConfigMigrator, content: []const u8) ![]const u8 {
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = output.writer();
 
         try writer.writeAll(content);

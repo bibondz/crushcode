@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const hashline_mod = @import("hashline");
 const hash_index_mod = @import("hash_index");
 const conflict_mod = @import("conflict");
@@ -105,7 +106,7 @@ pub const ValidatedEdit = struct {
     /// Apply edit without hash validation (fallback)
     fn applyEditUnsafe(self: *ValidatedEdit, op: EditOperation, current_content: []const u8) !void {
         // Split content into lines
-        var lines = std.ArrayList([]const u8).init(self.allocator);
+        var lines = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer lines.deinit();
 
         var iter = std.mem.splitScalar(u8, current_content, '\n');
@@ -123,7 +124,7 @@ pub const ValidatedEdit = struct {
         }
 
         // Rebuild content
-        var output = std.ArrayList(u8).init(self.allocator);
+        var output = array_list_compat.ArrayList(u8).init(self.allocator);
         defer output.deinit();
 
         for (lines.items, 0..) |line, i| {
@@ -147,7 +148,7 @@ pub const ValidatedEdit = struct {
         errdefer self.allocator.free(results);
 
         // Phase 1: Validate all edits
-        var conflicts = std.ArrayList(struct { index: usize, conflict: Conflict }).init(self.allocator);
+        var conflicts = array_list_compat.ArrayList(struct { index: usize, conflict: Conflict }).init(self.allocator);
         defer conflicts.deinit();
 
         for (ops, 0..) |op, i| {

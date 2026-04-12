@@ -1,4 +1,5 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -109,7 +110,7 @@ pub const BudgetManager = struct {
     /// Print a budget alert to stderr
     pub fn printAlert(self: *BudgetManager) void {
         const status = self.checkBudget();
-        const stderr = std.io.getStdErr().writer();
+        const stderr = file_compat.File.stderr().writer();
 
         if (status.isOverBudget()) {
             stderr.print("\x1b[31m⚠ BUDGET EXCEEDED: ${d:.2} spent\x1b[0m\n", .{self.session_spent}) catch {};

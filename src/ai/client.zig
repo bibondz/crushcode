@@ -1,59 +1,17 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
+const ai_types = @import("ai_types");
 const registry_mod = @import("registry");
-const error_handler_mod = @import("../ai/error_handler.zig");
+const tool_types = @import("tool_types");
+const error_handler_mod = @import("error_handler.zig");
 
-// Forward declarations
-pub const ChatMessage = struct {
-    role: []const u8,
-    content: ?[]const u8 = null,
-    tool_call_id: ?[]const u8 = null,
-    tool_calls: ?[]const ToolCallInfo = null,
-};
-
-pub const ToolCallInfo = struct {
-    id: []const u8,
-    name: []const u8,
-    arguments: []const u8,
-};
-
-/// Parsed tool call from AI response
-pub const ParsedToolCall = struct {
-    id: []const u8,
-    name: []const u8,
-    arguments: []const u8,
-};
-
-pub const ChatRequest = struct {
-    model: []const u8,
-    messages: []ChatMessage,
-    max_tokens: ?u32 = null,
-    temperature: ?f32 = null,
-    stream: ?bool = null,
-};
-
-pub const ChatResponse = struct {
-    id: []const u8,
-    object: []const u8,
-    created: u64,
-    model: []const u8,
-    choices: []ChatChoice,
-    usage: ?Usage = null,
-    provider: ?[]const u8 = null,
-    cost: ?[]const u8 = null,
-    system_fingerprint: ?[]const u8 = null,
-};
-
-pub const ChatChoice = struct {
-    index: u32,
-    message: ChatMessage,
-    finish_reason: ?[]const u8 = null,
-};
-
-pub const Usage = struct {
-    prompt_tokens: u32,
-    completion_tokens: u32,
-    total_tokens: u32,
-};
+pub const ChatMessage = ai_types.ChatMessage;
+pub const ToolCallInfo = ai_types.ToolCallInfo;
+pub const ParsedToolCall = ai_types.ParsedToolCall;
+pub const ChatRequest = ai_types.ChatRequest;
+pub const ChatResponse = ai_types.ChatResponse;
+pub const ChatChoice = ai_types.ChatChoice;
+pub const Usage = ai_types.Usage;
 
 pub const OllamaResponse = struct {
     model: []const u8,
@@ -66,21 +24,8 @@ pub const OllamaMessage = struct {
     content: []const u8,
 };
 
-/// Extended usage data for tracking (Phase 15 integration)
-pub const ExtendedUsage = struct {
-    input_tokens: u32 = 0,
-    output_tokens: u32 = 0,
-    cache_read_tokens: u32 = 0,
-    cache_write_tokens: u32 = 0,
-    estimated_cost_usd: f64 = 0.0,
-};
-
-/// A tool schema for the AI API (OpenAI function calling format)
-pub const ToolSchema = struct {
-    name: []const u8,
-    description: []const u8,
-    parameters: []const u8, // JSON Schema as string
-};
+pub const ExtendedUsage = ai_types.ExtendedUsage;
+pub const ToolSchema = tool_types.ToolSchema;
 
 const APIFunctionCall = struct {
     name: []const u8,
@@ -120,13 +65,13 @@ const APIChatResponse = struct {
 const StreamingToolCall = struct {
     id: ?[]const u8 = null,
     name: ?[]const u8 = null,
-    arguments_fragments: std.ArrayList([]const u8),
+    arguments_fragments: array_list_compat.ArrayList([]const u8),
 
     fn init(allocator: std.mem.Allocator) StreamingToolCall {
         return .{
             .id = null,
             .name = null,
-            .arguments_fragments = std.ArrayList([]const u8).init(allocator),
+            .arguments_fragments = array_list_compat.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -140,8 +85,7 @@ const StreamingToolCall = struct {
     }
 };
 
-/// Callback type for streaming tokens
-pub const StreamCallback = *const fn (token: []const u8, done: bool) void;
+pub const StreamCallback = ai_types.StreamCallback;
 
 const StreamFormat = enum {
     ndjson,
@@ -179,7 +123,7 @@ pub const AIClient = struct {
     fn buildToolsJson(self: *AIClient, allocator: std.mem.Allocator) ![]const u8 {
         if (self.tools.len == 0) return allocator.dupe(u8, "");
 
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf = array_list_compat.ArrayList(u8).init(allocator);
         defer buf.deinit();
         const writer = buf.writer();
 
@@ -251,27 +195,27 @@ pub const AIClient = struct {
         var client: std.http.Client = .{ .allocator = allocator };
         defer client.deinit();
 
-        var server_header_buffer: [8192]u8 = undefined;
-        var request = client.open(.POST, uri, .{
-            .server_header_buffer = &server_header_buffer,
+        var request = client.request(.POST, uri, .{
             .extra_headers = headers,
         }) catch return error.NetworkError;
         defer request.deinit();
 
         request.transfer_encoding = .{ .content_length = json_body.len };
-        request.send() catch return error.NetworkError;
-        request.writeAll(json_body) catch return error.NetworkError;
-        request.finish() catch return error.NetworkError;
-        request.wait() catch return error.NetworkError;
+        var body = request.sendBodyUnflushed(&.{}) catch return error.NetworkError;
+        body.writer.writeAll(json_body) catch return error.NetworkError;
+        body.end() catch return error.NetworkError;
+        request.connection.?.flush() catch return error.NetworkError;
 
-        var response_reader = request.reader();
-        if (request.response.status != .ok) {
-            var error_body = std.ArrayList(u8).init(allocator);
+        var response = request.receiveHead(&.{}) catch return error.NetworkError;
+        var response_transfer_buffer: [4096]u8 = undefined;
+        const response_reader = response.reader(&response_transfer_buffer);
+        if (response.head.status != .ok) {
+            var error_body = array_list_compat.ArrayList(u8).init(allocator);
             defer error_body.deinit();
 
             var error_chunk: [4096]u8 = undefined;
             while (true) {
-                const bytes_read = response_reader.read(&error_chunk) catch return error.NetworkError;
+                const bytes_read = response_reader.readSliceShort(&error_chunk) catch return error.NetworkError;
                 if (bytes_read == 0) break;
                 try error_body.appendSlice(error_chunk[0..bytes_read]);
             }
@@ -279,13 +223,13 @@ pub const AIClient = struct {
             return error.ServerError;
         }
 
-        var partial_line = std.ArrayList(u8).init(allocator);
+        var partial_line = array_list_compat.ArrayList(u8).init(allocator);
         defer partial_line.deinit();
 
-        var full_content = std.ArrayList(u8).init(allocator);
+        var full_content = array_list_compat.ArrayList(u8).init(allocator);
         defer full_content.deinit();
 
-        var streaming_tool_calls = std.ArrayList(StreamingToolCall).init(allocator);
+        var streaming_tool_calls = array_list_compat.ArrayList(StreamingToolCall).init(allocator);
         defer {
             for (streaming_tool_calls.items) |*tool_call| {
                 tool_call.deinit(allocator);
@@ -302,7 +246,7 @@ pub const AIClient = struct {
         var saw_done = false;
 
         while (true) {
-            const bytes_read = response_reader.read(&chunk_buf) catch return error.NetworkError;
+            const bytes_read = response_reader.readSliceShort(&chunk_buf) catch return error.NetworkError;
             if (bytes_read == 0) break;
 
             try self.processStreamChunk(
@@ -339,6 +283,27 @@ pub const AIClient = struct {
 
         const tool_calls = response.choices[0].message.tool_calls orelse return &.{};
         const parsed = try self.allocator.alloc(ParsedToolCall, tool_calls.len);
+        for (tool_calls, 0..) |tool_call, i| {
+            parsed[i] = .{
+                .id = tool_call.id,
+                .name = tool_call.name,
+                .arguments = tool_call.arguments,
+            };
+        }
+        return parsed;
+    }
+
+    /// Extract tool calls using a caller-provided arena allocator.
+    /// All allocations live in the arena — no individual free() needed.
+    /// Arena is reset between requests, so memory is reclaimed in bulk.
+    pub fn extractToolCallsWithAllocator(self: *AIClient, response: *const ChatResponse, arena: std.mem.Allocator) ![]ParsedToolCall {
+        _ = self;
+        if (response.choices.len == 0) {
+            return &.{};
+        }
+
+        const tool_calls = response.choices[0].message.tool_calls orelse return &.{};
+        const parsed = try arena.alloc(ParsedToolCall, tool_calls.len);
         for (tool_calls, 0..) |tool_call, i| {
             parsed[i] = .{
                 .id = tool_call.id,
@@ -471,10 +436,10 @@ pub const AIClient = struct {
         defer allocator.free(json_body);
         if (debug) std.debug.print("Body: {s}\n", .{json_body});
 
-        var response_buf = std.ArrayList(u8).init(allocator);
-        defer response_buf.deinit();
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
 
-        var headers_buf = std.ArrayList(std.http.Header).init(allocator);
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
         defer headers_buf.deinit();
 
         try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
@@ -494,9 +459,9 @@ pub const AIClient = struct {
             .location = .{ .uri = uri },
             .payload = json_body,
             .extra_headers = headers_buf.items,
-            .response_storage = .{ .dynamic = &response_buf },
+            .response_writer = &response_writer.writer,
         }) catch |err| {
-            if (debug) std.debug.print("HTTP Error: {!}\n", .{err});
+            if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.NetworkError,
@@ -509,21 +474,23 @@ pub const AIClient = struct {
         if (debug) std.debug.print("Response Status: {}\n", .{fetch_result.status});
 
         if (fetch_result.status != .ok) {
+            const error_body = response_writer.written();
+            if (debug) std.debug.print("Error Response: {s}\n", .{error_body});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.ServerError,
-                    try response_buf.toOwnedSlice(),
+                    try allocator.dupe(u8, error_body),
                 ),
                 .response = null,
             };
         }
 
-        const response_slice = response_buf.items;
+        const response_slice = response_writer.written();
 
         // For Ollama, responses contain multiple JSON objects (streaming)
         // Parse each line and accumulate the full content
         if (std.mem.eql(u8, self.provider.name, "ollama")) {
-            var full_content = std.ArrayList(u8).init(allocator);
+            var full_content = array_list_compat.ArrayList(u8).init(allocator);
             defer full_content.deinit();
 
             var is_done = false;
@@ -543,7 +510,9 @@ pub const AIClient = struct {
                 defer ollama_chunk.deinit();
 
                 // Accumulate content
-                full_content.appendSlice(ollama_chunk.value.message.content) catch {};
+                full_content.appendSlice(ollama_chunk.value.message.content) catch |err| {
+                    std.log.err("Failed to accumulate Ollama stream content: {}", .{err});
+                };
                 is_done = ollama_chunk.value.done;
 
                 if (is_done) break;
@@ -614,7 +583,7 @@ pub const AIClient = struct {
         defer client.deinit();
 
         // Build JSON body with message history
-        var json_body = std.ArrayList(u8).init(allocator);
+        var json_body = array_list_compat.ArrayList(u8).init(allocator);
         defer json_body.deinit();
 
         try json_body.appendSlice("{\"model\":\"");
@@ -667,10 +636,10 @@ pub const AIClient = struct {
 
         if (debug) std.debug.print("Body: {s}\n", .{json_body_slice[0..@min(200, json_body_slice.len)]});
 
-        var response_buf = std.ArrayList(u8).init(allocator);
-        defer response_buf.deinit();
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
 
-        var headers_buf = std.ArrayList(std.http.Header).init(allocator);
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
         defer headers_buf.deinit();
 
         try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
@@ -690,9 +659,9 @@ pub const AIClient = struct {
             .location = .{ .uri = uri },
             .payload = json_body_slice,
             .extra_headers = headers_buf.items,
-            .response_storage = .{ .dynamic = &response_buf },
+            .response_writer = &response_writer.writer,
         }) catch |err| {
-            if (debug) std.debug.print("HTTP Error: {!}\n", .{err});
+            if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.NetworkError,
@@ -708,17 +677,17 @@ pub const AIClient = struct {
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.ServerError,
-                    try response_buf.toOwnedSlice(),
+                    try response_writer.toOwnedSlice(),
                 ),
                 .response = null,
             };
         }
 
-        const response_slice = response_buf.items;
+        const response_slice = response_writer.written();
 
         // For Ollama, responses contain multiple JSON objects (streaming)
         if (std.mem.eql(u8, self.provider.name, "ollama")) {
-            var full_content = std.ArrayList(u8).init(allocator);
+            var full_content = array_list_compat.ArrayList(u8).init(allocator);
             defer full_content.deinit();
 
             var is_done = false;
@@ -732,7 +701,9 @@ pub const AIClient = struct {
                 }) catch continue;
                 defer ollama_chunk.deinit();
 
-                full_content.appendSlice(ollama_chunk.value.message.content) catch {};
+                full_content.appendSlice(ollama_chunk.value.message.content) catch |err| {
+                    std.log.err("Ollama stream: failed to accumulate content chunk: {}", .{err});
+                };
                 is_done = ollama_chunk.value.done;
 
                 if (is_done) break;
@@ -816,7 +787,7 @@ pub const AIClient = struct {
         finish_reason.* = try allocator.dupe(u8, reason);
     }
 
-    fn appendStreamingToken(full_content: *std.ArrayList(u8), token: []const u8, callback: StreamCallback) !void {
+    fn appendStreamingToken(full_content: *array_list_compat.ArrayList(u8), token: []const u8, callback: StreamCallback) !void {
         if (token.len == 0) {
             return;
         }
@@ -861,12 +832,12 @@ pub const AIClient = struct {
     fn processOpenAIStreamingPayload(
         self: *AIClient,
         root: std.json.Value,
-        full_content: *std.ArrayList(u8),
+        full_content: *array_list_compat.ArrayList(u8),
         finish_reason: *?[]const u8,
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         if (root != .object) {
             return;
@@ -920,7 +891,7 @@ pub const AIClient = struct {
     fn processOpenAIToolCallDelta(
         self: *AIClient,
         tool_calls_value: std.json.Value,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         if (tool_calls_value != .array) {
             return;
@@ -978,12 +949,12 @@ pub const AIClient = struct {
     fn processNDJSONLine(
         self: *AIClient,
         line: []const u8,
-        full_content: *std.ArrayList(u8),
+        full_content: *array_list_compat.ArrayList(u8),
         finish_reason: *?[]const u8,
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         var parsed = std.json.parseFromSlice(std.json.Value, self.allocator, line, .{
             .ignore_unknown_fields = true,
@@ -1036,12 +1007,12 @@ pub const AIClient = struct {
     fn processSSELine(
         self: *AIClient,
         line: []const u8,
-        full_content: *std.ArrayList(u8),
+        full_content: *array_list_compat.ArrayList(u8),
         finish_reason: *?[]const u8,
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         const data = if (std.mem.startsWith(u8, line, "data: "))
             line["data: ".len..]
@@ -1123,12 +1094,12 @@ pub const AIClient = struct {
     fn processStreamLine(
         self: *AIClient,
         line: []const u8,
-        full_content: *std.ArrayList(u8),
+        full_content: *array_list_compat.ArrayList(u8),
         finish_reason: *?[]const u8,
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         if (line.len == 0) {
             return;
@@ -1147,14 +1118,14 @@ pub const AIClient = struct {
 
     fn processStreamChunk(
         self: *AIClient,
-        partial_line: *std.ArrayList(u8),
+        partial_line: *array_list_compat.ArrayList(u8),
         chunk: []const u8,
-        full_content: *std.ArrayList(u8),
+        full_content: *array_list_compat.ArrayList(u8),
         finish_reason: *?[]const u8,
         usage: *?Usage,
         callback: StreamCallback,
         saw_done: *bool,
-        streaming_tool_calls: *std.ArrayList(StreamingToolCall),
+        streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
         try partial_line.appendSlice(chunk);
 
@@ -1175,7 +1146,7 @@ pub const AIClient = struct {
         }
     }
 
-    fn appendEscapedJsonString(json_body: *std.ArrayList(u8), value: []const u8) !void {
+    fn appendEscapedJsonString(json_body: *array_list_compat.ArrayList(u8), value: []const u8) !void {
         for (value) |c| {
             switch (c) {
                 '"' => try json_body.appendSlice("\\\""),
@@ -1188,7 +1159,7 @@ pub const AIClient = struct {
         }
     }
 
-    fn appendToolCallJson(json_body: *std.ArrayList(u8), tool_call: ToolCallInfo) !void {
+    fn appendToolCallJson(json_body: *array_list_compat.ArrayList(u8), tool_call: ToolCallInfo) !void {
         try json_body.appendSlice("{\"id\":\"");
         try appendEscapedJsonString(json_body, tool_call.id);
         try json_body.appendSlice("\",\"type\":\"function\",\"function\":{\"name\":\"");
@@ -1198,7 +1169,7 @@ pub const AIClient = struct {
         try json_body.appendSlice("\"}}");
     }
 
-    fn appendChatMessageJson(json_body: *std.ArrayList(u8), msg: ChatMessage) !void {
+    fn appendChatMessageJson(json_body: *array_list_compat.ArrayList(u8), msg: ChatMessage) !void {
         try json_body.appendSlice("{\"role\":\"");
         try appendEscapedJsonString(json_body, msg.role);
         try json_body.appendSlice("\"");
@@ -1233,7 +1204,7 @@ pub const AIClient = struct {
 
     fn buildRequestBodyFromMessages(self: *AIClient, messages: []const ChatMessage, stream: bool) ![]const u8 {
         const allocator = self.allocator;
-        var json_body = std.ArrayList(u8).init(allocator);
+        var json_body = array_list_compat.ArrayList(u8).init(allocator);
         defer json_body.deinit();
 
         try json_body.appendSlice("{\"model\":\"");
@@ -1266,7 +1237,13 @@ pub const AIClient = struct {
             try json_body.appendSlice(tools_json);
         }
         if (stream) {
-            try json_body.appendSlice(",\"stream\":true");
+            // Ollama: disable streaming to avoid Zig stdlib HTTP state machine bug
+            // The non-streaming path works correctly and returns full response
+            if (std.mem.eql(u8, self.provider.name, "ollama")) {
+                // Use stream:false - non-streaming works correctly
+            } else {
+                try json_body.appendSlice(",\"stream\":true");
+            }
         }
         try json_body.appendSlice("}");
 
@@ -1343,7 +1320,7 @@ pub const AIClient = struct {
 
         const copied = try allocator.alloc(ToolCallInfo, tool_calls.len);
         for (tool_calls, 0..) |tool_call, i| {
-            var arguments = std.ArrayList(u8).init(allocator);
+            var arguments = array_list_compat.ArrayList(u8).init(allocator);
             defer arguments.deinit();
 
             for (tool_call.arguments_fragments.items) |fragment| {
@@ -1414,7 +1391,7 @@ pub const AIClient = struct {
     /// Build the JSON request body with streaming enabled
     pub fn buildStreamingBody(self: *AIClient, user_message: []const u8) ![]const u8 {
         const allocator = self.allocator;
-        var json_body = std.ArrayList(u8).init(allocator);
+        var json_body = array_list_compat.ArrayList(u8).init(allocator);
         defer json_body.deinit();
 
         try json_body.appendSlice("{\"model\":\"");
@@ -1457,7 +1434,7 @@ pub const AIClient = struct {
     /// Build headers for HTTP request
     pub fn buildHeaders(self: *AIClient) ![]std.http.Header {
         const allocator = self.allocator;
-        var headers = std.ArrayList(std.http.Header).init(allocator);
+        var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
         try headers.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
 
         if (std.mem.eql(u8, self.provider.name, "openrouter")) {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
 const MCPClient = @import("mcp_client").MCPClient;
 const MCPServerConfig = @import("mcp_client").MCPServerConfig;
@@ -17,7 +18,7 @@ pub const MCPDiscovery = struct {
     }
 
     pub fn discoverServers(self: *MCPDiscovery, search_term: ?[]const u8) ![]MCPDiscoveryResult {
-        var results = std.ArrayList(MCPDiscoveryResult).init(self.allocator);
+        var results = array_list_compat.ArrayList(MCPDiscoveryResult).init(self.allocator);
         defer results.deinit();
 
         // Add default servers
@@ -33,7 +34,7 @@ pub const MCPDiscovery = struct {
         return results.toOwnedSlice();
     }
 
-    pub fn addDefaultServers(_: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult)) !void {
+    pub fn addDefaultServers(_: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult)) !void {
         // GitHub MCP server
         try results.append(MCPDiscoveryResult{
             .name = "GitHub",
@@ -75,7 +76,7 @@ pub const MCPDiscovery = struct {
         });
     }
 
-    pub fn searchFilesystem(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    pub fn searchFilesystem(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         if (builtin.target.os.tag == .windows) {
             try self.searchWindows(results, term);
         } else {
@@ -83,7 +84,7 @@ pub const MCPDiscovery = struct {
         }
     }
 
-    fn searchWindows(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    fn searchWindows(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         _ = self;
         _ = results;
         _ = term;
@@ -93,7 +94,7 @@ pub const MCPDiscovery = struct {
         // TODO: Implement Windows registry search
     }
 
-    fn searchUnix(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    fn searchUnix(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         // Search common installation directories
         const search_paths = [_][]const u8{
             "/usr/local/bin",
@@ -113,7 +114,7 @@ pub const MCPDiscovery = struct {
         try self.searchPackageManagers(results, term);
     }
 
-    fn searchDirectory(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), dir: []const u8, term: []const u8) !bool {
+    fn searchDirectory(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), dir: []const u8, term: []const u8) !bool {
         var dir_iter = std.fs.openDirAbsolute(dir, .{ .iterate = true }) catch |err| {
             std.log.err("Failed to open directory {s}: {}", .{ dir, err });
             return false;
@@ -199,7 +200,7 @@ pub const MCPDiscovery = struct {
 
     fn detectServerCapabilities(self: *MCPDiscovery, path: []const u8) ![]const u8 {
         // For local servers, assume basic capabilities
-        var capabilities = std.ArrayList([]const u8).init(self.allocator);
+        var capabilities = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer capabilities.deinit();
 
         try capabilities.append("tools/list");
@@ -218,7 +219,7 @@ pub const MCPDiscovery = struct {
         return capabilities.toOwnedSlice();
     }
 
-    fn searchPackageManagers(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    fn searchPackageManagers(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         // Search npm global packages for MCP servers
         const npm_path = try std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{std.process.getEnvVar("HOME") orelse "/home/user"});
         if (self.searchDirectory(results, npm_path, term)) {
@@ -226,7 +227,7 @@ pub const MCPDiscovery = struct {
         }
     }
 
-    fn searchRegistry(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    fn searchRegistry(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         _ = self;
         _ = results;
         _ = term;
@@ -235,7 +236,7 @@ pub const MCPDiscovery = struct {
         std.log.info("Searching npm registry for MCP servers");
     }
 
-    fn searchConfig(self: *MCPDiscovery, results: *std.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
+    fn searchConfig(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         _ = self;
         _ = results;
         _ = term;

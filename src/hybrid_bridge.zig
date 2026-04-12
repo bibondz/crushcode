@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
@@ -275,7 +276,7 @@ pub const HybridBridge = struct {
 
     // Get available tools (built-in + MCP)
     pub fn listAvailableTools(self: *HybridBridge) ![]ToolInfo {
-        var tools = std.ArrayList(ToolInfo).init(self.allocator);
+        var tools = array_list_compat.ArrayList(ToolInfo).init(self.allocator);
         defer tools.deinit();
         
         // Add built-in tools

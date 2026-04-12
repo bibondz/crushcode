@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const hashline_mod = @import("hashline.zig");
 
 const Allocator = std.mem.Allocator;
@@ -31,7 +32,7 @@ pub const StaleLineInfo = struct {
 pub const HashIndex = struct {
     allocator: Allocator,
     file_path: []const u8,
-    entries: std.ArrayList(HashlineEntry),
+    entries: array_list_compat.ArrayList(HashlineEntry),
     file_hash: u32, // FNV-1a hash of entire file for quick staleness check
     line_count: u32,
 
@@ -39,7 +40,7 @@ pub const HashIndex = struct {
         return HashIndex{
             .allocator = allocator,
             .file_path = file_path,
-            .entries = std.ArrayList(HashlineEntry).init(allocator),
+            .entries = array_list_compat.ArrayList(HashlineEntry).init(allocator),
             .file_hash = 0,
             .line_count = 0,
         };
@@ -170,7 +171,10 @@ pub const HashCache = struct {
                 return existing;
             }
             // Stale — rebuild
-            existing.buildFromContent(content) catch {};
+            existing.buildFromContent(content) catch |err| {
+                std.log.warn("HashCache: failed to rebuild stale index for '{s}': {}", .{ file_path, err });
+                return existing;
+            };
             return existing;
         }
 

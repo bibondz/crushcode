@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -27,12 +28,12 @@ pub const Skill = struct {
 /// Skill loader that discovers and parses SKILL.md files
 pub const SkillLoader = struct {
     allocator: Allocator,
-    skills: std.ArrayList(Skill),
+    skills: array_list_compat.ArrayList(Skill),
 
     pub fn init(allocator: Allocator) SkillLoader {
         return SkillLoader{
             .allocator = allocator,
-            .skills = std.ArrayList(Skill).init(allocator),
+            .skills = array_list_compat.ArrayList(Skill).init(allocator),
         };
     }
 
@@ -155,7 +156,7 @@ pub const SkillLoader = struct {
 
     /// Parse comma-separated list
     fn parseCommaList(self: *SkillLoader, value: []const u8) ![][]const u8 {
-        var items = std.ArrayList([]const u8).init(self.allocator);
+        var items = array_list_compat.ArrayList([]const u8).init(self.allocator);
         errdefer {
             for (items.items) |item| self.allocator.free(item);
             items.deinit();
@@ -200,7 +201,7 @@ pub const SkillLoader = struct {
 
     /// Generate XML for AI prompts
     pub fn toPromptXml(self: *SkillLoader, allocator: Allocator) ![]u8 {
-        var output = std.ArrayList(u8).init(allocator);
+        var output = array_list_compat.ArrayList(u8).init(allocator);
         const writer = output.writer();
 
         try writer.writeAll("<available_skills>\n");

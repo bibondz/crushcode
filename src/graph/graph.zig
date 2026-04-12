@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
@@ -11,8 +13,8 @@ const parser = @import("parser.zig");
 pub const KnowledgeGraph = struct {
     allocator: Allocator,
     nodes: std.StringHashMap(*types.GraphNode),
-    edges: std.ArrayList(*types.GraphEdge),
-    communities: std.ArrayList(*types.Community),
+    edges: array_list_compat.ArrayList(*types.GraphEdge),
+    communities: array_list_compat.ArrayList(*types.Community),
     file_count: u32,
     total_source_tokens: u64,
 
@@ -20,8 +22,8 @@ pub const KnowledgeGraph = struct {
         return KnowledgeGraph{
             .allocator = allocator,
             .nodes = std.StringHashMap(*types.GraphNode).init(allocator),
-            .edges = std.ArrayList(*types.GraphEdge).init(allocator),
-            .communities = std.ArrayList(*types.Community).init(allocator),
+            .edges = array_list_compat.ArrayList(*types.GraphEdge).init(allocator),
+            .communities = array_list_compat.ArrayList(*types.Community).init(allocator),
             .file_count = 0,
             .total_source_tokens = 0,
         };
@@ -44,7 +46,7 @@ pub const KnowledgeGraph = struct {
 
     /// Get all nodes of a specific type
     pub fn getNodesByType(self: *KnowledgeGraph, node_type: types.NodeType, allocator: Allocator) ![]*types.GraphNode {
-        var result = std.ArrayList(*types.GraphNode).init(allocator);
+        var result = array_list_compat.ArrayList(*types.GraphNode).init(allocator);
         var iter = self.nodes.iterator();
         while (iter.next()) |entry| {
             if (entry.value_ptr.*.*.node_type == node_type) {
@@ -56,7 +58,7 @@ pub const KnowledgeGraph = struct {
 
     /// Get edges from a node
     pub fn getEdgesFrom(self: *KnowledgeGraph, node_id: []const u8, allocator: Allocator) ![]*types.GraphEdge {
-        var result = std.ArrayList(*types.GraphEdge).init(allocator);
+        var result = array_list_compat.ArrayList(*types.GraphEdge).init(allocator);
         for (self.edges.items) |edge| {
             if (std.mem.eql(u8, edge.source_id, node_id)) {
                 try result.append(edge);
@@ -67,7 +69,7 @@ pub const KnowledgeGraph = struct {
 
     /// Get edges to a node
     pub fn getEdgesTo(self: *KnowledgeGraph, node_id: []const u8, allocator: Allocator) ![]*types.GraphEdge {
-        var result = std.ArrayList(*types.GraphEdge).init(allocator);
+        var result = array_list_compat.ArrayList(*types.GraphEdge).init(allocator);
         for (self.edges.items) |edge| {
             if (std.mem.eql(u8, edge.target_id, node_id)) {
                 try result.append(edge);
@@ -133,7 +135,7 @@ pub const KnowledgeGraph = struct {
     /// Reference: Graphify Leiden community detection
     pub fn detectCommunities(self: *KnowledgeGraph) !void {
         // Simple community detection: group by file path
-        var file_groups = std.StringHashMap(std.ArrayList([]const u8)).init(self.allocator);
+        var file_groups = std.StringHashMap(array_list_compat.ArrayList([]const u8)).init(self.allocator);
         defer {
             var iter = file_groups.iterator();
             while (iter.next()) |entry| {
@@ -150,7 +152,7 @@ pub const KnowledgeGraph = struct {
             const gop = try file_groups.getOrPut(node.file_path);
             if (!gop.found_existing) {
                 gop.key_ptr.* = try self.allocator.dupe(u8, node.file_path);
-                gop.value_ptr.* = std.ArrayList([]const u8).init(self.allocator);
+                gop.value_ptr.* = array_list_compat.ArrayList([]const u8).init(self.allocator);
             }
             try gop.value_ptr.append(try self.allocator.dupe(u8, node.id));
         }
@@ -192,7 +194,7 @@ pub const KnowledgeGraph = struct {
     /// Generate a compressed representation of the graph for AI context
     /// Returns a string with significant token compression vs raw source
     pub fn toCompressedContext(self: *KnowledgeGraph, allocator: Allocator) ![]const u8 {
-        var buf = std.ArrayList(u8).init(allocator);
+        var buf = array_list_compat.ArrayList(u8).init(allocator);
         const writer = buf.writer();
 
         try writer.print("=== Codebase Knowledge Graph ===\n", .{});
@@ -253,7 +255,7 @@ pub const KnowledgeGraph = struct {
 
     /// Print graph statistics
     pub fn printStats(self: *KnowledgeGraph) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("\n=== Knowledge Graph Statistics ===\n", .{}) catch {};
         stdout.print("  Files indexed: {d}\n", .{self.file_count}) catch {};
         stdout.print("  Nodes: {d}\n", .{self.nodes.count()}) catch {};
@@ -299,12 +301,15 @@ pub const KnowledgeGraph = struct {
         // Collect all node pointers first, then clean up
         // (we can't iterate and free keys simultaneously since StringHashMap
         // stores key pointers that are the same as node.id)
-        var node_list = std.ArrayList(*types.GraphNode).init(self.allocator);
+        var node_list = array_list_compat.ArrayList(*types.GraphNode).init(self.allocator);
         defer node_list.deinit();
         {
             var node_iter = self.nodes.iterator();
             while (node_iter.next()) |entry| {
-                node_list.append(entry.value_ptr.*) catch {};
+                node_list.append(entry.value_ptr.*) catch |err| {
+                    std.log.err("KnowledgeGraph.deinit: failed to collect node for cleanup: {}", .{err});
+                    break;
+                };
             }
         }
         // Free the hash map (doesn't free keys — we do that via node deinit)

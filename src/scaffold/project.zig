@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -17,7 +19,7 @@ pub const Requirement = struct {
     description: []const u8,
     priority: Priority,
     category: []const u8, // e.g., "AI", "CLI", "Build"
-    acceptance_criteria: std.ArrayList([]const u8),
+    acceptance_criteria: array_list_compat.ArrayList([]const u8),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, id: []const u8, title: []const u8, priority: Priority) !Requirement {
@@ -27,7 +29,7 @@ pub const Requirement = struct {
             .description = try allocator.dupe(u8, ""),
             .priority = priority,
             .category = try allocator.dupe(u8, "general"),
-            .acceptance_criteria = std.ArrayList([]const u8).init(allocator),
+            .acceptance_criteria = array_list_compat.ArrayList([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
@@ -61,7 +63,7 @@ pub const ScaffoldPhase = struct {
     number: u32,
     name: []const u8,
     description: []const u8,
-    requirement_ids: std.ArrayList([]const u8),
+    requirement_ids: array_list_compat.ArrayList([]const u8),
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, number: u32, name: []const u8) !ScaffoldPhase {
@@ -69,7 +71,7 @@ pub const ScaffoldPhase = struct {
             .number = number,
             .name = try allocator.dupe(u8, name),
             .description = try allocator.dupe(u8, ""),
-            .requirement_ids = std.ArrayList([]const u8).init(allocator),
+            .requirement_ids = array_list_compat.ArrayList([]const u8).init(allocator),
             .allocator = allocator,
         };
     }
@@ -99,18 +101,18 @@ pub const ProjectScaffolder = struct {
     allocator: Allocator,
     project_name: []const u8,
     description: []const u8,
-    tech_stack: std.ArrayList([]const u8),
-    requirements: std.ArrayList(*Requirement),
-    phases: std.ArrayList(*ScaffoldPhase),
+    tech_stack: array_list_compat.ArrayList([]const u8),
+    requirements: array_list_compat.ArrayList(*Requirement),
+    phases: array_list_compat.ArrayList(*ScaffoldPhase),
 
     pub fn init(allocator: Allocator, name: []const u8, description: []const u8) !ProjectScaffolder {
         return ProjectScaffolder{
             .allocator = allocator,
             .project_name = try allocator.dupe(u8, name),
             .description = try allocator.dupe(u8, description),
-            .tech_stack = std.ArrayList([]const u8).init(allocator),
-            .requirements = std.ArrayList(*Requirement).init(allocator),
-            .phases = std.ArrayList(*ScaffoldPhase).init(allocator),
+            .tech_stack = array_list_compat.ArrayList([]const u8).init(allocator),
+            .requirements = array_list_compat.ArrayList(*Requirement).init(allocator),
+            .phases = array_list_compat.ArrayList(*ScaffoldPhase).init(allocator),
         };
     }
 
@@ -131,7 +133,7 @@ pub const ProjectScaffolder = struct {
 
     /// Generate PROJECT.md content
     pub fn generateProjectMd(self: *ProjectScaffolder) ![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = buf.writer();
 
         try writer.print("# {s}\n\n", .{self.project_name});
@@ -151,7 +153,7 @@ pub const ProjectScaffolder = struct {
 
     /// Generate REQUIREMENTS.md content
     pub fn generateRequirementsMd(self: *ProjectScaffolder) ![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = buf.writer();
 
         try writer.print("# Requirements: {s}\n\n", .{self.project_name});
@@ -189,7 +191,7 @@ pub const ProjectScaffolder = struct {
 
     /// Generate ROADMAP.md content
     pub fn generateRoadmapMd(self: *ProjectScaffolder) ![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = buf.writer();
 
         try writer.print("# Roadmap: {s}\n\n", .{self.project_name});
@@ -231,7 +233,7 @@ pub const ProjectScaffolder = struct {
 
     /// Generate suggested directory structure
     pub fn generateStructure(self: *ProjectScaffolder) ![]const u8 {
-        var buf = std.ArrayList(u8).init(self.allocator);
+        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
         const writer = buf.writer();
 
         try writer.print("Suggested directory structure for {s}:\n\n", .{self.project_name});
@@ -261,7 +263,7 @@ pub const ProjectScaffolder = struct {
 
     /// Print scaffolding summary
     pub fn printSummary(self: *ProjectScaffolder) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         stdout.print("\n=== Project Scaffolding: {s} ===\n\n", .{self.project_name}) catch {};
         stdout.print("Description: {s}\n\n", .{self.description}) catch {};
@@ -316,3 +318,256 @@ pub const ProjectScaffolder = struct {
         self.phases.deinit();
     }
 };
+
+// ============================================================
+// Tests
+// ============================================================
+
+const testing = std.testing;
+
+test "Priority - enum values" {
+    try testing.expectEqual(Priority.critical, Priority.critical);
+    try testing.expectEqual(Priority.high, Priority.high);
+    try testing.expectEqual(Priority.medium, Priority.medium);
+    try testing.expectEqual(Priority.low, Priority.low);
+}
+
+test "Requirement - init and deinit" {
+    const req = try Requirement.init(testing.allocator, "REQ-01", "Core feature", .critical);
+    defer {
+        var mutable = req;
+        mutable.deinit();
+    }
+    try testing.expectEqualStrings("REQ-01", req.id);
+    try testing.expectEqualStrings("Core feature", req.title);
+    try testing.expectEqualStrings("", req.description);
+    try testing.expectEqual(Priority.critical, req.priority);
+    try testing.expectEqualStrings("general", req.category);
+    try testing.expectEqual(@as(usize, 0), req.acceptance_criteria.items.len);
+}
+
+test "Requirement - setDescription" {
+    var req = try Requirement.init(testing.allocator, "REQ-01", "Test", .high);
+    defer req.deinit();
+    try req.setDescription("A detailed description");
+    try testing.expectEqualStrings("A detailed description", req.description);
+}
+
+test "Requirement - setCategory" {
+    var req = try Requirement.init(testing.allocator, "REQ-01", "Test", .high);
+    defer req.deinit();
+    try req.setCategory("AI");
+    try testing.expectEqualStrings("AI", req.category);
+}
+
+test "Requirement - addCriterion" {
+    var req = try Requirement.init(testing.allocator, "REQ-01", "Test", .high);
+    defer req.deinit();
+    try req.addCriterion("CLI starts successfully");
+    try req.addCriterion("Shows help output");
+    try testing.expectEqual(@as(usize, 2), req.acceptance_criteria.items.len);
+    try testing.expectEqualStrings("CLI starts successfully", req.acceptance_criteria.items[0]);
+    try testing.expectEqualStrings("Shows help output", req.acceptance_criteria.items[1]);
+}
+
+test "ScaffoldPhase - init and deinit" {
+    const phase = try ScaffoldPhase.init(testing.allocator, 1, "Core Setup");
+    defer {
+        var mutable = phase;
+        mutable.deinit();
+    }
+    try testing.expectEqual(@as(u32, 1), phase.number);
+    try testing.expectEqualStrings("Core Setup", phase.name);
+    try testing.expectEqualStrings("", phase.description);
+    try testing.expectEqual(@as(usize, 0), phase.requirement_ids.items.len);
+}
+
+test "ScaffoldPhase - setDescription" {
+    var phase = try ScaffoldPhase.init(testing.allocator, 1, "Test");
+    defer phase.deinit();
+    try phase.setDescription("Set up the project foundation");
+    try testing.expectEqualStrings("Set up the project foundation", phase.description);
+}
+
+test "ScaffoldPhase - addRequirement" {
+    var phase = try ScaffoldPhase.init(testing.allocator, 1, "Test");
+    defer phase.deinit();
+    try phase.addRequirement("REQ-01");
+    try phase.addRequirement("REQ-02");
+    try testing.expectEqual(@as(usize, 2), phase.requirement_ids.items.len);
+    try testing.expectEqualStrings("REQ-01", phase.requirement_ids.items[0]);
+    try testing.expectEqualStrings("REQ-02", phase.requirement_ids.items[1]);
+}
+
+test "ProjectScaffolder - init and deinit" {
+    var s = try ProjectScaffolder.init(testing.allocator, "my-app", "A cool app");
+    defer s.deinit();
+    try testing.expectEqualStrings("my-app", s.project_name);
+    try testing.expectEqualStrings("A cool app", s.description);
+    try testing.expectEqual(@as(usize, 0), s.tech_stack.items.len);
+    try testing.expectEqual(@as(usize, 0), s.requirements.items.len);
+    try testing.expectEqual(@as(usize, 0), s.phases.items.len);
+}
+
+test "ProjectScaffolder - addTech" {
+    var s = try ProjectScaffolder.init(testing.allocator, "test", "desc");
+    defer s.deinit();
+    try s.addTech("Zig");
+    try s.addTech("PostgreSQL");
+    try testing.expectEqual(@as(usize, 2), s.tech_stack.items.len);
+    try testing.expectEqualStrings("Zig", s.tech_stack.items[0]);
+    try testing.expectEqualStrings("PostgreSQL", s.tech_stack.items[1]);
+}
+
+test "ProjectScaffolder - addRequirement and addPhase" {
+    var s = try ProjectScaffolder.init(testing.allocator, "test", "desc");
+    defer s.deinit();
+
+    const req = try testing.allocator.create(Requirement);
+    req.* = try Requirement.init(testing.allocator, "REQ-01", "Feature", .critical);
+    try s.addRequirement(req);
+
+    const phase = try testing.allocator.create(ScaffoldPhase);
+    phase.* = try ScaffoldPhase.init(testing.allocator, 1, "Setup");
+    try s.addPhase(phase);
+
+    try testing.expectEqual(@as(usize, 1), s.requirements.items.len);
+    try testing.expectEqual(@as(usize, 1), s.phases.items.len);
+}
+
+test "ProjectScaffolder - generateProjectMd" {
+    var s = try ProjectScaffolder.init(testing.allocator, "my-project", "A test project");
+    defer s.deinit();
+    try s.addTech("Zig");
+
+    const md = try s.generateProjectMd();
+    defer testing.allocator.free(md);
+
+    try testing.expect(std.mem.indexOf(u8, md, "# my-project") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "A test project") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Zig") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Requirements") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Roadmap") != null);
+}
+
+test "ProjectScaffolder - generateRequirementsMd" {
+    var s = try ProjectScaffolder.init(testing.allocator, "test-project", "desc");
+    defer s.deinit();
+
+    const req = try testing.allocator.create(Requirement);
+    req.* = try Requirement.init(testing.allocator, "REQ-01", "Auth system", .critical);
+    try req.setDescription("Implement OAuth 2.0");
+    try req.setCategory("Security");
+    try req.addCriterion("Login works");
+    try req.addCriterion("Token refresh works");
+    try s.addRequirement(req);
+
+    const md = try s.generateRequirementsMd();
+    defer testing.allocator.free(md);
+
+    try testing.expect(std.mem.indexOf(u8, md, "REQ-01") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Auth system") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Critical") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Security") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Login works") != null);
+}
+
+test "ProjectScaffolder - generateRequirementsMd groups by priority" {
+    var s = try ProjectScaffolder.init(testing.allocator, "test", "desc");
+    defer s.deinit();
+
+    const req1 = try testing.allocator.create(Requirement);
+    req1.* = try Requirement.init(testing.allocator, "REQ-01", "Low priority", .low);
+    try s.addRequirement(req1);
+
+    const req2 = try testing.allocator.create(Requirement);
+    req2.* = try Requirement.init(testing.allocator, "REQ-02", "Critical", .critical);
+    try s.addRequirement(req2);
+
+    const md = try s.generateRequirementsMd();
+    defer testing.allocator.free(md);
+
+    // Critical should appear before Low
+    const crit_pos = std.mem.indexOf(u8, md, "Critical Priority").?;
+    const low_pos = std.mem.indexOf(u8, md, "Low Priority").?;
+    try testing.expect(crit_pos < low_pos);
+}
+
+test "ProjectScaffolder - generateRoadmapMd" {
+    var s = try ProjectScaffolder.init(testing.allocator, "roadmap-test", "desc");
+    defer s.deinit();
+
+    const ph = try testing.allocator.create(ScaffoldPhase);
+    ph.* = try ScaffoldPhase.init(testing.allocator, 1, "Foundation");
+    try ph.setDescription("Set up project structure");
+    try ph.addRequirement("REQ-01");
+    try s.addPhase(ph);
+
+    const md = try s.generateRoadmapMd();
+    defer testing.allocator.free(md);
+
+    try testing.expect(std.mem.indexOf(u8, md, "Phase 1") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Foundation") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "REQ-01") != null);
+    try testing.expect(std.mem.indexOf(u8, md, "Progress") != null);
+}
+
+test "ProjectScaffolder - generateStructure" {
+    var s = try ProjectScaffolder.init(testing.allocator, "my-app", "desc");
+    defer s.deinit();
+
+    const structure = try s.generateStructure();
+    defer testing.allocator.free(structure);
+
+    try testing.expect(std.mem.indexOf(u8, structure, "my-app") != null);
+    try testing.expect(std.mem.indexOf(u8, structure, "src/") != null);
+    try testing.expect(std.mem.indexOf(u8, structure, "build.zig") != null);
+    try testing.expect(std.mem.indexOf(u8, structure, "PROJECT.md") != null);
+}
+
+test "ProjectScaffolder - full scaffold with multiple requirements and phases" {
+    var s = try ProjectScaffolder.init(testing.allocator, "full-test", "Complete test project");
+    defer s.deinit();
+
+    try s.addTech("Zig");
+    try s.addTech("SQLite");
+
+    // Requirements across priorities
+    const req1 = try testing.allocator.create(Requirement);
+    req1.* = try Requirement.init(testing.allocator, "REQ-01", "CLI", .critical);
+    try req1.addCriterion("Builds and runs");
+    try s.addRequirement(req1);
+
+    const req2 = try testing.allocator.create(Requirement);
+    req2.* = try Requirement.init(testing.allocator, "REQ-02", "Database", .high);
+    try s.addRequirement(req2);
+
+    // Phases
+    const ph1 = try testing.allocator.create(ScaffoldPhase);
+    ph1.* = try ScaffoldPhase.init(testing.allocator, 1, "Setup");
+    try ph1.addRequirement("REQ-01");
+    try s.addPhase(ph1);
+
+    const ph2 = try testing.allocator.create(ScaffoldPhase);
+    ph2.* = try ScaffoldPhase.init(testing.allocator, 2, "Database");
+    try ph2.addRequirement("REQ-02");
+    try s.addPhase(ph2);
+
+    // Generate all outputs
+    const project_md = try s.generateProjectMd();
+    defer testing.allocator.free(project_md);
+    const reqs_md = try s.generateRequirementsMd();
+    defer testing.allocator.free(reqs_md);
+    const roadmap_md = try s.generateRoadmapMd();
+    defer testing.allocator.free(roadmap_md);
+    const structure = try s.generateStructure();
+    defer testing.allocator.free(structure);
+
+    // Verify all outputs contain expected content
+    try testing.expect(std.mem.indexOf(u8, project_md, "full-test") != null);
+    try testing.expect(std.mem.indexOf(u8, reqs_md, "REQ-01") != null);
+    try testing.expect(std.mem.indexOf(u8, reqs_md, "REQ-02") != null);
+    try testing.expect(std.mem.indexOf(u8, roadmap_md, "Phase 1") != null);
+    try testing.expect(std.mem.indexOf(u8, roadmap_md, "Phase 2") != null);
+    try testing.expect(std.mem.indexOf(u8, structure, "src/") != null);
+}

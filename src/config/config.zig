@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const QuantizationConfig = @import("quantization_config.zig").QuantizationConfig;
 
 pub const MCPServerDef = struct {
@@ -103,7 +104,7 @@ pub const Config = struct {
         var line_iter = std.mem.splitScalar(u8, content, '\n');
         var in_quantization_section = false;
         var in_mcp_section = false;
-        var mcp_servers = std.ArrayList(MCPServerDef).init(self.allocator);
+        var mcp_servers = array_list_compat.ArrayList(MCPServerDef).init(self.allocator);
         errdefer {
             for (mcp_servers.items) |*s| s.deinit(self.allocator);
             mcp_servers.deinit();
@@ -112,7 +113,7 @@ pub const Config = struct {
         var current_mcp_url: ?[]const u8 = null;
         var current_mcp_transport: ?[]const u8 = null;
         var current_mcp_command: ?[]const u8 = null;
-        var quantization_content = std.ArrayList(u8).init(self.allocator);
+        var quantization_content = array_list_compat.ArrayList(u8).init(self.allocator);
         defer quantization_content.deinit();
 
         while (line_iter.next()) |line| {
@@ -276,7 +277,7 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
 
     const quantization_section = default_config.quantization.defaultToml();
 
-    var default_content = std.ArrayList(u8).init(std.heap.page_allocator);
+    var default_content = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     defer default_content.deinit();
 
     try default_content.appendSlice(api_keys_section);

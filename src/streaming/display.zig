@@ -1,5 +1,6 @@
 const std = @import("std");
-const types = @import("types.zig");
+const file_compat = @import("file_compat");
+const types = @import("types");
 
 const StreamEvent = types.StreamEvent;
 const StreamEventType = types.StreamEventType;
@@ -22,7 +23,7 @@ pub const StreamDisplay = struct {
 
     /// Display a stream event to the terminal
     pub fn displayEvent(self: *StreamDisplay, event: StreamEvent) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         switch (event.event_type) {
             .token => {
@@ -78,7 +79,7 @@ pub const StreamDisplay = struct {
     /// Print streaming header
     pub fn printHeader(self: *StreamDisplay, provider: []const u8, model: []const u8) void {
         _ = self;
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("\x1b[2mStreaming from {s} ({s})...\x1b[0m\n", .{ provider, model }) catch {};
     }
 

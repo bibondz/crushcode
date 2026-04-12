@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 pub const ProviderType = enum {
     openai,
@@ -296,22 +297,31 @@ pub const ProviderRegistry = struct {
         defer client.deinit();
 
         const uri = try std.Uri.parse("https://opencode.ai/zen/v1/models");
+        const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
+        defer self.allocator.free(auth_header);
 
-        var request = try client.open(.GET, uri, .{});
-        defer request.deinit();
+        const headers = [_]std.http.Header{
+            .{ .name = "Authorization", .value = auth_header },
+        };
 
-        try request.headers.append("Authorization", try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key}));
+        var response_writer = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_writer.deinit();
 
-        const response = try request.send();
-        const body = try response.body().?.readAllAlloc(self.allocator, 1024 * 1024);
-        defer self.allocator.free(body);
+        const response = try client.fetch(.{
+            .method = .GET,
+            .location = .{ .uri = uri },
+            .extra_headers = &headers,
+            .response_writer = &response_writer.writer,
+        });
+
+        const body = response_writer.written();
 
         if (response.status != .ok) {
             return error.FetchFailed;
         }
 
         // Parse JSON response to extract model IDs
-        var model_list = std.ArrayList([]const u8).init(self.allocator);
+        var model_list = array_list_compat.ArrayList([]const u8).init(self.allocator);
 
         // Simple JSON parsing - look for "id":"..." patterns
         var search_idx: usize = 0;

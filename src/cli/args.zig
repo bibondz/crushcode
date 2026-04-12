@@ -6,6 +6,7 @@ pub const Args = struct {
     model: ?[]const u8,
     config_file: ?[]const u8,
     interactive: bool = false,
+    tui: bool = false,
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -22,6 +23,7 @@ pub const Args = struct {
         };
 
         var is_first_arg = true;
+        var command_found = false; // Track if we've identified the command
         while (args_iter.next()) |arg| {
             if (is_first_arg) {
                 // Skip program name
@@ -29,6 +31,14 @@ pub const Args = struct {
                 continue;
             }
 
+            // First non-flag argument is the command
+            if (!command_found and !std.mem.startsWith(u8, arg, "-")) {
+                result.command = arg;
+                command_found = true;
+                continue;
+            }
+
+            // After command is found, or if it's a flag, parse options
             if (std.mem.startsWith(u8, arg, "--")) {
                 // Parse flags with = or space
                 if (std.mem.startsWith(u8, arg, "--provider=")) {
@@ -51,24 +61,20 @@ pub const Args = struct {
                     }
                 } else if (std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "-i")) {
                     result.interactive = true;
-                }
-            } else if (std.mem.eql(u8, result.command, "chat")) {
-                // Still at default command - this should be the actual command
-                // Check if it looks like a flag (starts with -)
-                if (!std.mem.startsWith(u8, arg, "-")) {
-                    result.command = arg;
+                } else if (std.mem.eql(u8, arg, "--tui") or std.mem.eql(u8, arg, "-t")) {
+                    result.tui = true;
                 } else {
-                    // Flag-like argument goes to remaining
+                    // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
                 }
             } else {
-                // Everything else goes to remaining
+                // Positional argument (value for previous flag, or extra args)
                 try remaining_list.append(allocator, try allocator.dupe(u8, arg));
             }
         }
 
         const remaining = try remaining_list.toOwnedSlice(allocator);
-        const has_command = result.command.ptr != "chat".ptr;
+        const has_command = command_found;
 
         return Args{
             .command = try allocator.dupe(u8, result.command),
@@ -76,6 +82,7 @@ pub const Args = struct {
             .model = if (result.model) |m| try allocator.dupe(u8, m) else null,
             .config_file = if (result.config_file) |c| try allocator.dupe(u8, c) else null,
             .interactive = result.interactive,
+            .tui = result.tui,
             .remaining = remaining,
             .has_command = has_command,
         };

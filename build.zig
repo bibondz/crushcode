@@ -3,6 +3,16 @@ const std = @import("std");
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const compat_array_list_mod = b.createModule(.{
+        .root_source_file = b.path("src/compat/array_list.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const compat_file_mod = b.createModule(.{
+        .root_source_file = b.path("src/compat/file.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // CLI module
     const cli_mod = b.createModule(.{
@@ -18,6 +28,26 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Protocol modules — standalone type definitions
+    const ai_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/ai_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const tool_types_mod = b.createModule(.{
+        .root_source_file = b.path("src/protocol/tool_types.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const tool_loader_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/tool_loader.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    tool_loader_mod.addImport("tool_types", tool_types_mod);
+
     // Client module
     const client_mod = b.createModule(.{
         .root_source_file = b.path("src/ai/client.zig"),
@@ -25,6 +55,8 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     client_mod.addImport("registry", registry_mod);
+    client_mod.addImport("ai_types", ai_types_mod);
+    client_mod.addImport("tool_types", tool_types_mod);
 
     // Config module
     const config_mod = b.createModule(.{
@@ -39,6 +71,16 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+
+    // TOML parser module
+    const toml_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/toml.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    config_mod.addImport("toml", toml_mod);
+    provider_config_mod.addImport("toml", toml_mod);
 
     // File operations module
     const fileops_mod = b.createModule(.{
@@ -67,11 +109,25 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     chat_mod.addImport("args", cli_mod);
+    chat_mod.addImport("ai_types", ai_types_mod);
     chat_mod.addImport("registry", registry_mod);
     chat_mod.addImport("config", config_mod);
     chat_mod.addImport("client", client_mod);
     chat_mod.addImport("provider_config", provider_config_mod);
     chat_mod.addImport("plugin", plugin_mod);
+    chat_mod.addImport("tool_loader", tool_loader_mod);
+
+    const plugin_command_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/plugin_command.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const default_commands_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/default_commands.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    plugin_command_mod.addImport("default_commands", default_commands_mod);
 
     // Shell module
     const shell_mod = b.createModule(.{
@@ -103,12 +159,13 @@ pub fn build(b: *std.Build) !void {
     });
     skills_mod.addImport("shell", shell_mod);
 
-    // TUI module
+    // TUI backend module
     const tui_mod = b.createModule(.{
-        .root_source_file = b.path("src/commands/tui.zig"),
+        .root_source_file = b.path("src/tui/mod.zig"),
         .target = target,
         .optimize = optimize,
     });
+    chat_mod.addImport("tui", tui_mod);
 
     // Install module
     const install_mod = b.createModule(.{
@@ -214,8 +271,25 @@ pub fn build(b: *std.Build) !void {
     streaming_session_mod.addImport("ndjson_mod", ndjson_mod);
     streaming_session_mod.addImport("sse_mod", sse_mod);
 
+    const core_api_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/api.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    core_api_mod.addImport("ai_types", ai_types_mod);
+    core_api_mod.addImport("tool_types", tool_types_mod);
+    core_api_mod.addImport("client", client_mod);
+    core_api_mod.addImport("streaming_types", streaming_types_mod);
+    core_api_mod.addImport("streaming", streaming_session_mod);
+    core_api_mod.addImport("streaming_buffer", streaming_buffer_mod);
+    core_api_mod.addImport("streaming_display", streaming_display_mod);
+
+    // Add core_api to TUI module
+    tui_mod.addImport("core_api", core_api_mod);
+
     // Wire streaming into chat module
     chat_mod.addImport("streaming", streaming_session_mod);
+    chat_mod.addImport("core_api", core_api_mod);
 
     // Usage tracking modules (Phase 15)
     const usage_tracker_mod = b.createModule(.{
@@ -278,6 +352,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     handlers_mod.addImport("args", cli_mod);
+    handlers_mod.addImport("ai_types", ai_types_mod);
     handlers_mod.addImport("registry", registry_mod);
     handlers_mod.addImport("config", config_mod);
     handlers_mod.addImport("chat", chat_mod);
@@ -289,10 +364,12 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("tui", tui_mod);
     handlers_mod.addImport("install", install_mod);
     handlers_mod.addImport("jobs", jobs_mod);
+    handlers_mod.addImport("plugin_command", plugin_command_mod);
     handlers_mod.addImport("skills_loader", skills_loader_mod);
     handlers_mod.addImport("tools", tools_mod);
     handlers_mod.addImport("usage_tracker", usage_tracker_mod);
     handlers_mod.addImport("usage_pricing", usage_pricing_mod);
+    handlers_mod.addImport("core_api", core_api_mod);
 
     // Main module
     const main_mod = b.createModule(.{
@@ -305,6 +382,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("config", config_mod);
     main_mod.addImport("provider_config", provider_config_mod);
     main_mod.addImport("plugin", plugin_mod);
+    main_mod.addImport("tui", tui_mod);
 
     // Phase 14-16 modules — registered on main for availability
     main_mod.addImport("streaming", streaming_session_mod);
@@ -395,6 +473,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    agent_loop_mod.addImport("ai_types", ai_types_mod);
 
     // Phase 25: Phase Workflow System (GSD-inspired)
     const workflow_mod = b.createModule(.{
@@ -461,6 +540,76 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("compaction", compaction_mod);
     chat_mod.addImport("graph", graph_mod);
     chat_mod.addImport("mcp_bridge", mcp_bridge_mod);
+    chat_mod.addImport("agent_loop", agent_loop_mod);
+    chat_mod.addImport("tools", tools_mod);
+    chat_mod.addImport("streaming_types", streaming_types_mod);
+
+    for (&[_]*std.Build.Module{
+        cli_mod,
+        registry_mod,
+        ai_types_mod,
+        tool_types_mod,
+        tool_loader_mod,
+        client_mod,
+        config_mod,
+        provider_config_mod,
+        toml_mod,
+        fileops_mod,
+        plugin_mod,
+        read_mod,
+        chat_mod,
+        plugin_command_mod,
+        default_commands_mod,
+        shell_mod,
+        write_mod,
+        git_mod,
+        skills_mod,
+        tui_mod,
+        install_mod,
+        jobs_mod,
+        quantization_mod,
+        bitpack_mod,
+        value_quant_mod,
+        key_quant_mod,
+        skills_loader_mod,
+        tools_mod,
+        streaming_types_mod,
+        streaming_buffer_mod,
+        streaming_display_mod,
+        ndjson_mod,
+        sse_mod,
+        streaming_session_mod,
+        core_api_mod,
+        usage_tracker_mod,
+        usage_pricing_mod,
+        usage_budget_mod,
+        usage_report_mod,
+        hashline_mod,
+        hash_index_mod,
+        conflict_mod,
+        validated_edit_mod,
+        handlers_mod,
+        main_mod,
+        fallback_mod,
+        parallel_mod,
+        skill_import_mod,
+        worktree_mod,
+        lifecycle_hooks_mod,
+        intent_gate_mod,
+        graph_types_mod,
+        graph_parser_mod,
+        graph_mod,
+        agent_loop_mod,
+        workflow_mod,
+        compaction_mod,
+        scaffold_mod,
+        mcp_client_mod,
+        mcp_discovery_mod,
+        mcp_bridge_mod,
+    }) |module| {
+        module.addImport("array_list_compat", compat_array_list_mod);
+        module.addImport("file_compat", compat_file_mod);
+    }
 
     // Executable
     const exe = b.addExecutable(.{
@@ -483,10 +632,40 @@ pub fn build(b: *std.Build) !void {
         .root_module = graph_mod,
     });
 
+    const agent_loop_tests = b.addTest(.{
+        .root_module = agent_loop_mod,
+    });
+
+    const workflow_tests = b.addTest(.{
+        .root_module = workflow_mod,
+    });
+
+    const compaction_tests = b.addTest(.{
+        .root_module = compaction_mod,
+    });
+
+    const scaffold_tests = b.addTest(.{
+        .root_module = scaffold_mod,
+    });
+
+    const toml_tests = b.addTest(.{
+        .root_module = toml_mod,
+    });
+
+    const tui_tests = b.addTest(.{
+        .root_module = tui_mod,
+    });
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&mcp_client_tests.step);
     test_step.dependOn(&graph_parser_tests.step);
     test_step.dependOn(&graph_tests.step);
+    test_step.dependOn(&agent_loop_tests.step);
+    test_step.dependOn(&workflow_tests.step);
+    test_step.dependOn(&compaction_tests.step);
+    test_step.dependOn(&scaffold_tests.step);
+    test_step.dependOn(&toml_tests.step);
+    test_step.dependOn(&tui_tests.step);
 
     // E2E test step (requires RUN_MCP_E2E_TESTS=1 env var)
     const mcp_e2e_tests = b.addTest(.{

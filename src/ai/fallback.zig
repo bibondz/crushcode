@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -30,14 +32,14 @@ pub const FallbackResult = struct {
 ///   max_retries = 2
 pub const FallbackChain = struct {
     allocator: Allocator,
-    chain: std.ArrayList(FallbackEntry),
+    chain: array_list_compat.ArrayList(FallbackEntry),
     retry_delay_ms: u64,
     max_retries: u32,
 
     pub fn init(allocator: Allocator) FallbackChain {
         return FallbackChain{
             .allocator = allocator,
-            .chain = std.ArrayList(FallbackEntry).init(allocator),
+            .chain = array_list_compat.ArrayList(FallbackEntry).init(allocator),
             .retry_delay_ms = 1000,
             .max_retries = 2,
         };
@@ -107,7 +109,7 @@ pub const FallbackChain = struct {
 
     /// Print the fallback chain configuration
     pub fn printChain(self: *const FallbackChain) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("=== Fallback Chain ===\n", .{}) catch {};
         for (self.chain.items, 1..) |entry, i| {
             stdout.print("  {d}. {s}/{s}\n", .{ i, entry.provider, entry.model }) catch {};

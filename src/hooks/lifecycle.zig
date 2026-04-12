@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -74,12 +76,12 @@ pub const Hook = struct {
 /// Reference: oh-my-openagent 52 lifecycle hooks in 3 tiers
 pub const LifecycleHooks = struct {
     allocator: Allocator,
-    hooks: std.ArrayList(Hook),
+    hooks: array_list_compat.ArrayList(Hook),
 
     pub fn init(allocator: Allocator) LifecycleHooks {
         return LifecycleHooks{
             .allocator = allocator,
-            .hooks = std.ArrayList(Hook).init(allocator),
+            .hooks = array_list_compat.ArrayList(Hook).init(allocator),
         };
     }
 
@@ -152,7 +154,7 @@ pub const LifecycleHooks = struct {
 
     /// Get hooks by tier
     pub fn getByTier(self: *LifecycleHooks, tier: HookTier) ![]const Hook {
-        var result = std.ArrayList(Hook).init(self.allocator);
+        var result = array_list_compat.ArrayList(Hook).init(self.allocator);
         for (self.hooks.items) |hook| {
             if (hook.tier == tier) {
                 try result.append(hook);
@@ -163,7 +165,7 @@ pub const LifecycleHooks = struct {
 
     /// Print all registered hooks
     pub fn printHooks(self: *LifecycleHooks) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("\n=== Lifecycle Hooks ({d} registered) ===\n", .{self.hooks.items.len}) catch {};
 
         for (self.hooks.items) |hook| {

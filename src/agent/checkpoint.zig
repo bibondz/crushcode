@@ -1,4 +1,6 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -55,7 +57,7 @@ pub const CheckpointManager = struct {
         const filename = try std.fmt.allocPrint(self.allocator, "{s}/checkpoint_{s}.json", .{ self.checkpoint_dir, checkpoint.id });
         defer self.allocator.free(filename);
 
-        const file = try std.fs.cwd().createFile(filename, .{ .truncate = true });
+        const file = file_compat.wrap(try std.fs.cwd().createFile(filename, .{ .truncate = true }));
         defer file.close();
 
         const writer = file.writer();
@@ -98,7 +100,7 @@ pub const CheckpointManager = struct {
 
         const root = parsed.value;
 
-        var messages = std.ArrayList(Checkpoint.CheckpointMessage).init(self.allocator);
+        var messages = array_list_compat.ArrayList(Checkpoint.CheckpointMessage).init(self.allocator);
         errdefer {
             for (messages.items) |msg| {
                 self.allocator.free(msg.role);
@@ -132,7 +134,7 @@ pub const CheckpointManager = struct {
 
     /// List available checkpoints
     pub fn list(self: *CheckpointManager) ![][]const u8 {
-        var checkpoints = std.ArrayList([]const u8).init(self.allocator);
+        var checkpoints = array_list_compat.ArrayList([]const u8).init(self.allocator);
         errdefer {
             for (checkpoints.items) |cp| self.allocator.free(cp);
             checkpoints.deinit();

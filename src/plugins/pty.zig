@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
 const c = @cImport(@cInclude("sys/ioctl.h"));
 
@@ -32,7 +33,7 @@ pub const PTYPlugin = struct {
             .kill => return self.killSession(request),
             .resize => return self.resizeTerminal(request),
             .open_dashboard => return self.openDashboard(request),
-            else => return PTYResponse{ .success = false, .error = "Unknown PTY method" },
+            else => return PTYResponse{ .success = false, .err = "Unknown PTY method" },
         }
     }
 
@@ -40,10 +41,7 @@ pub const PTYPlugin = struct {
         const session_id = try std.fmt.allocPrint(self.allocator, "pty_{}", .{std.time.timestamp()});
         defer self.allocator.free(session_id);
 
-        const cmd_parts = request.args.command_parts orelse return PTYResponse{ 
-            .success = false, 
-            .error = "No command parts provided" 
-        };
+        const cmd_parts = request.args.command_parts orelse return PTYResponse{ .success = false, .err = "No command parts provided" };
 
         var cmd_args = try self.allocator.alloc([]const u8, cmd_parts.len);
         defer self.allocator.free(cmd_args);
@@ -74,7 +72,7 @@ pub const PTYPlugin = struct {
         } else {
             return PTYResponse{
                 .success = false,
-                .error = pty_result.error_msg orelse "Failed to spawn PTY",
+                .err = pty_result.error_msg orelse "Failed to spawn PTY",
             };
         }
     }
@@ -138,7 +136,7 @@ pub const PTYPlugin = struct {
                     const equals = std.mem.indexOf(u8, env_var, '=');
                     if (equals) |idx| {
                         var key = env_var[0..idx];
-                        var value = env_var[idx + 1..];
+                        var value = env_var[idx + 1 ..];
                         c.setenv(&key, &value);
                     }
                 }
@@ -177,29 +175,29 @@ pub const PTYPlugin = struct {
 
     fn writeToTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
         const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .error = "Session not found" };
+            return PTYResponse{ .success = false, .err = "Session not found" };
         };
 
         const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .error = "Session PID not found" };
+        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
 
         const pid = @intCast(pid_val.integer);
         _ = self;
         _ = request.args.data.?;
         _ = pid;
-        return PTYResponse{ .success = false, .error = "Windows PTY write not implemented" };
+        return PTYResponse{ .success = false, .err = "Windows PTY write not implemented" };
     }
 
     fn readFromTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
         const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .error = "Session not found" };
+            return PTYResponse{ .success = false, .err = "Session not found" };
         };
 
         const session_obj = session_value.object;
         const last_read_val = session_obj.get("last_read") orelse .{ .integer = 0 };
         const last_read = @intCast(last_read_val.integer);
 
-        var buffer = std.ArrayList(u8).init(self.allocator);
+        var buffer = array_list_compat.ArrayList(u8).init(self.allocator);
         defer buffer.deinit();
 
         try buffer.appendSlice("Terminal output from session ");
@@ -239,17 +237,17 @@ pub const PTYPlugin = struct {
 
     fn killSession(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
         const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .error = "Session not found" };
+            return PTYResponse{ .success = false, .err = "Session not found" };
         };
 
         const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .error = "Session PID not found" };
+        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
 
         const pid = @intCast(pid_val.integer);
 
         if (builtin.target.os.tag == .windows) {
             _ = pid;
-            return PTYResponse{ .success = false, .error = "Windows PTY kill not implemented" };
+            return PTYResponse{ .success = false, .err = "Windows PTY kill not implemented" };
         } else {
             _ = c.kill(pid, 9);
         }
@@ -264,11 +262,11 @@ pub const PTYPlugin = struct {
 
     fn resizeTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
         const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .error = "Session not found" };
+            return PTYResponse{ .success = false, .err = "Session not found" };
         };
 
         const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .error = "Session PID not found" };
+        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
 
         const pid = @intCast(pid_val.integer);
         const rows = request.args.rows orelse 24;
@@ -279,7 +277,7 @@ pub const PTYPlugin = struct {
             _ = pid;
             _ = rows;
             _ = cols;
-            return PTYResponse{ .success = false, .error = "Windows PTY resize not implemented" };
+            return PTYResponse{ .success = false, .err = "Windows PTY resize not implemented" };
         } else {
             const winsize = c.winsize{
                 .ws_row = rows,
@@ -291,7 +289,7 @@ pub const PTYPlugin = struct {
             if (c.ioctl(pid, c.TIOCSWINSZ, &winsize) != 0) {
                 return PTYResponse{
                     .success = false,
-                    .error = "Failed to resize terminal",
+                    .err = "Failed to resize terminal",
                 };
             }
         }
@@ -329,7 +327,7 @@ pub const PTYResponse = struct {
     success: bool,
     data: ?std.json.Value = null,
     message: ?[]const u8 = null,
-    error: ?[]const u8 = null,
+    err: ?[]const u8 = null,
 };
 
 pub const PTYMethod = enum {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -16,7 +17,7 @@ pub const TableFormatterPlugin = struct {
     }
 
     pub fn formatMarkdownTables(self: *TableFormatterPlugin, text: []const u8) ![]const u8 {
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = array_list_compat.ArrayList(u8).init(self.allocator);
         defer result.deinit();
 
         var idx: usize = 0;
@@ -98,7 +99,7 @@ pub const TableFormatterPlugin = struct {
 
     fn formatTable(self: *TableFormatterPlugin, table_text: []const u8) ![]const u8 {
         var lines = std.mem.splitScalar(u8, table_text, '\n');
-        var rows = std.ArrayList(Table).init(self.allocator);
+        var rows = array_list_compat.ArrayList(Table).init(self.allocator);
         defer rows.deinit();
 
         while (lines.next()) |line| {
@@ -130,7 +131,7 @@ pub const TableFormatterPlugin = struct {
             }
         }
 
-        var result = std.ArrayList(u8).init(self.allocator);
+        var result = array_list_compat.ArrayList(u8).init(self.allocator);
         defer result.deinit();
 
         for (rows.items, 0..) |row, row_idx| {
@@ -170,7 +171,7 @@ pub const TableFormatterPlugin = struct {
     fn parseTableRow(self: *TableFormatterPlugin, line: []const u8) !Table {
         _ = self;
 
-        var cells = std.ArrayList([]const u8).init(self.allocator);
+        var cells = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer cells.deinit();
 
         var i: usize = 1;

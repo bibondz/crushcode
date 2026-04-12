@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const json = std.json;
 const mcp_client = @import("mcp_client");
 const mcp_discovery = @import("discovery");
@@ -34,7 +35,7 @@ pub const MCPServer = struct {
 /// MCP bridge between Crushcode and external MCP servers
 pub const Bridge = struct {
     allocator: Allocator,
-    servers: std.ArrayList(MCPServer),
+    servers: array_list_compat.ArrayList(MCPServer),
     stdio_processes: std.StringArrayHashMap(*std.process.Child),
     http_servers: std.StringArrayHashMap(*anyopaque),
     tool_index: std.StringArrayHashMap(usize),
@@ -43,7 +44,7 @@ pub const Bridge = struct {
     pub fn init(allocator: Allocator, mcp_client_ptr: *mcp_client.MCPClient) !Bridge {
         return Bridge{
             .allocator = allocator,
-            .servers = std.ArrayList(MCPServer).init(allocator),
+            .servers = array_list_compat.ArrayList(MCPServer).init(allocator),
             .stdio_processes = std.StringArrayHashMap(*std.process.Child).init(allocator),
             .http_servers = std.StringArrayHashMap(*anyopaque).init(allocator),
             .tool_index = std.StringArrayHashMap(usize).init(allocator),
@@ -133,8 +134,8 @@ pub const Bridge = struct {
         return "";
     }
 
-    pub fn getToolSchemas(self: *Bridge, allocator: Allocator) (std.mem.Allocator.Error || std.fmt.AllocPrintError)![]const client.ToolSchema {
-        var schemas = std.ArrayList(client.ToolSchema).init(allocator);
+    pub fn getToolSchemas(self: *Bridge, allocator: Allocator) Allocator.Error![]const client.ToolSchema {
+        var schemas = array_list_compat.ArrayList(client.ToolSchema).init(allocator);
         _ = schemas.ensureTotalCapacity(16) catch unreachable;
 
         for (self.servers.items, 0..) |server, server_idx| {

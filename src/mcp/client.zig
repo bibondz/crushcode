@@ -1,4 +1,6 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 const builtin = @import("builtin");
 const json = std.json;
 
@@ -10,7 +12,7 @@ pub const MCPClient = struct {
     tool_mappings: std.json.ObjectMap,
     connections: std.StringHashMap(MCPConnection), // Direct struct storage — process pointers survive
     next_request_id: std.atomic.Value(u64),
-    owned_json_values: std.ArrayList(json.Value), // Tracked for bulk cleanup
+    owned_json_values: array_list_compat.ArrayList(json.Value), // Tracked for bulk cleanup
 
     pub fn init(allocator: Allocator) MCPClient {
         return MCPClient{
@@ -19,7 +21,7 @@ pub const MCPClient = struct {
             .tool_mappings = std.json.ObjectMap.init(allocator),
             .connections = std.StringHashMap(MCPConnection).init(allocator),
             .next_request_id = std.atomic.Value(u64).init(1),
-            .owned_json_values = std.ArrayList(json.Value).init(allocator),
+            .owned_json_values = array_list_compat.ArrayList(json.Value).init(allocator),
         };
     }
 
@@ -274,8 +276,8 @@ pub const MCPClient = struct {
         _ = self;
         const process_ptr = connection.process orelse return error.ProcessNotStarted;
         const child = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
-        try child.stdin.?.writer().writeAll(data);
-        try child.stdin.?.writer().writeByte('\n');
+        try child.stdin.?.writeAll(data);
+        try child.stdin.?.writeAll("\n");
     }
 
     // Send JSON-RPC 2.0 request
@@ -451,14 +453,14 @@ pub const MCPClient = struct {
         const child = @as(*std.process.Child, @ptrCast(@alignCast(process_ptr)));
 
         // Write request to stdin as newline-delimited JSON
-        try child.stdin.?.writer().writeAll(request);
-        try child.stdin.?.writer().writeByte('\n');
+        try child.stdin.?.writeAll(request);
+        try child.stdin.?.writeAll("\n");
 
         // Read response from stdout (newline-delimited JSON)
-        var response_buf = std.ArrayList(u8).init(self.allocator);
+        var response_buf = array_list_compat.ArrayList(u8).init(self.allocator);
         defer response_buf.deinit();
 
-        const reader = child.stdout.?.reader();
+        const reader = file_compat.wrap(child.stdout.?).reader();
         while (true) {
             const byte = reader.readByte() catch break;
             try response_buf.append(byte);
@@ -470,7 +472,7 @@ pub const MCPClient = struct {
 
         // Parse JSON response
         const response_json = json.parseFromSlice(json.Value, self.allocator, trimmed, .{}) catch |err| {
-            std.log.err("Failed to parse stdio response: {!}", .{err});
+            std.log.err("Failed to parse stdio response: {s}", .{@errorName(err)});
             return json.Value{ .string = try self.allocator.dupe(u8, trimmed) };
         };
         defer response_json.deinit();
@@ -483,12 +485,122 @@ pub const MCPClient = struct {
 
     // Send SSE request
     fn sendSSERequest(self: *MCPClient, connection: MCPConnection, request: []const u8) !json.Value {
-        _ = self;
+        const allocator = self.allocator;
 
-        // For SSE, send HTTP request and parse response
-        const url = connection.url orelse "unknown";
-        std.log.info("Sending SSE request to {s}: {s}", .{ url, request });
-        return json.Value{ .string = "sse request not implemented" };
+        // Parse the JSON-RPC request to get id for error handling
+        var request_json = try json.parseFromSlice(json.Value, allocator, request, .{});
+        defer request_json.deinit();
+
+        const request_obj = if (request_json.value == .object) request_json.value.object else return error.InvalidRequest;
+
+        const id = blk: {
+            if (request_obj.get("id")) |i| {
+                break :blk if (i == .integer) i.integer else 0;
+            }
+            break :blk 0;
+        };
+
+        const url = connection.url orelse return error.InvalidUrl;
+        std.log.info("Sending SSE request to {s}", .{url});
+
+        // Build HTTP request
+        const uri = try std.Uri.parse(url);
+
+        var client: std.http.Client = .{ .allocator = allocator };
+        defer client.deinit();
+
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
+        defer headers_buf.deinit();
+
+        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
+        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Accept"), .value = try allocator.dupe(u8, "text/event-stream") });
+
+        // Add custom headers from connection
+        var header_iter = connection.headers.iterator();
+        while (header_iter.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
+            }
+        }
+
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
+
+        const fetch_result = client.fetch(.{
+            .method = .POST,
+            .location = .{ .uri = uri },
+            .payload = request,
+            .extra_headers = headers_buf.items,
+            .response_writer = &response_writer.writer,
+        }) catch |err| {
+            std.log.err("SSE HTTP request failed: {s}", .{@errorName(err)});
+            var error_obj = std.json.ObjectMap.init(allocator);
+            try error_obj.put("code", .{ .integer = -32603 });
+            try error_obj.put("message", .{ .string = try allocator.dupe(u8, @errorName(err)) });
+
+            var response_obj = std.json.ObjectMap.init(allocator);
+            try response_obj.put("jsonrpc", .{ .string = "2.0" });
+            try response_obj.put("error", .{ .object = error_obj });
+            try response_obj.put("id", .{ .integer = id });
+
+            return .{ .object = response_obj };
+        };
+
+        if (fetch_result.status != .ok) {
+            std.log.err("SSE response status: {any}", .{fetch_result.status});
+            var error_obj = std.json.ObjectMap.init(allocator);
+            try error_obj.put("code", .{ .integer = -32001 });
+            try error_obj.put("message", .{ .string = try std.fmt.allocPrint(allocator, "Server returned {any}", .{fetch_result.status}) });
+
+            var response_obj = std.json.ObjectMap.init(allocator);
+            try response_obj.put("jsonrpc", .{ .string = "2.0" });
+            try response_obj.put("error", .{ .object = error_obj });
+            try response_obj.put("id", .{ .integer = id });
+
+            return .{ .object = response_obj };
+        }
+
+        // Parse SSE response: extract JSON from "data: ..." lines
+        // SSE format: "data: {json}\n\n" or "data: {json}\n"
+        const response_body = response_writer.written();
+        var sse_iter = std.mem.splitSequence(u8, response_body, "data: ");
+        while (sse_iter.next()) |data_line| {
+            // Trim trailing newlines and whitespace
+            const trimmed = std.mem.trim(u8, data_line, " \t\r\n");
+            if (trimmed.len == 0) continue;
+
+            // Skip SSE event types (lines like "event: ...")
+            if (std.mem.startsWith(u8, trimmed, "event:")) continue;
+
+            // Try to parse as JSON
+            if (std.mem.startsWith(u8, trimmed, "{") or std.mem.startsWith(u8, trimmed, "[")) {
+                var parsed = json.parseFromSlice(json.Value, allocator, trimmed, .{}) catch {
+                    // Not valid JSON, skip this data line
+                    continue;
+                };
+                defer parsed.deinit();
+
+                // Check if this is our response (has matching id or is a valid JSON-RPC response)
+                if (parsed.value == .object) {
+                    const obj = parsed.value.object;
+                    // Accept the first valid JSON-RPC response
+                    if (obj.get("jsonrpc") != null) {
+                        return try cloneJsonValue(allocator, parsed.value);
+                    }
+                }
+                // Return any valid JSON object as a fallback
+                return try cloneJsonValue(allocator, parsed.value);
+            }
+        }
+
+        // If no SSE data lines found, try parsing the entire body as JSON
+        var response_json = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch {
+            std.log.err("Failed to parse SSE response", .{});
+            return json.Value{ .string = try allocator.dupe(u8, response_body) };
+        };
+        defer response_json.deinit();
+
+        return try cloneJsonValue(allocator, response_json.value);
     }
 
     // Send HTTP request
@@ -523,7 +635,7 @@ pub const MCPClient = struct {
         var client: std.http.Client = .{ .allocator = allocator };
         defer client.deinit();
 
-        var headers_buf = std.ArrayList(std.http.Header).init(allocator);
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
         defer headers_buf.deinit();
 
         try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
@@ -536,17 +648,17 @@ pub const MCPClient = struct {
             }
         }
 
-        var response_buf = std.ArrayList(u8).init(allocator);
-        defer response_buf.deinit();
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
 
         const fetch_result = client.fetch(.{
             .method = .POST,
             .location = .{ .uri = uri },
             .payload = request,
             .extra_headers = headers_buf.items,
-            .response_storage = .{ .dynamic = &response_buf },
+            .response_writer = &response_writer.writer,
         }) catch |err| {
-            std.log.err("HTTP request failed: {!}", .{err});
+            std.log.err("HTTP request failed: {s}", .{@errorName(err)});
             var error_obj = std.json.ObjectMap.init(allocator);
             try error_obj.put("code", .{ .integer = -32603 });
             try error_obj.put("message", .{ .string = try allocator.dupe(u8, @errorName(err)) });
@@ -574,9 +686,10 @@ pub const MCPClient = struct {
         }
 
         // Parse response
-        var response_json = json.parseFromSlice(json.Value, allocator, response_buf.items, .{}) catch |err| {
-            std.log.err("Failed to parse response: {!}", .{err});
-            return json.Value{ .string = response_buf.items };
+        const response_body = response_writer.written();
+        var response_json = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch |err| {
+            std.log.err("Failed to parse response: {s}", .{@errorName(err)});
+            return json.Value{ .string = response_body };
         };
         defer response_json.deinit();
 
@@ -584,13 +697,89 @@ pub const MCPClient = struct {
     }
 
     // Send WebSocket request
+    // Note: Full WebSocket requires framing protocol. For MCP servers,
+    // many also accept HTTP POST as a simpler alternative.
+    // This implementation sends HTTP POST and parses the JSON response.
     fn sendWebSocketRequest(self: *MCPClient, connection: MCPConnection, request: []const u8) !json.Value {
-        _ = self;
+        const allocator = self.allocator;
 
-        // For WebSocket, send message over WebSocket
-        const url = connection.url orelse "unknown";
-        std.log.info("Sending WebSocket request to {s}: {s}", .{ url, request });
-        return json.Value{ .string = "websocket request not implemented" };
+        var request_json = try json.parseFromSlice(json.Value, allocator, request, .{});
+        defer request_json.deinit();
+
+        const request_obj = if (request_json.value == .object) request_json.value.object else return error.InvalidRequest;
+
+        const id = blk: {
+            if (request_obj.get("id")) |i| {
+                break :blk if (i == .integer) i.integer else 0;
+            }
+            break :blk 0;
+        };
+
+        const url = connection.url orelse return error.InvalidUrl;
+        std.log.info("Sending WebSocket-HTTP request to {s}", .{url});
+
+        const uri = try std.Uri.parse(url);
+
+        var client: std.http.Client = .{ .allocator = allocator };
+        defer client.deinit();
+
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
+        defer headers_buf.deinit();
+
+        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
+
+        var header_iter = connection.headers.iterator();
+        while (header_iter.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
+            }
+        }
+
+        var response_writer = std.Io.Writer.Allocating.init(allocator);
+        defer response_writer.deinit();
+
+        const fetch_result = client.fetch(.{
+            .method = .POST,
+            .location = .{ .uri = uri },
+            .payload = request,
+            .extra_headers = headers_buf.items,
+            .response_writer = &response_writer.writer,
+        }) catch |err| {
+            std.log.err("WebSocket-HTTP request failed: {s}", .{@errorName(err)});
+            var error_obj = std.json.ObjectMap.init(allocator);
+            try error_obj.put("code", .{ .integer = -32603 });
+            try error_obj.put("message", .{ .string = try allocator.dupe(u8, @errorName(err)) });
+
+            var response_obj = std.json.ObjectMap.init(allocator);
+            try response_obj.put("jsonrpc", .{ .string = "2.0" });
+            try response_obj.put("error", .{ .object = error_obj });
+            try response_obj.put("id", .{ .integer = id });
+
+            return .{ .object = response_obj };
+        };
+
+        if (fetch_result.status != .ok) {
+            std.log.err("WebSocket-HTTP response status: {any}", .{fetch_result.status});
+            var error_obj = std.json.ObjectMap.init(allocator);
+            try error_obj.put("code", .{ .integer = -32001 });
+            try error_obj.put("message", .{ .string = try std.fmt.allocPrint(allocator, "Server returned {any}", .{fetch_result.status}) });
+
+            var response_obj = std.json.ObjectMap.init(allocator);
+            try response_obj.put("jsonrpc", .{ .string = "2.0" });
+            try response_obj.put("error", .{ .object = error_obj });
+            try response_obj.put("id", .{ .integer = id });
+
+            return .{ .object = response_obj };
+        }
+
+        const response_body = response_writer.written();
+        var response_json = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch {
+            std.log.err("Failed to parse WebSocket-HTTP response", .{});
+            return json.Value{ .string = try allocator.dupe(u8, response_body) };
+        };
+        defer response_json.deinit();
+
+        return try cloneJsonValue(allocator, response_json.value);
     }
 
     // Prepare environment variables for process
@@ -615,7 +804,7 @@ pub const MCPClient = struct {
         const allocator = self.allocator;
 
         // Build argv array
-        var argv = std.ArrayList([]const u8).init(allocator);
+        var argv = array_list_compat.ArrayList([]const u8).init(allocator);
         defer argv.deinit();
 
         try argv.append(command);
@@ -742,9 +931,7 @@ pub const MCPRequest = struct {
         // comptime resolution issues with anyopaque types in scope
         const params_str: []const u8 = switch (self.params) {
             .null => "null",
-            else => blk: {
-                break :blk try json.stringifyAlloc(allocator, self.params, .{});
-            },
+            else => try std.fmt.allocPrint(allocator, "{f}", .{json.fmt(self.params, .{})}),
         };
 
         const result = try std.fmt.allocPrint(allocator,
@@ -969,7 +1156,7 @@ fn buildAuthorizationUrl(
     code_challenge: []const u8,
     allocator: Allocator,
 ) ![]const u8 {
-    var url_builder = std.ArrayList(u8).init(allocator);
+    var url_builder = array_list_compat.ArrayList(u8).init(allocator);
     defer url_builder.deinit();
 
     try url_builder.writer().print("{s}?response_type=code&client_id={s}&redirect_uri={s}&state={s}&code_challenge={s}&code_challenge_method=S256", .{
@@ -1114,7 +1301,7 @@ test "MCPClient - connectToServer stdio with mcp-server-filesystem" {
         try std.fmt.allocPrint(testing.allocator, "mcp-server-filesystem", .{});
     defer testing.allocator.free(server_path);
 
-    var server_args = std.ArrayList([]const u8).init(testing.allocator);
+    var server_args = array_list_compat.ArrayList([]const u8).init(testing.allocator);
     defer server_args.deinit();
     try server_args.append(tmp_dir);
 
@@ -1157,7 +1344,7 @@ test "MCPClient - connectToServer stdio with mcp-server-filesystem" {
     {
         const f = try std.fs.cwd().createFile(tmp_dir ++ "/hello.txt", .{});
         defer f.close();
-        try f.writer().writeAll("Hello from Crushcode MCP test!");
+        try f.writeAll("Hello from Crushcode MCP test!");
     }
 
     // Execute tool: list_directory

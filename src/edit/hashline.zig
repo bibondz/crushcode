@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 /// FNV-1a 32-bit hash for content hashline generation
 /// Fast, zero dependencies, good collision resistance for line content
@@ -72,7 +73,7 @@ pub const Hashline = struct {
 /// Format a full file with hashline annotations
 /// Output: "  LINE#HASH | actual content\n"
 pub fn formatFileWithHashlines(allocator: std.mem.Allocator, content: []const u8) ![]const u8 {
-    var output = std.ArrayList(u8).init(allocator);
+    var output = array_list_compat.ArrayList(u8).init(allocator);
     errdefer output.deinit();
 
     var lines = std.mem.splitScalar(u8, content, '\n');

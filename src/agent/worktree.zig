@@ -1,4 +1,6 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -11,7 +13,7 @@ const Allocator = std.mem.Allocator;
 pub const WorktreeManager = struct {
     allocator: Allocator,
     base_dir: []const u8,
-    active_worktrees: std.ArrayList(WorktreeInfo),
+    active_worktrees: array_list_compat.ArrayList(WorktreeInfo),
 
     pub const WorktreeInfo = struct {
         id: []const u8,
@@ -25,7 +27,7 @@ pub const WorktreeManager = struct {
         return WorktreeManager{
             .allocator = allocator,
             .base_dir = base_dir,
-            .active_worktrees = std.ArrayList(WorktreeInfo).init(allocator),
+            .active_worktrees = array_list_compat.ArrayList(WorktreeInfo).init(allocator),
         };
     }
 
@@ -117,7 +119,7 @@ pub const WorktreeManager = struct {
 
     /// Print active worktrees
     pub fn printActive(self: *WorktreeManager) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
         stdout.print("\n=== Active Worktrees ===\n", .{}) catch {};
         if (self.active_worktrees.items.len == 0) {
             stdout.print("  No active worktrees\n", .{}) catch {};

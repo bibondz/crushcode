@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -123,7 +124,7 @@ pub const GraphEdge = struct {
 pub const Community = struct {
     id: u32,
     name: []const u8,
-    node_ids: std.ArrayList([]const u8),
+    node_ids: array_list_compat.ArrayList([]const u8),
     cohesion: f32, // How tightly connected (0.0-1.0)
     allocator: Allocator,
 
@@ -131,7 +132,7 @@ pub const Community = struct {
         return Community{
             .id = id,
             .name = allocator.dupe(u8, name) catch "",
-            .node_ids = std.ArrayList([]const u8).init(allocator),
+            .node_ids = array_list_compat.ArrayList([]const u8).init(allocator),
             .cohesion = 0.0,
             .allocator = allocator,
         };

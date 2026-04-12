@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const shell = @import("shell");
 
 /// Job control - background jobs management
@@ -19,12 +20,12 @@ pub const JobStatus = enum {
 
 /// Job list manager
 pub const JobManager = struct {
-    jobs: std.ArrayList(Job),
+    jobs: array_list_compat.ArrayList(Job),
     next_id: u32,
 
     pub fn init(allocator: std.mem.Allocator) JobManager {
         return .{
-            .jobs = std.ArrayList(Job).init(allocator),
+            .jobs = array_list_compat.ArrayList(Job).init(allocator),
             .next_id = 1,
         };
     }

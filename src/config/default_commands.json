@@ -1,0 +1,19 @@
+{
+  "commands": [
+    {
+      "name": "agent-loop",
+      "description": "Run a demo agent loop with mock tools",
+      "shell": "echo 'Agent loop demo - use crushcode chat --interactive for real usage'"
+    },
+    {
+      "name": "version",
+      "description": "Show crushcode version",
+      "shell": "echo 'crushcode 0.1.0 (Zig)'"
+    },
+    {
+      "name": "doctor",
+      "description": "Check crushcode configuration and connectivity",
+      "shell": "echo 'Checking crushcode setup...' && ls -la ~/.crushcode/config.toml 2>/dev/null || echo 'No config found. Run crushcode config to create one.'"
+    }
+  ]
+}

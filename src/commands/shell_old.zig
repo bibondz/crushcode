@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
 
 pub const ShellResult = struct {
@@ -27,8 +28,8 @@ fn parseRedirections(
     command: []const u8,
     allocator: std.mem.Allocator,
 ) struct { command: []const u8, redirections: []const Redirect } {
-    var redirections = std.ArrayList(Redirect).init(allocator);
-    var clean_command = std.ArrayList(u8).init(allocator);
+    var redirections = array_list_compat.ArrayList(Redirect).init(allocator);
+    var clean_command = array_list_compat.ArrayList(u8).init(allocator);
     var i: usize = 0;
 
     while (i < command.len) {
@@ -209,7 +210,7 @@ pub fn executeShellCommand(command: []const u8, timeout_seconds: ?u32) !ShellRes
 
 /// Read from pipe into an allocated string
 fn readPipeToString(fd: std.posix.fd_t, allocator: std.mem.Allocator) ![]const u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = array_list_compat.ArrayList(u8).init(allocator);
     var buf: [4096]u8 = undefined;
 
     while (true) {
@@ -314,7 +315,7 @@ fn waitWithTimeoutPipes(
 
 /// Read from pipe into an allocated string (uses provided allocator)
 fn readPipeToStringAlloc(fd: std.posix.fd_t, allocator: std.mem.Allocator) []const u8 {
-    var buffer = std.ArrayList(u8).init(allocator);
+    var buffer = array_list_compat.ArrayList(u8).init(allocator);
     var buf: [4096]u8 = undefined;
 
     while (true) {
@@ -492,7 +493,7 @@ pub fn handleShell(args: [][]const u8) !void {
     // Command is everything from index i onwards
     const command_args = args[i..];
     const allocator = std.heap.page_allocator;
-    var command_buf = std.ArrayList(u8).init(allocator);
+    var command_buf = array_list_compat.ArrayList(u8).init(allocator);
     defer command_buf.deinit();
 
     for (command_args, 0..) |arg, idx| {

@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -174,7 +175,7 @@ pub const ToolRegistry = struct {
 
     /// Get all available (enabled) tools
     pub fn getAvailableTools(self: *ToolRegistry, allocator: Allocator) ![][]const u8 {
-        var available = std.ArrayList([]const u8).init(allocator);
+        var available = array_list_compat.ArrayList([]const u8).init(allocator);
         errdefer available.deinit();
 
         var iter = self.tools.iterator();
@@ -189,7 +190,7 @@ pub const ToolRegistry = struct {
 
     /// Get tools by category
     pub fn getByCategory(self: *ToolRegistry, allocator: Allocator, category: Tool.ToolCategory) ![][]const u8 {
-        var matching = std.ArrayList([]const u8).init(allocator);
+        var matching = array_list_compat.ArrayList([]const u8).init(allocator);
         errdefer matching.deinit();
 
         var iter = self.tools.iterator();

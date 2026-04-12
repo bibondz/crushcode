@@ -1,5 +1,6 @@
 const std = @import("std");
-const types = @import("../types.zig");
+const array_list_compat = @import("array_list_compat");
+const types = @import("types");
 
 const StreamEvent = types.StreamEvent;
 const TokenUsage = types.TokenUsage;
@@ -11,18 +12,18 @@ const StreamError = types.StreamError;
 /// Termination: "data: [DONE]"
 pub const SSEParser = struct {
     allocator: std.mem.Allocator,
-    partial_line: std.ArrayList(u8),
+    partial_line: array_list_compat.ArrayList(u8),
 
     pub fn init(allocator: std.mem.Allocator) SSEParser {
         return SSEParser{
             .allocator = allocator,
-            .partial_line = std.ArrayList(u8).init(allocator),
+            .partial_line = array_list_compat.ArrayList(u8).init(allocator),
         };
     }
 
     /// Parse a chunk of SSE data, returning events for complete messages
     pub fn parse(self: *SSEParser, chunk: []const u8) ![]StreamEvent {
-        var events = std.ArrayList(StreamEvent).init(self.allocator);
+        var events = array_list_compat.ArrayList(StreamEvent).init(self.allocator);
         errdefer events.deinit();
 
         try self.partial_line.appendSlice(chunk);
@@ -43,13 +44,11 @@ pub const SSEParser = struct {
             }
         }
 
-        // Keep remaining partial line
+        // Keep remaining partial line (shift left in-place, no extra allocation)
         if (start > 0) {
             const remaining = self.partial_line.items[start..];
-            const kept = try self.allocator.dupe(u8, remaining);
-            self.partial_line.clearRetainingCapacity();
-            try self.partial_line.appendSlice(kept);
-            self.allocator.free(kept);
+            std.mem.copyForwards(u8, self.partial_line.items, remaining);
+            self.partial_line.shrinkRetainingCapacity(remaining.len);
         }
 
         return events.toOwnedSlice();
@@ -57,8 +56,6 @@ pub const SSEParser = struct {
 
     /// Parse a single SSE line
     fn parseLine(self: *SSEParser, line: []const u8) ?StreamEvent {
-        _ = self;
-
         // SSE lines start with "data: " or "data:"
         const data_prefix = "data: ";
         const data_prefix_short = "data:";
@@ -84,12 +81,12 @@ pub const SSEParser = struct {
         }
 
         // Try Anthropic format
-        if (parseAnthropicFormat(data)) |event| {
+        if (self.parseAnthropicFormat(data)) |event| {
             return event;
         }
 
         // Try OpenAI format
-        if (parseOpenAIFormat(data)) |event| {
+        if (self.parseOpenAIFormat(data)) |event| {
             return event;
         }
 
@@ -99,8 +96,8 @@ pub const SSEParser = struct {
     /// Parse Anthropic SSE format
     /// event: content_block_delta
     /// data: {"type":"content_block_delta","delta":{"type":"text_delta","text":"token"}}
-    fn parseAnthropicFormat(data: []const u8) ?StreamEvent {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
+    fn parseAnthropicFormat(self: *SSEParser, data: []const u8) ?StreamEvent {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{
             .ignore_unknown_fields = true,
         }) catch return null;
         defer parsed.deinit();
@@ -188,8 +185,8 @@ pub const SSEParser = struct {
     }
 
     /// Parse OpenAI streaming format (same as in NDJSON but from SSE data)
-    fn parseOpenAIFormat(data: []const u8) ?StreamEvent {
-        const parsed = std.json.parseFromSlice(std.json.Value, std.heap.page_allocator, data, .{
+    fn parseOpenAIFormat(self: *SSEParser, data: []const u8) ?StreamEvent {
+        const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, data, .{
             .ignore_unknown_fields = true,
         }) catch return null;
         defer parsed.deinit();

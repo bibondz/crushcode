@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
@@ -215,16 +216,16 @@ pub const PermissionConfig = struct {
     /// Current permission mode (Claude Code pattern)
     mode: PermissionMode = .default,
     /// List of permission rules
-    rules: std.ArrayList(PermissionRule),
+    rules: array_list_compat.ArrayList(PermissionRule),
     /// Auto-approved sessions (Crush pattern)
-    auto_approved_sessions: std.ArrayList([]const u8),
+    auto_approved_sessions: array_list_compat.ArrayList([]const u8),
     /// Auto-approved operations (session lineage tracking from OpenCode)
     auto_approved_operations: std.StringHashMap(bool),
 
     pub fn init(allocator: Allocator) PermissionConfig {
         return PermissionConfig{
-            .rules = std.ArrayList(PermissionRule).init(allocator),
-            .auto_approved_sessions = std.ArrayList([]const u8).init(allocator),
+            .rules = array_list_compat.ArrayList(PermissionRule).init(allocator),
+            .auto_approved_sessions = array_list_compat.ArrayList([]const u8).init(allocator),
             .auto_approved_operations = std.StringHashMap(bool).init(allocator),
         };
     }

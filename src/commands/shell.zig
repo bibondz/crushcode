@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
 
 pub const ShellResult = struct {
@@ -23,8 +24,8 @@ const ParsedRedirect = struct {
 
 /// Parse command string and extract redirections (strips them from command)
 fn parseRedirections(command: []const u8, allocator: std.mem.Allocator) struct { command: []const u8, redirections: []const ParsedRedirect } {
-    var redirections = std.ArrayList(ParsedRedirect).init(allocator);
-    var clean_command = std.ArrayList(u8).init(allocator);
+    var redirections = array_list_compat.ArrayList(ParsedRedirect).init(allocator);
+    var clean_command = array_list_compat.ArrayList(u8).init(allocator);
     var i: usize = 0;
 
     while (i < command.len) {
@@ -186,7 +187,7 @@ fn waitWithTimeout(child: *std.process.Child, timeout_seconds: u32) !ShellResult
 
         if (is_done) break;
 
-        std.time.sleep(10 * std.time.ns_per_ms);
+        std.Thread.sleep(10 * std.time.ns_per_ms);
         const elapsed = std.time.milliTimestamp() - start;
         if (elapsed >= timeout_ms) {
             // Timeout reached - kill the process
@@ -308,7 +309,7 @@ pub fn handleShell(args: [][]const u8) !void {
     // Command is everything from index i onwards
     const command_args = args[i..];
     const allocator = std.heap.page_allocator;
-    var command_buf = std.ArrayList(u8).init(allocator);
+    var command_buf = array_list_compat.ArrayList(u8).init(allocator);
     defer command_buf.deinit();
 
     for (command_args, 0..) |arg, idx| {
