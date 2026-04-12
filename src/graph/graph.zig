@@ -79,21 +79,25 @@ pub const KnowledgeGraph = struct {
     /// Index a source file into the graph
     pub fn indexFile(self: *KnowledgeGraph, file_path: []const u8) !void {
         var src_parser = parser.SourceParser.init(self.allocator);
-        const result = src_parser.parseFile(file_path) catch return orelse return;
+        const result_opt = src_parser.parseFile(file_path) catch return orelse return;
+        var result = result_opt;
+        defer result.deinit();
         self.file_count += 1;
 
         // Extract module name from file path
         const module_name = self.extractModuleName(file_path);
-        const module_id = try std.fmt.allocPrint(self.allocator, "mod.{s}", .{module_name});
+        const module_id_tmp = try std.fmt.allocPrint(self.allocator, "mod.{s}", .{module_name});
 
-        // Add module node
+        // Add module node (GraphNode.init dupes the id, so free the tmp after)
         const mod_node = try self.allocator.create(types.GraphNode);
-        mod_node.* = try types.GraphNode.init(self.allocator, module_id, module_name, .module, file_path, 1);
+        mod_node.* = try types.GraphNode.init(self.allocator, module_id_tmp, module_name, .module, file_path, 1);
         try self.addNode(mod_node);
+        self.allocator.free(module_id_tmp);
 
         // Process symbols
         for (result.symbols.items) |sym| {
             const node_id = try std.fmt.allocPrint(self.allocator, "{s}.{s}", .{ module_name, sym.name });
+            // node_id is now owned by the GraphNode and will be freed by deinit
             const node = try self.allocator.create(types.GraphNode);
             node.* = types.GraphNode{
                 .id = node_id,
@@ -111,7 +115,7 @@ pub const KnowledgeGraph = struct {
 
             // Add contains edge: module → symbol
             const edge = try self.allocator.create(types.GraphEdge);
-            edge.* = try types.GraphEdge.init(self.allocator, module_id, node_id, .contains, .extracted);
+            edge.* = try types.GraphEdge.init(self.allocator, mod_node.id, node.id, .contains, .extracted);
             try self.addEdge(edge);
 
             self.total_source_tokens += node.token_count;
@@ -120,7 +124,7 @@ pub const KnowledgeGraph = struct {
         // Process imports
         for (result.imports.items) |imp| {
             const edge = try self.allocator.create(types.GraphEdge);
-            edge.* = try types.GraphEdge.init(self.allocator, module_id, imp, .imports, .extracted);
+            edge.* = try types.GraphEdge.init(self.allocator, mod_node.id, imp, .imports, .extracted);
             try self.addEdge(edge);
         }
     }
@@ -285,19 +289,31 @@ pub const KnowledgeGraph = struct {
     /// Extract module name from file path
     fn extractModuleName(_: *KnowledgeGraph, file_path: []const u8) []const u8 {
         // Get filename without extension
-        const last_slash = std.mem.lastIndexOfScalar(u8, file_path, '/') orelse return file_path;
-        const filename = file_path[last_slash + 1 ..];
+        const last_slash = std.mem.lastIndexOfScalar(u8, file_path, '/') orelse 0;
+        const filename = if (last_slash > 0) file_path[last_slash + 1 ..] else file_path;
         const dot = std.mem.lastIndexOfScalar(u8, filename, '.') orelse return filename;
         return filename[0..dot];
     }
 
     pub fn deinit(self: *KnowledgeGraph) void {
-        var node_iter = self.nodes.iterator();
-        while (node_iter.next()) |entry| {
-            entry.value_ptr.*.deinit();
-            self.allocator.destroy(entry.value_ptr.*);
+        // Collect all node pointers first, then clean up
+        // (we can't iterate and free keys simultaneously since StringHashMap
+        // stores key pointers that are the same as node.id)
+        var node_list = std.ArrayList(*types.GraphNode).init(self.allocator);
+        defer node_list.deinit();
+        {
+            var node_iter = self.nodes.iterator();
+            while (node_iter.next()) |entry| {
+                node_list.append(entry.value_ptr.*) catch {};
+            }
         }
+        // Free the hash map (doesn't free keys — we do that via node deinit)
         self.nodes.deinit();
+        // Now free each node
+        for (node_list.items) |node| {
+            node.deinit();
+            self.allocator.destroy(node);
+        }
 
         for (self.edges.items) |edge| {
             edge.deinit();
@@ -312,3 +328,243 @@ pub const KnowledgeGraph = struct {
         self.communities.deinit();
     }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "KnowledgeGraph init/deinit" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+    try testing.expectEqual(@as(u32, 0), graph.file_count);
+    try testing.expectEqual(@as(u64, 0), graph.total_source_tokens);
+}
+
+test "KnowledgeGraph addNode and getNode" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const node = try testing.allocator.create(types.GraphNode);
+    node.* = try types.GraphNode.init(testing.allocator, "mod.func1", "func1", .function, "src/test.zig", 10);
+    try graph.addNode(node);
+
+    const retrieved = graph.getNode("mod.func1");
+    try testing.expect(retrieved != null);
+    try testing.expectEqualStrings("func1", retrieved.?.name);
+    try testing.expectEqual(types.NodeType.function, retrieved.?.node_type);
+
+    const missing = graph.getNode("mod.nonexistent");
+    try testing.expect(missing == null);
+}
+
+test "KnowledgeGraph addEdge" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const node1 = try testing.allocator.create(types.GraphNode);
+    node1.* = try types.GraphNode.init(testing.allocator, "mod.func1", "func1", .function, "src/a.zig", 1);
+    try graph.addNode(node1);
+
+    const node2 = try testing.allocator.create(types.GraphNode);
+    node2.* = try types.GraphNode.init(testing.allocator, "mod.func2", "func2", .function, "src/b.zig", 5);
+    try graph.addNode(node2);
+
+    const edge = try testing.allocator.create(types.GraphEdge);
+    edge.* = try types.GraphEdge.init(testing.allocator, "mod.func1", "mod.func2", .calls, .extracted);
+    try graph.addEdge(edge);
+
+    try testing.expectEqual(@as(usize, 1), graph.edges.items.len);
+    try testing.expectEqualStrings("mod.func1", graph.edges.items[0].source_id);
+    try testing.expectEqualStrings("mod.func2", graph.edges.items[0].target_id);
+}
+
+test "KnowledgeGraph getNodesByType" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const func_node = try testing.allocator.create(types.GraphNode);
+    func_node.* = try types.GraphNode.init(testing.allocator, "mod.fn1", "fn1", .function, "src/a.zig", 1);
+    try graph.addNode(func_node);
+
+    const struct_node = try testing.allocator.create(types.GraphNode);
+    struct_node.* = try types.GraphNode.init(testing.allocator, "mod.S1", "S1", .struct_decl, "src/a.zig", 10);
+    try graph.addNode(struct_node);
+
+    const mod_node = try testing.allocator.create(types.GraphNode);
+    mod_node.* = try types.GraphNode.init(testing.allocator, "mod.test", "test", .module, "src/a.zig", 1);
+    try graph.addNode(mod_node);
+
+    const funcs = try graph.getNodesByType(.function, testing.allocator);
+    defer testing.allocator.free(funcs);
+    try testing.expectEqual(@as(usize, 1), funcs.len);
+
+    const structs = try graph.getNodesByType(.struct_decl, testing.allocator);
+    defer testing.allocator.free(structs);
+    try testing.expectEqual(@as(usize, 1), structs.len);
+
+    const modules = try graph.getNodesByType(.module, testing.allocator);
+    defer testing.allocator.free(modules);
+    try testing.expectEqual(@as(usize, 1), modules.len);
+}
+
+test "KnowledgeGraph getEdgesFrom/To" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const node_a = try testing.allocator.create(types.GraphNode);
+    node_a.* = try types.GraphNode.init(testing.allocator, "a", "a", .function, "a.zig", 1);
+    try graph.addNode(node_a);
+
+    const node_b = try testing.allocator.create(types.GraphNode);
+    node_b.* = try types.GraphNode.init(testing.allocator, "b", "b", .function, "b.zig", 1);
+    try graph.addNode(node_b);
+
+    const node_c = try testing.allocator.create(types.GraphNode);
+    node_c.* = try types.GraphNode.init(testing.allocator, "c", "c", .function, "c.zig", 1);
+    try graph.addNode(node_c);
+
+    const edge_ab = try testing.allocator.create(types.GraphEdge);
+    edge_ab.* = try types.GraphEdge.init(testing.allocator, "a", "b", .calls, .extracted);
+    try graph.addEdge(edge_ab);
+
+    const edge_ac = try testing.allocator.create(types.GraphEdge);
+    edge_ac.* = try types.GraphEdge.init(testing.allocator, "a", "c", .references, .inferred);
+    try graph.addEdge(edge_ac);
+
+    const from_a = try graph.getEdgesFrom("a", testing.allocator);
+    defer testing.allocator.free(from_a);
+    try testing.expectEqual(@as(usize, 2), from_a.len);
+
+    const to_b = try graph.getEdgesTo("b", testing.allocator);
+    defer testing.allocator.free(to_b);
+    try testing.expectEqual(@as(usize, 1), to_b.len);
+
+    const to_c = try graph.getEdgesTo("c", testing.allocator);
+    defer testing.allocator.free(to_c);
+    try testing.expectEqual(@as(usize, 1), to_c.len);
+}
+
+test "KnowledgeGraph detectCommunities groups nodes by file" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Add module node
+    const mod = try testing.allocator.create(types.GraphNode);
+    mod.* = try types.GraphNode.init(testing.allocator, "mymod", "mymod", .module, "src/mymod.zig", 1);
+    try graph.addNode(mod);
+
+    // Add 3 functions in the same file (enough for community)
+    for ([_][]const u8{ "mymod.fn1", "mymod.fn2", "mymod.fn3" }, 0..) |id, i| {
+        const node = try testing.allocator.create(types.GraphNode);
+        node.* = try types.GraphNode.init(testing.allocator, id, id[7..], .function, "src/mymod.zig", @intCast(i + 1));
+        try graph.addNode(node);
+    }
+
+    try graph.detectCommunities();
+    try testing.expectEqual(@as(usize, 1), graph.communities.items.len);
+    try testing.expect(graph.communities.items[0].node_ids.items.len >= 2);
+}
+
+test "KnowledgeGraph toCompressedContext generates output" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const mod = try testing.allocator.create(types.GraphNode);
+    mod.* = try types.GraphNode.init(testing.allocator, "mymod", "mymod", .module, "src/mymod.zig", 1);
+    try graph.addNode(mod);
+
+    const func = try testing.allocator.create(types.GraphNode);
+    func.* = try types.GraphNode.init(testing.allocator, "mymod.hello", "hello", .function, "src/mymod.zig", 10);
+    try graph.addNode(func);
+
+    const ctx = try graph.toCompressedContext(testing.allocator);
+    defer testing.allocator.free(ctx);
+
+    try testing.expect(std.mem.indexOf(u8, ctx, "Codebase Knowledge Graph") != null);
+    try testing.expect(std.mem.indexOf(u8, ctx, "mymod") != null);
+    try testing.expect(std.mem.indexOf(u8, ctx, "hello") != null);
+}
+
+test "KnowledgeGraph compressionRatio" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // No tokens yet
+    try testing.expectEqual(@as(f64, 0.0), graph.compressionRatio());
+
+    // Add some nodes with token counts
+    const mod = try testing.allocator.create(types.GraphNode);
+    mod.* = try types.GraphNode.init(testing.allocator, "m", "m", .module, "a.zig", 1);
+    try graph.addNode(mod);
+
+    const fn1 = try testing.allocator.create(types.GraphNode);
+    fn1.* = try types.GraphNode.init(testing.allocator, "m.f1", "f1", .function, "a.zig", 1);
+    fn1.token_count = 100;
+    try graph.addNode(fn1);
+
+    graph.total_source_tokens = 100;
+    const ratio = graph.compressionRatio();
+    try testing.expect(ratio > 0.0);
+}
+
+test "KnowledgeGraph extractModuleName" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    const name = graph.extractModuleName("src/graph/parser.zig");
+    try testing.expectEqualStrings("parser", name);
+
+    const name2 = graph.extractModuleName("build.zig");
+    try testing.expectEqualStrings("build", name2);
+
+    const name3 = graph.extractModuleName("src/ai/client.zig");
+    try testing.expectEqualStrings("client", name3);
+}
+
+test "KnowledgeGraph indexFile parses real Zig source" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Index types.zig — should find the module + struct declarations
+    try graph.indexFile("src/graph/types.zig");
+
+    // Module node is "mod.types", symbol nodes are "types.GraphNode" etc.
+    try testing.expect(graph.getNode("mod.types") != null);
+    try testing.expect(graph.getNode("types.GraphNode") != null);
+    try testing.expect(graph.getNode("types.GraphEdge") != null);
+    try testing.expect(graph.getNode("types.Community") != null);
+
+    // Verify it has edges (contains edges from module to symbols)
+    try testing.expect(graph.edges.items.len > 0);
+
+    // Check compressed context
+    const ctx = try graph.toCompressedContext(testing.allocator);
+    defer testing.allocator.free(ctx);
+    try testing.expect(std.mem.indexOf(u8, ctx, "GraphNode") != null);
+    try testing.expect(std.mem.indexOf(u8, ctx, "types") != null);
+}
+
+test "KnowledgeGraph indexFile parses real codebase files" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Index several files to test multi-file graph building
+    try graph.indexFile("src/graph/parser.zig");
+    try graph.indexFile("src/graph/types.zig");
+    try graph.indexFile("src/graph/graph.zig");
+
+    try testing.expectEqual(@as(u32, 3), graph.file_count);
+    try testing.expect(graph.nodes.count() > 10); // Should have many symbols
+
+    // Detect communities
+    try graph.detectCommunities();
+    try testing.expect(graph.communities.items.len > 0);
+
+    // Generate compressed context
+    const ctx = try graph.toCompressedContext(testing.allocator);
+    defer testing.allocator.free(ctx);
+    try testing.expect(std.mem.indexOf(u8, ctx, "Modules") != null);
+    try testing.expect(std.mem.indexOf(u8, ctx, "Symbols") != null);
+}

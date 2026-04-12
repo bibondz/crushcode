@@ -134,7 +134,6 @@ pub const SourceParser = struct {
     fn parseZig(self: *SourceParser, content: []const u8, result: *ParseResult) !void {
         var lines = std.mem.splitSequence(u8, content, "\n");
         var line_num: u32 = 0;
-        var in_doc_comment = false;
         var doc_lines = std.ArrayList([]const u8).init(self.allocator);
         defer {
             for (doc_lines.items) |l| self.allocator.free(l);
@@ -147,10 +146,20 @@ pub const SourceParser = struct {
 
             // Collect doc comments
             if (std.mem.startsWith(u8, trimmed, "///")) {
-                in_doc_comment = true;
                 const doc_text = std.mem.trim(u8, trimmed["///".len..], " ");
                 try doc_lines.append(try self.allocator.dupe(u8, doc_text));
                 continue;
+            }
+            // Non-doc-comment, non-empty line: if it's not a declaration, discard doc comments
+            if (trimmed.len > 0 and
+                !std.mem.startsWith(u8, trimmed, "//") and
+                !std.mem.startsWith(u8, trimmed, "pub fn ") and
+                !std.mem.startsWith(u8, trimmed, "fn ") and
+                !std.mem.startsWith(u8, trimmed, "test ") and
+                !std.mem.startsWith(u8, trimmed, "pub const "))
+            {
+                for (doc_lines.items) |l| self.allocator.free(l);
+                doc_lines.clearRetainingCapacity();
             }
             // Parse top-level declarations
             if (std.mem.startsWith(u8, trimmed, "pub fn ") or std.mem.startsWith(u8, trimmed, "fn ")) {
@@ -171,6 +180,25 @@ pub const SourceParser = struct {
                 // Clear collected doc comments
                 for (doc_lines.items) |l| self.allocator.free(l);
                 doc_lines.clearRetainingCapacity();
+            } else if (std.mem.startsWith(u8, trimmed, "test ")) {
+                // Zig test case: test "name" { ... }
+                var test_name: ?[]const u8 = null;
+                if (std.mem.indexOf(u8, trimmed, "\"")) |start| {
+                    const inner = trimmed[start + 1 ..];
+                    if (std.mem.indexOf(u8, inner, "\"")) |end| {
+                        test_name = inner[0..end];
+                    }
+                }
+                const display_name = test_name orelse "unnamed";
+                const sym = try self.allocator.create(ParsedSymbol);
+                sym.* = try ParsedSymbol.init(self.allocator, display_name, .test_case, line_num);
+                sym.*.signature = try self.allocator.dupe(u8, trimmed);
+                if (doc_lines.items.len > 0) {
+                    sym.*.doc_comment = try std.mem.join(self.allocator, " ", doc_lines.items);
+                }
+                try result.symbols.append(sym);
+                for (doc_lines.items) |l| self.allocator.free(l);
+                doc_lines.clearRetainingCapacity();
             } else if (std.mem.startsWith(u8, trimmed, "pub const ") and std.mem.containsAtLeast(u8, trimmed, 1, "= struct")) {
                 const name = self.extractIdentifier(trimmed["pub const ".len..]);
                 if (name.len > 0) {
@@ -184,6 +212,13 @@ pub const SourceParser = struct {
                 if (name.len > 0) {
                     const sym = try self.allocator.create(ParsedSymbol);
                     sym.* = try ParsedSymbol.init(self.allocator, name, .enum_decl, line_num);
+                    try result.symbols.append(sym);
+                }
+            } else if (std.mem.startsWith(u8, trimmed, "pub const ") and std.mem.containsAtLeast(u8, trimmed, 1, "= union")) {
+                const name = self.extractIdentifier(trimmed["pub const ".len..]);
+                if (name.len > 0) {
+                    const sym = try self.allocator.create(ParsedSymbol);
+                    sym.* = try ParsedSymbol.init(self.allocator, name, .union_decl, line_num);
                     try result.symbols.append(sym);
                 }
             } else if (std.mem.startsWith(u8, trimmed, "const ")) {
@@ -387,7 +422,7 @@ pub const SourceParser = struct {
         const start = "import ".len;
         if (text.len <= start) return null;
         var end: usize = start;
-        while (end < text.len and std.ascii.isAlphanumeric(text[end]) or (end < text.len and text[end] == '.')) {
+        while (end < text.len and (std.ascii.isAlphanumeric(text[end]) or text[end] == '.')) {
             end += 1;
         }
         if (end <= start) return null;
@@ -430,3 +465,308 @@ pub const SourceParser = struct {
         return count;
     }
 };
+
+// ============================================================================
+// Tests
+// ============================================================================
+
+const testing = std.testing;
+
+test "detectLanguage identifies file extensions" {
+    try testing.expectEqual(SourceLanguage.zig, SourceParser.detectLanguage("foo.zig"));
+    try testing.expectEqual(SourceLanguage.typescript, SourceParser.detectLanguage("foo.ts"));
+    try testing.expectEqual(SourceLanguage.typescript, SourceParser.detectLanguage("foo.tsx"));
+    try testing.expectEqual(SourceLanguage.javascript, SourceParser.detectLanguage("foo.js"));
+    try testing.expectEqual(SourceLanguage.javascript, SourceParser.detectLanguage("foo.jsx"));
+    try testing.expectEqual(SourceLanguage.python, SourceParser.detectLanguage("foo.py"));
+    try testing.expectEqual(SourceLanguage.go, SourceParser.detectLanguage("foo.go"));
+    try testing.expectEqual(SourceLanguage.rust, SourceParser.detectLanguage("foo.rs"));
+    try testing.expectEqual(SourceLanguage.unknown, SourceParser.detectLanguage("foo.txt"));
+    try testing.expectEqual(SourceLanguage.unknown, SourceParser.detectLanguage("Makefile"));
+}
+
+test "extractIdentifier stops at non-identifier characters" {
+    var parser = SourceParser.init(testing.allocator);
+    const id = parser.extractIdentifier("sendChat(message: []const u8)");
+    try testing.expectEqualStrings("sendChat", id);
+
+    const id2 = parser.extractIdentifier("MyStruct = struct");
+    try testing.expectEqualStrings("MyStruct", id2);
+
+    const id3 = parser.extractIdentifier("(self: *Foo)");
+    try testing.expectEqualStrings("", id3);
+}
+
+test "extractImportPath extracts Zig @import path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractImportPath("const std = @import(\"std\");");
+    try testing.expectEqualStrings("std", path.?);
+
+    const path2 = parser.extractImportPath("const types = @import(\"types.zig\");");
+    try testing.expectEqualStrings("types.zig", path2.?);
+
+    const no_path = parser.extractImportPath("const foo = bar;");
+    try testing.expect(no_path == null);
+}
+
+test "extractTSImportPath extracts TS import path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractTSImportPath("import { foo } from \"./bar\";");
+    try testing.expectEqualStrings("./bar", path.?);
+
+    const no_import = parser.extractTSImportPath("const x = 1;");
+    try testing.expect(no_import == null);
+}
+
+test "extractPyFromImport extracts Python from-import path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractPyFromImport("from os.path import join");
+    try testing.expectEqualStrings("os.path", path.?);
+}
+
+test "extractPyImport extracts Python import path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractPyImport("import os.path");
+    try testing.expectEqualStrings("os.path", path.?);
+
+    const path2 = parser.extractPyImport("import sys");
+    try testing.expectEqualStrings("sys", path2.?);
+}
+
+test "extractGoImport extracts Go import path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractGoImport("import \"fmt\"");
+    try testing.expectEqualStrings("fmt", path.?);
+}
+
+test "extractRustUse extracts Rust use path" {
+    var parser = SourceParser.init(testing.allocator);
+    const path = parser.extractRustUse("use std::collections::HashMap;");
+    try testing.expectEqualStrings("std::collections::HashMap", path.?);
+
+    const path2 = parser.extractRustUse("use serde::{Serialize, Deserialize};");
+    try testing.expectEqualStrings("serde::", path2.?);
+}
+
+test "countLines counts correctly" {
+    try testing.expectEqual(@as(u32, 1), SourceParser.countLines("hello"));
+    try testing.expectEqual(@as(u32, 3), SourceParser.countLines("a\nb\nc"));
+    try testing.expectEqual(@as(u32, 2), SourceParser.countLines("a\n"));
+}
+
+test "parseZig extracts functions, structs, enums, and imports" {
+    const zig_source =
+        \\const std = @import("std");
+        \\const types = @import("types.zig");
+        \\
+        \\/// Documentation for my function
+        \\pub fn myFunction(x: u32) !void {
+        \\    _ = x;
+        \\}
+        \\
+        \\pub const MyStruct = struct {
+        \\    field: u32,
+        \\};
+        \\
+        \\pub const Color = enum { red, green, blue };
+        \\
+        \\fn helper() void {}
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.zig", .zig);
+    try parser.parseZig(zig_source, &result);
+    defer result.deinit();
+
+    // Should find 4 symbols: myFunction, MyStruct, Color, helper
+    try testing.expectEqual(@as(usize, 4), result.symbols.items.len);
+
+    // Check function names exist
+    var found_count: usize = 0;
+    const expected_names = [_][]const u8{ "myFunction", "MyStruct", "Color", "helper" };
+    for (result.symbols.items) |sym| {
+        for (expected_names) |name| {
+            if (std.mem.eql(u8, sym.name, name)) found_count += 1;
+        }
+    }
+    try testing.expectEqual(@as(usize, expected_names.len), found_count);
+
+    // Check imports
+    try testing.expectEqual(@as(usize, 2), result.imports.items.len);
+    try testing.expectEqualStrings("std", result.imports.items[0]);
+    try testing.expectEqualStrings("types.zig", result.imports.items[1]);
+
+    // Check doc comment on myFunction
+    for (result.symbols.items) |sym| {
+        if (std.mem.eql(u8, sym.name, "myFunction")) {
+            try testing.expect(sym.doc_comment != null);
+            try testing.expect(std.mem.indexOf(u8, sym.doc_comment.?, "Documentation") != null);
+        }
+    }
+}
+
+test "parseZig detects test cases, unions, and doc comments" {
+    const zig_source =
+        \\const std = @import("std");
+        \\
+        \\/// A tagged union for results
+        \\pub const Result = union(enum) {
+        \\    ok: []const u8,
+        \\    err: u32,
+        \\};
+        \\
+        \\test "basic addition" {
+        \\    try std.testing.expectEqual(@as(u32, 3), 1 + 2);
+        \\}
+        \\
+        \\test "string compare" {
+        \\    try std.testing.expect(true);
+        \\}
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.zig", .zig);
+    try parser.parseZig(zig_source, &result);
+    defer result.deinit();
+
+    // Should find: Result (union), "basic addition" (test), "string compare" (test)
+    var test_count: usize = 0;
+    var union_found = false;
+    for (result.symbols.items) |sym| {
+        if (sym.symbol_type == .test_case) {
+            test_count += 1;
+        }
+        if (sym.symbol_type == .union_decl and std.mem.eql(u8, sym.name, "Result")) {
+            union_found = true;
+        }
+    }
+    try testing.expectEqual(@as(usize, 2), test_count);
+    try testing.expect(union_found);
+}
+
+test "parseTypeScript extracts functions, classes, and imports" {
+    const ts_source =
+        \\import { foo } from "./bar";
+        \\
+        \\export function greet(name: string): void {
+        \\    console.log(name);
+        \\}
+        \\
+        \\class MyClass {
+        \\    method() {}
+        \\}
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.ts", .typescript);
+    try parser.parseTypeScript(ts_source, &result);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 2), result.symbols.items.len);
+    try testing.expectEqualStrings("greet", result.symbols.items[0].name);
+    try testing.expectEqual(.function, result.symbols.items[0].symbol_type);
+    try testing.expectEqualStrings("MyClass", result.symbols.items[1].name);
+    try testing.expectEqual(.struct_decl, result.symbols.items[1].symbol_type);
+
+    try testing.expectEqual(@as(usize, 1), result.imports.items.len);
+    try testing.expectEqualStrings("./bar", result.imports.items[0]);
+}
+
+test "parsePython extracts functions, classes, and imports" {
+    const py_source =
+        \\import os.path
+        \\from sys import argv
+        \\
+        \\def hello(name):
+        \\    print(name)
+        \\
+        \\async def fetch(url):
+        \\    pass
+        \\
+        \\class MyService:
+        \\    def run(self):
+        \\        pass
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.py", .python);
+    try parser.parsePython(py_source, &result);
+    defer result.deinit();
+
+    // Should find: hello, fetch, MyService, run (def inside class also detected)
+    try testing.expectEqual(@as(usize, 4), result.symbols.items.len);
+    try testing.expectEqualStrings("hello", result.symbols.items[0].name);
+    try testing.expectEqualStrings("fetch", result.symbols.items[1].name);
+    try testing.expectEqualStrings("MyService", result.symbols.items[2].name);
+    try testing.expectEqualStrings("run", result.symbols.items[3].name);
+
+    // 2 imports
+    try testing.expectEqual(@as(usize, 2), result.imports.items.len);
+}
+
+test "parseGo extracts functions, methods, structs, and imports" {
+    const go_source =
+        \\import "fmt"
+        \\
+        \\func main() {
+        \\    fmt.Println("hello")
+        \\}
+        \\
+        \\func (s *Server) Handle() error {
+        \\    return nil
+        \\}
+        \\
+        \\type Config struct {
+        \\    Port int
+        \\}
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.go", .go);
+    try parser.parseGo(go_source, &result);
+    defer result.deinit();
+
+    // 2 functions + 1 struct
+    try testing.expectEqual(@as(usize, 3), result.symbols.items.len);
+    try testing.expectEqualStrings("main", result.symbols.items[0].name);
+    try testing.expectEqualStrings("Handle", result.symbols.items[1].name);
+    try testing.expectEqualStrings("Config", result.symbols.items[2].name);
+
+    try testing.expectEqual(@as(usize, 1), result.imports.items.len);
+    try testing.expectEqualStrings("fmt", result.imports.items[0]);
+}
+
+test "parseRust extracts functions, structs, enums, and use statements" {
+    const rust_source =
+        \\use std::collections::HashMap;
+        \\
+        \\pub fn new() -> Self {
+        \\    Self {}
+        \\}
+        \\
+        \\struct Inner {
+        \\    data: Vec<u8>,
+        \\}
+        \\
+        \\pub enum Status {
+        \\    Active,
+        \\    Inactive,
+        \\}
+    ;
+
+    var parser = SourceParser.init(testing.allocator);
+    var result = ParseResult.init(testing.allocator, "test.rs", .rust);
+    try parser.parseRust(rust_source, &result);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.symbols.items.len);
+    try testing.expectEqualStrings("new", result.symbols.items[0].name);
+    try testing.expectEqual(.function, result.symbols.items[0].symbol_type);
+    try testing.expectEqualStrings("Inner", result.symbols.items[1].name);
+    try testing.expectEqual(.struct_decl, result.symbols.items[1].symbol_type);
+    try testing.expectEqualStrings("Status", result.symbols.items[2].name);
+    try testing.expectEqual(.enum_decl, result.symbols.items[2].symbol_type);
+
+    try testing.expectEqual(@as(usize, 1), result.imports.items.len);
+    try testing.expectEqualStrings("std::collections::HashMap", result.imports.items[0]);
+}

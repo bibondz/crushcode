@@ -475,8 +475,18 @@ pub fn build(b: *std.Build) !void {
         .root_module = mcp_client_mod,
     });
 
+    const graph_parser_tests = b.addTest(.{
+        .root_module = graph_parser_mod,
+    });
+
+    const graph_tests = b.addTest(.{
+        .root_module = graph_mod,
+    });
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&mcp_client_tests.step);
+    test_step.dependOn(&graph_parser_tests.step);
+    test_step.dependOn(&graph_tests.step);
 
     // E2E test step (requires RUN_MCP_E2E_TESTS=1 env var)
     const mcp_e2e_tests = b.addTest(.{
