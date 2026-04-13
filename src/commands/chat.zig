@@ -26,11 +26,22 @@ const json_output_mod = @import("json_output");
 const permission_mod = @import("permission_evaluate");
 const theme_mod = @import("theme");
 const memory_mod = @import("memory");
+const slash_commands_mod = @import("slash_commands");
+const intensity_mod = @import("intensity");
+const hotswap_mod = @import("model_hotswap");
+const summarizer_mod = @import("session_summarizer");
+const color_mod = @import("color");
+const tiered_loader_mod = @import("tiered_loader");
+const convergence_mod = @import("convergence");
+const adversarial_mod = @import("adversarial_review");
+const source_tracker_mod = @import("source_tracker");
+const knowledge_lint_mod = @import("knowledge_lint");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
 const Theme = theme_mod.Theme;
 const ColorMode = theme_mod.ColorMode;
+const Style = color_mod.Style;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
@@ -41,6 +52,12 @@ const AgentLoop = agent_loop_mod.AgentLoop;
 const AIResponse = agent_loop_mod.AIResponse;
 const LoopMessage = agent_loop_mod.LoopMessage;
 const ToolRegistry = tools_mod.ToolRegistry;
+const SlashCommandRegistry = slash_commands_mod.SlashCommandRegistry;
+const Intensity = intensity_mod.Intensity;
+const ModelHotSwap = hotswap_mod.ModelHotSwap;
+const SessionSummarizer = summarizer_mod.SessionSummarizer;
+const LoadTier = tiered_loader_mod.LoadTier;
+const ConvergenceDetector = convergence_mod.ConvergenceDetector;
 
 const PermissionEvaluator = permission_mod.PermissionEvaluator;
 const PermissionConfig = permission_mod.PermissionConfig;
@@ -49,19 +66,23 @@ const PermissionMode = permission_mod.PermissionMode;
 var active_evaluator: ?PermissionEvaluator = null;
 
 fn preRequestHook(ctx: *HookContext) !void {
-    out("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
+    out("{s}[hook: {s} → {s}/{s}]{s}\n", .{
+        Style.dimmed.start(),
         @tagName(ctx.phase),
         ctx.provider,
         ctx.model,
+        Style.dimmed.reset(),
     });
 }
 
 fn postRequestHook(ctx: *HookContext) !void {
-    out("\x1b[2m[hook: {s} ← {s}/{s} | tokens: {d}]\x1b[0m\n", .{
+    out("{s}[hook: {s} ← {s}/{s} | tokens: {d}]{s}\n", .{
+        Style.dimmed.start(),
         @tagName(ctx.phase),
         ctx.provider,
         ctx.model,
         ctx.token_count,
+        Style.dimmed.reset(),
     });
 }
 
@@ -115,6 +136,50 @@ fn rollbackMessagesTo(messages: *array_list_compat.ArrayList(core.ChatMessage), 
     while (messages.items.len > target_len) {
         freeLastMessage(messages, allocator);
     }
+}
+
+fn clearInteractiveHistory(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, total_input_tokens: *u64, total_output_tokens: *u64, request_count: *u32) void {
+    for (messages.items) |msg| {
+        freeChatMessage(msg, allocator);
+    }
+    messages.clearRetainingCapacity();
+    total_input_tokens.* = 0;
+    total_output_tokens.* = 0;
+    request_count.* = 0;
+}
+
+fn printInteractiveSessionSummary(messages: []const core.ChatMessage, allocator: std.mem.Allocator, total_input_tokens: u64, total_output_tokens: u64) void {
+    var summarizer = SessionSummarizer.init(allocator, 100);
+    defer summarizer.deinit();
+
+    for (messages) |msg| {
+        const role: summarizer_mod.SessionEntry.Role = if (std.mem.eql(u8, msg.role, "user"))
+            .user
+        else if (std.mem.eql(u8, msg.role, "assistant"))
+            .assistant
+        else if (std.mem.eql(u8, msg.role, "system"))
+            .system
+        else
+            .tool;
+        summarizer.addEntry(role, msg.content orelse "", null) catch {};
+    }
+
+    if (summarizer.getEntries().len == 0) {
+        return;
+    }
+
+    var summary = summarizer.summarize() catch return;
+    defer summary.deinit();
+
+    const total_tokens = if (summary.total_tokens > 0)
+        summary.total_tokens
+    else
+        total_input_tokens + total_output_tokens;
+
+    out("\n--- Session Summary ---\n", .{});
+    out("  Messages: {d} user, {d} assistant, {d} tool calls\n", .{ summary.user_messages, summary.assistant_messages, summary.tool_calls });
+    out("  Tokens: {d} total\n", .{total_tokens});
+    out("  Duration: {d}s\n", .{summary.duration_seconds});
 }
 
 fn duplicateToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const ai_types.ToolCallInfo) !?[]const ai_types.ToolCallInfo {
@@ -223,7 +288,7 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     pre_request_ctx.token_count = clampUsizeToU32(last_content_len);
     try ctx.hooks.execute(.pre_request, &pre_request_ctx);
 
-    out("\n\x1b[36mAssistant:\x1b[0m ", .{});
+    out("\n{s}Assistant:{s} ", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
 
     var response: core.ChatResponse = undefined;
     if (active_streaming_enabled) {
@@ -258,10 +323,12 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     if (response.usage) |usage| {
         ctx.total_input_tokens.* += usage.prompt_tokens;
         ctx.total_output_tokens.* += usage.completion_tokens;
-        out("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
+        out("\n{s}({d} tokens in / {d} out | session total: {d}){s}", .{
+            Style.dimmed.start(),
             usage.prompt_tokens,
             usage.completion_tokens,
             ctx.total_input_tokens.* + ctx.total_output_tokens.*,
+            Style.dimmed.reset(),
         });
 
         // JSON: emit assistant response and usage
@@ -511,7 +578,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         });
         // Show extended usage info
         const ext = ai_client.extractExtendedUsage(&response);
-        out("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
+        out("{s}({d} in / {d} out){s}\n", .{ Style.dimmed.start(), ext.input_tokens, ext.output_tokens, Style.dimmed.reset() });
 
         // JSON: emit assistant response and usage
         json_out.emitAssistant(content_slice);
@@ -535,39 +602,42 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     }
     defer if (profile_opt) |*p| p.deinit();
 
-    const provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
-    const model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
+    var current_provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
+    var current_model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
 
     // Initialize registry
     var registry = registry_mod.ProviderRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerAllProviders();
 
-    const provider = registry.getProvider(provider_name) orelse {
-        out("Error: Provider '{s}' not found\n", .{provider_name});
+    const provider = registry.getProvider(current_provider_name) orelse {
+        out("Error: Provider '{s}' not found\n", .{current_provider_name});
         return error.ProviderNotFound;
     };
 
     // Get API key - check profile first, then config
     var api_key: []const u8 = "";
     if (profile_opt) |*p| {
-        api_key = p.getApiKey(provider_name) orelse "";
+        api_key = p.getApiKey(current_provider_name) orelse "";
     }
     if (api_key.len == 0) {
-        api_key = config.getApiKey(provider_name) orelse "";
+        api_key = config.getApiKey(current_provider_name) orelse "";
     }
 
-    if (api_key.len == 0 and !std.mem.eql(u8, provider_name, "ollama") and
-        !std.mem.eql(u8, provider_name, "lm_studio") and
-        !std.mem.eql(u8, provider_name, "llama_cpp"))
+    if (api_key.len == 0 and !std.mem.eql(u8, current_provider_name, "ollama") and
+        !std.mem.eql(u8, current_provider_name, "lm_studio") and
+        !std.mem.eql(u8, current_provider_name, "llama_cpp"))
     {
-        out("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
+        out("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{current_provider_name});
         return error.MissingApiKey;
     }
 
     // Initialize client
-    var client = try core.AIClient.init(allocator, provider, model_name, api_key);
+    var client = try core.AIClient.init(allocator, provider, current_model_name, api_key);
     defer client.deinit();
+
+    var hotswap = ModelHotSwap.init(allocator, current_provider_name, current_model_name) catch null;
+    defer if (hotswap) |*hs| hs.deinit();
 
     // Set system prompt from profile or config if available
     if (profile_opt) |*p| {
@@ -576,6 +646,16 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     } else if (config.getSystemPrompt()) |sys_prompt| {
         client.setSystemPrompt(sys_prompt);
+    }
+
+    // Apply output intensity modifier to system prompt
+    const intensity_level = Intensity.parse(args.intensity orelse "normal") orelse .normal;
+    if (intensity_level != .normal) {
+        const current_prompt = client.system_prompt orelse config.getSystemPrompt() orelse "";
+        const modifier = intensity_level.systemPromptMod();
+        const enhanced = std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ current_prompt, modifier }) catch current_prompt;
+        client.setSystemPrompt(enhanced);
+        out("{s}[intensity: {s}]{s}\n", .{ Style.dimmed.start(), intensity_level.label(), Style.dimmed.reset() });
     }
 
     // Initialize permission evaluator from --permission flag
@@ -588,7 +668,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         var eval_config = perm_config;
         eval_config.mode = mode;
         active_evaluator = PermissionEvaluator.init(allocator, eval_config);
-        out("\x1b[2m[Permission] mode: {s}\x1b[0m\n", .{mode.toString()});
+        out("{s}[Permission] mode: {s}{s}\n", .{ Style.dimmed.start(), mode.toString(), Style.dimmed.reset() });
     }
     tool_executors.setPermissionEvaluator(if (active_evaluator) |*ev| ev else null);
     defer {
@@ -666,9 +746,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    // Build codebase knowledge graph and inject into system prompt
+    // Build codebase knowledge graph with tiered context loading (F2)
     var kg = KnowledgeGraph.init(allocator);
     defer kg.deinit();
+
+    // Select tier based on context loading strategy
+    // Default to focused; can be overridden via config in future
+    const context_tier = LoadTier.focused;
+    const max_files = context_tier.maxPages();
 
     const default_src_files = [_][]const u8{
         "src/main.zig",
@@ -687,17 +772,21 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         "src/tools/registry.zig",
     };
     var indexed_count: u32 = 0;
-    for (&default_src_files) |file_path| {
+    const files_to_index = @min(default_src_files.len, max_files);
+    for (default_src_files[0..files_to_index]) |file_path| {
         kg.indexFile(file_path) catch continue;
         indexed_count += 1;
     }
     kg.detectCommunities() catch {};
 
+    // Convergence detector for agent loop iteration tracking (F14)
+    var convergence_detector = ConvergenceDetector.init();
+
     if (indexed_count > 0) {
         const graph_ctx = kg.toCompressedContext(allocator) catch null;
         if (graph_ctx) |ctx| {
             // Build enhanced system prompt with codebase context
-            const base_prompt = config.getSystemPrompt() orelse "You are a helpful AI coding assistant with access to the user's codebase.";
+            const base_prompt = client.system_prompt orelse "You are a helpful AI coding assistant with access to the user's codebase.";
             const enhanced = std.fmt.allocPrint(allocator,
                 \\{s}
                 \\
@@ -717,13 +806,20 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 \\- edit(file_path: string, old_string: string, new_string: string) — Replace text in a file
             , .{ base_prompt, ctx }) catch base_prompt;
             client.setSystemPrompt(enhanced);
-            out("\x1b[2m[graph: {d} files indexed, {d} symbols, {d:.1}x compression]\x1b[0m\n", .{
+            out("{s}[graph: {d} files indexed, {d} symbols, {d:.1}x compression]{s}\n", .{
+                Style.dimmed.start(),
                 indexed_count,
                 kg.nodes.count(),
                 kg.compressionRatio(),
+                Style.dimmed.reset(),
             });
         }
     }
+
+    // Initialize slash command registry
+    var slash_registry = SlashCommandRegistry.init(allocator);
+    defer slash_registry.deinit();
+    try slash_registry.registerDefaults();
 
     var hooks = LifecycleHooks.init(allocator);
     defer hooks.deinit();
@@ -764,20 +860,20 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
 
     out("=== Interactive Chat Mode (Streaming) ===\n", .{});
-    out("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
+    out("Provider: {s} | Model: {s}\n", .{ current_provider_name, current_model_name });
     out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    out("Commands: /usage | /clear | /hooks | /compact | /graph | /exit\n", .{});
+    out("Commands: /help | /usage | /clear | /hooks | /compact | /graph | /model | /exit\n", .{});
     out("--------------------------------------------\n\n", .{});
 
     // JSON: emit session start
-    json_out.emitSessionStart(provider_name, model_name);
+    json_out.emitSessionStart(current_provider_name, current_model_name);
 
     const stdin = file_compat.File.stdin();
     const stdin_reader = stdin.reader();
 
     while (true) {
         // Print prompt
-        out("\n\x1b[32mYou:\x1b[0m ", .{});
+        out("\n{s}You:{s} ", .{ Style.prompt_user.start(), Style.prompt_user.reset() });
 
         // Read line
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
@@ -791,31 +887,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         defer allocator.free(user_message);
 
         if (user_message.len == 0) continue;
-
-        // Handle built-in commands
-        if (std.mem.eql(u8, user_message, "exit") or std.mem.eql(u8, user_message, "quit") or std.mem.eql(u8, user_message, "/exit")) {
-            out("Goodbye!\n", .{});
-            break;
-        }
-
-        if (std.mem.eql(u8, user_message, "/usage")) {
-            out("\n=== Session Usage ===\n", .{});
-            out("  Requests: {d}\n", .{request_count});
-            out("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
-            continue;
-        }
-
-        if (std.mem.eql(u8, user_message, "/clear")) {
-            for (messages.items) |msg| {
-                freeChatMessage(msg, allocator);
-            }
-            messages.clearRetainingCapacity();
-            total_input_tokens = 0;
-            total_output_tokens = 0;
-            request_count = 0;
-            out("History cleared.\n", .{});
-            continue;
-        }
 
         if (std.mem.eql(u8, user_message, "/hooks")) {
             hooks.printHooks();
@@ -884,6 +955,103 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
+        // /model command — show or swap model
+        if (std.mem.eql(u8, user_message, "/model") or std.mem.startsWith(u8, user_message, "/model ")) {
+            const model_arg = std.mem.trim(u8, user_message["/model".len..], " ");
+            if (model_arg.len == 0) {
+                if (hotswap) |hs| {
+                    out("Current model: {s}/{s} (swaps: {d})\n", .{ hs.providerName(), hs.modelName(), hs.swapCount() });
+                } else {
+                    out("Current model: {s}/{s}\n", .{ current_provider_name, current_model_name });
+                }
+            } else {
+                const slash_idx = std.mem.indexOfScalar(u8, model_arg, '/');
+                if (slash_idx) |idx| {
+                    const new_provider = model_arg[0..idx];
+                    const new_model = model_arg[idx + 1 ..];
+                    const new_provider_cfg = registry.getProvider(new_provider) orelse {
+                        out("Error: Provider '{s}' not found\n", .{new_provider});
+                        continue;
+                    };
+
+                    var new_api_key: []const u8 = "";
+                    if (profile_opt) |*p| {
+                        new_api_key = p.getApiKey(new_provider) orelse "";
+                    }
+                    if (new_api_key.len == 0) {
+                        new_api_key = config.getApiKey(new_provider) orelse "";
+                    }
+
+                    if (new_api_key.len == 0 and !std.mem.eql(u8, new_provider, "ollama") and
+                        !std.mem.eql(u8, new_provider, "lm_studio") and
+                        !std.mem.eql(u8, new_provider, "llama_cpp"))
+                    {
+                        out("Error: No API key for provider '{s}'\n", .{new_provider});
+                        continue;
+                    }
+
+                    if (hotswap) |*hs| {
+                        hs.swap(new_provider, new_model, .manual) catch {
+                            out("Error swapping model\n", .{});
+                            continue;
+                        };
+                        current_provider_name = hs.providerName();
+                        current_model_name = hs.modelName();
+                    } else {
+                        out("Error: model hot-swap unavailable\n", .{});
+                        continue;
+                    }
+
+                    client.provider = new_provider_cfg;
+                    client.model = current_model_name;
+                    client.api_key = new_api_key;
+
+                    out("Swapped to {s}/{s}\n", .{ current_provider_name, current_model_name });
+                } else {
+                    out("Usage: /model provider/model\n", .{});
+                }
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "exit") or std.mem.eql(u8, user_message, "quit")) {
+            printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
+            out("Goodbye!\n", .{});
+            break;
+        }
+
+        if (std.mem.eql(u8, user_message, "/usage")) {
+            out("\n=== Session Usage ===\n", .{});
+            out("  Requests: {d}\n", .{request_count});
+            out("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
+            continue;
+        }
+
+        // Check if slash command
+        if (SlashCommandRegistry.isSlashCommand(user_message)) {
+            const maybe_result = slash_registry.execute(user_message) catch |err| {
+                out("Command error: {}\n", .{err});
+                continue;
+            };
+
+            if (maybe_result) |result_value| {
+                var result = result_value;
+                defer result.deinit();
+
+                if (result.should_exit) {
+                    printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
+                    out("Goodbye!\n", .{});
+                    break;
+                }
+
+                out("{s}\n", .{result.output});
+                if (result.should_clear) {
+                    clearInteractiveHistory(&messages, allocator, &total_input_tokens, &total_output_tokens, &request_count);
+                }
+                continue;
+            }
+        }
+
         var intent_arena = std.heap.ArenaAllocator.init(allocator);
         defer intent_arena.deinit();
 
@@ -891,9 +1059,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         defer intent_gate.deinit();
 
         const intent = intent_gate.classify(user_message);
-        out("\x1b[2m[intent: {s} ({d:.2})]\x1b[0m\n", .{
+        out("{s}[intent: {s} ({d:.2})]{s}\n", .{
+            Style.dimmed.start(),
             IntentGate.intentLabel(intent.intent_type),
             intent.confidence,
+            Style.dimmed.reset(),
         });
 
         const turn_start_len = messages.items.len;
@@ -903,8 +1073,8 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             .client = &client,
             .messages = &messages,
             .hooks = &hooks,
-            .provider_name = provider_name,
-            .model_name = model_name,
+            .provider_name = current_provider_name,
+            .model_name = current_model_name,
             .turn_start_len = turn_start_len,
             .synced_loop_messages = 0,
             .turn_request_count = 0,
@@ -941,10 +1111,33 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
+        // Convergence detection — check if agent iterations are plateauing (F14)
+        if (loop_result.steps.items.len > 1) {
+            var converged = false;
+            for (loop_result.steps.items, 0..) |step, i| {
+                if (i > 0 and step.ai_response.len > 0 and loop_result.steps.items[i - 1].ai_response.len > 0) {
+                    const prev = loop_result.steps.items[i - 1].ai_response;
+                    const curr = step.ai_response;
+                    if (convergence_detector.checkConvergence(prev, curr)) {
+                        out("{s}[convergence: iterations plateauing after {d} steps]{s}\n", .{
+                            Style.dimmed.start(),
+                            i + 1,
+                            Style.dimmed.reset(),
+                        });
+                        converged = true;
+                        break;
+                    }
+                }
+            }
+            if (!converged) {
+                convergence_detector.reset();
+            }
+        }
+
         // Auto-compact context when approaching token limits
         const session_tokens = total_input_tokens + total_output_tokens;
         if (compactor.needsCompaction(session_tokens) and messages.items.len > 12) {
-            out("\n\x1b[33m⚡ Context approaching limit ({d} tokens). Compacting...\x1b[0m\n", .{session_tokens});
+            out("\n{s}⚡ Context approaching limit ({d} tokens). Compacting...{s}\n", .{ Style.warning.start(), session_tokens, Style.warning.reset() });
 
             // Convert ChatMessages to CompactMessages for compaction
             var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
@@ -992,9 +1185,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 // Free the summary if it was allocated (compactor owns it, but we copied it)
                 allocator.free(result.summary);
 
-                out("\x1b[33m  Compacted {d} messages. Saved ~{d} tokens.\x1b[0m\n", .{
+                out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
+                    Style.warning.start(),
                     result.messages_summarized,
                     result.tokens_saved,
+                    Style.warning.reset(),
                 });
             }
         }

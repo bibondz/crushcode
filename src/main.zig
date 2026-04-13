@@ -54,6 +54,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "tui") or
         std.mem.eql(u8, command, "install") or
         std.mem.eql(u8, command, "jobs") or
+        std.mem.eql(u8, command, "capabilities") or
         std.mem.eql(u8, command, "worktree") or
         std.mem.eql(u8, command, "graph") or
         std.mem.eql(u8, command, "agent-loop") or
@@ -199,6 +200,8 @@ pub fn main() !void {
             break :blk commands.handleInstall(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
             break :blk commands.handleJobs(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "capabilities")) {
+            break :blk commands.handleCapabilities(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "worktree")) {
             break :blk commands.handleWorktree(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "graph")) {

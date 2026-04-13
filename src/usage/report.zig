@@ -1,7 +1,7 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
-const tracker_mod = @import("tracker.zig");
-const budget_mod = @import("budget.zig");
+const tracker_mod = @import("usage_tracker");
+const budget_mod = @import("usage_budget");
 
 const SessionUsage = tracker_mod.SessionUsage;
 const DailyUsage = tracker_mod.DailyUsage;

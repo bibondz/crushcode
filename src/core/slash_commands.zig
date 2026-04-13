@@ -151,10 +151,18 @@ pub const SlashCommandRegistry = struct {
         const args = if (space_idx) |i| std.mem.trim(u8, input[i + 1 ..], " ") else "";
 
         const cmd = self.find(cmd_name) orelse {
-            return CommandResult.init(self.allocator, "Unknown command. Type /help for available commands.");
+            return CommandResult{
+                .allocator = self.allocator,
+                .output = try self.allocator.dupe(u8, "Unknown command. Type /help for available commands."),
+            };
         };
 
-        return cmd.handler(self.allocator, args);
+        return cmd.handler(self.allocator, args) catch |err| switch (err) {
+            else => return CommandResult{
+                .allocator = self.allocator,
+                .output = try std.fmt.allocPrint(self.allocator, "Command error: {}", .{err}),
+            },
+        };
     }
 
     /// Check if input is a slash command (starts with /)

@@ -29,6 +29,9 @@ const lsp_handler = @import("lsp_handler");
 const mcp_bridge_mod = @import("mcp_bridge");
 const mcp_handler = @import("mcp_handler");
 const plugin_manager_mod = @import("plugin_manager");
+const capability_catalog = @import("capability_catalog");
+const usage_budget = @import("usage_budget");
+const usage_report = @import("usage_report");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
@@ -161,8 +164,137 @@ pub fn handleInstall(args: args_mod.Args) !void {
     try install_mod.handleInstall(args.remaining);
 }
 
+fn capabilityKindLabel(kind: capability_catalog.CapabilityKind) []const u8 {
+    return switch (kind) {
+        .tool => "Tools",
+        .plugin => "Plugins",
+        .skill => "Skills",
+        .mcp_tool => "MCP Tools",
+        .builtin => "Built-ins",
+    };
+}
+
+pub fn handleCapabilities(_: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var catalog = capability_catalog.CapabilityCatalog.init(allocator);
+    defer catalog.deinit();
+
+    var tool_registry = tools_mod.ToolRegistry.init(allocator);
+    defer tool_registry.deinit();
+    try tool_registry.registerBuiltinTools();
+
+    const available_tools = try tool_registry.getAvailableTools(allocator);
+    defer allocator.free(available_tools);
+    for (available_tools) |tool_name| {
+        if (tool_registry.get(tool_name)) |tool| {
+            try catalog.register(.{
+                .name = tool.name,
+                .kind = .tool,
+                .enabled = tool.enabled,
+                .description = tool.description,
+            });
+        }
+    }
+
+    var plugin_manager = plugin_manager_mod.PluginManager.init(allocator);
+    defer plugin_manager.deinit();
+    try plugin_manager.initializeBuiltIns();
+
+    const plugins = try plugin_manager.listPlugins();
+    defer allocator.free(plugins);
+    for (plugins) |plugin| {
+        const status = plugin_manager.getPluginStatus(plugin.name) catch continue;
+        try catalog.register(.{
+            .name = status.name,
+            .kind = if (status.type == .builtin) .builtin else .plugin,
+            .enabled = status.enabled,
+            .description = status.description,
+        });
+    }
+
+    var skill_loader = skills_loader_mod.SkillLoader.init(allocator);
+    defer skill_loader.deinit();
+    skill_loader.loadFromDirectory("skills") catch {};
+    for (skill_loader.getSkills()) |skill| {
+        try catalog.register(.{
+            .name = skill.name,
+            .kind = .skill,
+            .enabled = true,
+            .description = skill.description,
+            .source = skill.file_path,
+        });
+    }
+
+    const kinds = [_]capability_catalog.CapabilityKind{ .tool, .plugin, .builtin, .skill, .mcp_tool };
+    catalog.printSummary();
+    stdout_print("\n", .{});
+    for (kinds) |kind| {
+        const entries = try catalog.listByKind(allocator, kind);
+        defer allocator.free(entries);
+
+        if (entries.len == 0) continue;
+
+        stdout_print("{s}:\n", .{capabilityKindLabel(kind)});
+        for (entries) |entry| {
+            const status = if (entry.enabled) "enabled" else "disabled";
+            if (entry.source) |source| {
+                stdout_print("  - {s} [{s}] — {s} ({s})\n", .{ entry.name, status, entry.description, source });
+            } else {
+                stdout_print("  - {s} [{s}] — {s}\n", .{ entry.name, status, entry.description });
+            }
+        }
+        stdout_print("\n", .{});
+    }
+}
+
 pub fn handleJobs(args: args_mod.Args) !void {
     try jobs_mod.handleJobs(args.remaining);
+}
+
+fn loadBudgetConfig(allocator: std.mem.Allocator) ?usage_budget.BudgetConfig {
+    const config_path = config_mod.getConfigPath(allocator) catch return null;
+    defer allocator.free(config_path);
+
+    const content = std.fs.cwd().readFileAlloc(allocator, config_path, 1024 * 1024) catch return null;
+    defer allocator.free(content);
+
+    var budget_cfg = usage_budget.BudgetConfig{};
+    var in_budget_section = false;
+    var found_limit = false;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        if (trimmed[0] == '[') {
+            in_budget_section = std.mem.eql(u8, trimmed, "[budget]");
+            continue;
+        }
+
+        if (!in_budget_section) continue;
+        const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=') orelse continue;
+        const key = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+        const value_text = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t\"");
+        const value = std.fmt.parseFloat(f64, value_text) catch continue;
+
+        if (std.mem.eql(u8, key, "daily_limit_usd")) {
+            budget_cfg.daily_limit_usd = value;
+            found_limit = true;
+        } else if (std.mem.eql(u8, key, "monthly_limit_usd")) {
+            budget_cfg.monthly_limit_usd = value;
+            found_limit = true;
+        } else if (std.mem.eql(u8, key, "per_session_limit_usd")) {
+            budget_cfg.per_session_limit_usd = value;
+            found_limit = true;
+        } else if (std.mem.eql(u8, key, "alert_threshold_pct")) {
+            budget_cfg.alert_threshold_pct = value;
+        }
+    }
+
+    if (!found_limit or !budget_cfg.isSet()) return null;
+    return budget_cfg;
 }
 
 pub fn handlePlugin(args: args_mod.Args) !void {
@@ -754,6 +886,7 @@ pub fn printHelp() !void {
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
         \\  jobs         Job control (background jobs)
+        \\  capabilities   List registered tools, plugins, and skills
         \\  worktree      Show worktree manager status
         \\  graph          Analyze codebase with knowledge graph
         \\  agent-loop     Show agent loop engine status
@@ -864,6 +997,33 @@ pub fn handleUsage(_: args_mod.Args) !void {
             });
         }
     }
+
+    const daily = tracker.getDailyUsage();
+    var report = usage_report.UsageReport.init(allocator);
+    defer report.deinit();
+
+    var budget_status: ?usage_budget.BudgetStatus = null;
+    if (loadBudgetConfig(allocator)) |budget_cfg| {
+        var budget_manager = usage_budget.BudgetManager.init(allocator, budget_cfg);
+        defer budget_manager.deinit();
+
+        budget_manager.recordCost(session.estimated_cost_usd);
+        budget_manager.daily_spent = daily.estimated_cost_usd;
+        budget_manager.monthly_spent = daily.estimated_cost_usd;
+        budget_status = budget_manager.checkBudget();
+
+        if (budget_status) |status| {
+            const state = if (status.isOverBudget())
+                "over budget"
+            else if (status.shouldAlert(budget_cfg.alert_threshold_pct))
+                "alert"
+            else
+                "ok";
+            stdout_print("\nBudget status: {s} ({d:.0}% used)\n", .{ state, status.percent_used * 100.0 });
+        }
+    }
+
+    report.printFullReport(session, daily, budget_status);
 
     stdout_print("\nTip: Set budget limits in ~/.crushcode/config.toml:\n", .{});
     stdout_print("  [budget]\n", .{});

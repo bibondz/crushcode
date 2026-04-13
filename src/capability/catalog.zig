@@ -1,4 +1,6 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 const Allocator = std.mem.Allocator;
 
 /// Kind of capability registered in the catalog
@@ -89,7 +91,7 @@ pub const CapabilityCatalog = struct {
 
     /// List all capabilities of a specific kind
     pub fn listByKind(self: *const CapabilityCatalog, allocator: Allocator, kind: CapabilityKind) ![]CapabilityDescriptor {
-        var list = std.ArrayList(CapabilityDescriptor).init(allocator);
+        var list = array_list_compat.ArrayList(CapabilityDescriptor).init(allocator);
         errdefer list.deinit();
 
         var iter = self.capabilities.iterator();
@@ -103,7 +105,7 @@ pub const CapabilityCatalog = struct {
 
     /// List all registered capabilities
     pub fn listAll(self: *const CapabilityCatalog, allocator: Allocator) ![]CapabilityDescriptor {
-        var list = std.ArrayList(CapabilityDescriptor).init(allocator);
+        var list = array_list_compat.ArrayList(CapabilityDescriptor).init(allocator);
         errdefer list.deinit();
 
         var iter = self.capabilities.iterator();
@@ -115,7 +117,7 @@ pub const CapabilityCatalog = struct {
 
     /// Print catalog summary
     pub fn printSummary(self: *const CapabilityCatalog) void {
-        const stdout = std.io.getStdOut().writer();
+        const stdout = file_compat.File.stdout().writer();
 
         var counts = [_]u32{0} ** 5; // tool, plugin, skill, mcp_tool, builtin
         var iter = self.capabilities.iterator();

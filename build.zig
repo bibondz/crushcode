@@ -523,6 +523,10 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    usage_report_mod.addImport("array_list_compat", compat_array_list_mod);
+    usage_report_mod.addImport("file_compat", compat_file_mod);
+    usage_report_mod.addImport("usage_tracker", usage_tracker_mod);
+    usage_report_mod.addImport("usage_budget", usage_budget_mod);
 
     // Edit validation modules (Phase 16)
     const hashline_mod = b.createModule(.{
@@ -799,6 +803,8 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    capability_catalog_mod.addImport("array_list_compat", compat_array_list_mod);
+    capability_catalog_mod.addImport("file_compat", compat_file_mod);
 
     // MCP (Model Context Protocol) client modules
     const mcp_transport_mod = b.createModule(.{
@@ -867,6 +873,9 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("mcp_client", mcp_client_mod);
     handlers_mod.addImport("mcp_discovery", mcp_discovery_mod);
     handlers_mod.addImport("slash_commands", slash_commands_mod);
+    handlers_mod.addImport("capability_catalog", capability_catalog_mod);
+    handlers_mod.addImport("usage_budget", usage_budget_mod);
+    handlers_mod.addImport("usage_report", usage_report_mod);
 
     // Wire compaction into chat for auto-compaction
     chat_mod.addImport("compaction", compaction_mod);
