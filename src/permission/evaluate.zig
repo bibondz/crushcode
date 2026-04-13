@@ -2,12 +2,12 @@ const std = @import("std");
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
-const PermissionAction = @import("types.zig").PermissionAction;
-const PermissionMode = @import("types.zig").PermissionMode;
-const PermissionRule = @import("types.zig").PermissionRule;
-const PermissionRequest = @import("types.zig").PermissionRequest;
-const PermissionResult = @import("types.zig").PermissionResult;
-const PermissionConfig = @import("types.zig").PermissionConfig;
+pub const PermissionAction = @import("types.zig").PermissionAction;
+pub const PermissionMode = @import("types.zig").PermissionMode;
+pub const PermissionRule = @import("types.zig").PermissionRule;
+pub const PermissionRequest = @import("types.zig").PermissionRequest;
+pub const PermissionResult = @import("types.zig").PermissionResult;
+pub const PermissionConfig = @import("types.zig").PermissionConfig;
 
 /// Permission evaluator implementing OpenCode's pattern matching logic
 pub const PermissionEvaluator = struct {

@@ -324,6 +324,14 @@ pub fn build(b: *std.Build) !void {
     });
     chat_mod.addImport("json_output", json_output_mod);
 
+    // Permission system module (Phase 5)
+    const permission_evaluate_mod = b.createModule(.{
+        .root_source_file = b.path("src/permission/evaluate.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    chat_mod.addImport("permission_evaluate", permission_evaluate_mod);
+
     // Usage tracking modules (Phase 15)
     const usage_tracker_mod = b.createModule(.{
         .root_source_file = b.path("src/usage/tracker.zig"),
@@ -649,6 +657,7 @@ pub fn build(b: *std.Build) !void {
         profile_mod,
         connect_mod,
         json_output_mod,
+        permission_evaluate_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

@@ -18,6 +18,7 @@ const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
 const skills_loader_mod = @import("skills_loader");
 const json_output_mod = @import("json_output");
+const permission_mod = @import("permission_evaluate");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
@@ -33,6 +34,8 @@ const LoopMessage = agent_loop_mod.LoopMessage;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
 const ToolResult = agent_loop_mod.ToolResult;
 const ToolRegistry = tools_mod.ToolRegistry;
+
+const PermissionEvaluator = permission_mod.PermissionEvaluator;
 
 fn preRequestHook(ctx: *HookContext) !void {
     std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
@@ -190,6 +193,15 @@ fn adaptToolExecution(
 
     // JSON: emit tool_call event
     active_json_output.emitToolCall(tool_name, call_id, arguments);
+
+    // Permission check - log dangerous operations
+    // TODO: Wire in full PermissionEvaluator with config from --permission flag
+    const is_shell = std.mem.eql(u8, tool_name, "shell");
+    const is_write = std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit");
+    if (is_shell or is_write) {
+        // For dangerous operations, we'd normally prompt - for now just log
+        std.debug.print("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
+    }
 
     var success = true;
     const execution = implementation(allocator, tool_call) catch |err| blk: {
