@@ -529,6 +529,37 @@ pub fn handleMCP(args: args_mod.Args) !void {
     std.debug.print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
 }
 
+/// Handle diff visualization
+pub fn handleDiff(args: args_mod.Args) !void {
+    _ = args;
+
+    std.debug.print("Diff visualization - stub implementation\n", .{});
+    std.debug.print("Usage: crushcode diff <old> <new>\n", .{});
+    std.debug.print("       crushcode diff --unified <old> <new>\n", .{});
+    std.debug.print("\nOptions:\n", .{});
+    std.debug.print("  --inline      Show inline diff format (default)\n", .{});
+}
+
+    const old_path = args.remaining[0];
+    const new_path = args.remaining[1];
+
+    const format = if (args.remaining.len > 2 and std.mem.eql(u8, args.remaining[2], "--unified"))
+        "unified"
+    else
+        "inline";
+
+    const visualizer_mod = @import("diff");
+
+    var visualizer = visualizer_mod.DiffVisualizer.init(allocator);
+    defer visualizer.deinit();
+
+    try visualizer.compareFiles(old_path, new_path);
+} catch |err| {
+    std.debug.print("Diff error: {any}\n", .{err});
+    return err;
+}
+}
+
 pub fn handleList(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
