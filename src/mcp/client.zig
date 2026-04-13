@@ -1094,7 +1094,7 @@ pub fn authenticateWithOAuth(
     std.log.info("Waiting for OAuth callback on port {d}...", .{callback_server.port});
 
     // Wait for callback
-    const callback_result = try waitForCallback(callback_server, state, allocator);
+    const callback_result = try waitForCallback(&callback_server, state, allocator);
     defer allocator.free(callback_result.code);
 
     // Exchange authorization code for tokens
@@ -1176,32 +1176,86 @@ fn buildAuthorizationUrl(
 
 /// OAuth callback server configuration
 const CallbackServer = struct {
-    server: std.http.Server,
+    stream: std.net.Server,
     port: u16,
     allocator: Allocator,
 
     fn deinit(self: *CallbackServer) void {
-        _ = self;
-        // No cleanup needed - server is stubbed (OAuth not implemented)
+        self.stream.deinit();
     }
 };
 
-/// Start HTTP server for OAuth callback
+/// Start HTTP server for OAuth callback on a random port
 fn startCallbackServer(allocator: Allocator) !CallbackServer {
-    _ = allocator;
-    return error.OAuthNotImplemented;
+    const address = std.net.Address.parseIp("127.0.0.1", 0) catch return error.OAuthCallbackFailed;
+    var server = address.listen(.{ .reuse_address = true }) catch return error.OAuthCallbackFailed;
+    const port = server.listen_address.in.getPort();
+
+    return CallbackServer{
+        .stream = server,
+        .port = port,
+        .allocator = allocator,
+    };
 }
 
-/// Wait for OAuth callback - stubbed out
+/// Wait for OAuth callback — accepts one connection, extracts code and state
 fn waitForCallback(
-    callback_server: CallbackServer,
+    callback_server: *CallbackServer,
     expected_state: []const u8,
     allocator: Allocator,
 ) !CallbackResult {
-    _ = callback_server;
-    _ = expected_state;
-    _ = allocator;
-    return error.OAuthNotImplemented;
+    var conn = callback_server.stream.accept() catch return error.OAuthCallbackFailed;
+    defer conn.stream.close();
+
+    // Read the HTTP request
+    var read_buf: [4096]u8 = undefined;
+    const bytes_read = conn.stream.read(&read_buf) catch return error.OAuthCallbackFailed;
+    const request = read_buf[0..bytes_read];
+
+    // Extract query string from request line: GET /mcp/oauth/callback?code=X&state=Y HTTP/1.1
+    const query_start = std.mem.indexOf(u8, request, "?") orelse return error.OAuthCallbackFailed;
+    const line_end = std.mem.indexOfScalar(u8, request[query_start..], ' ') orelse return error.OAuthCallbackFailed;
+    const query_string = request[query_start .. query_start + line_end];
+
+    // Parse code and state from query string
+    var code: ?[]const u8 = null;
+    var state: ?[]const u8 = null;
+
+    var it = std.mem.splitSequence(u8, query_string, "&");
+    while (it.next()) |param| {
+        const eq_idx = std.mem.indexOfScalar(u8, param, '=') orelse continue;
+        const key = param[0..eq_idx];
+        const value = param[eq_idx + 1 ..];
+
+        if (std.mem.eql(u8, key, "code")) {
+            code = try allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "state")) {
+            state = try allocator.dupe(u8, value);
+        }
+    }
+
+    // Send HTTP response to browser
+    const response_html =
+        \\HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n
+        \\<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>
+    ;
+    _ = conn.stream.write(response_html) catch {};
+
+    const result_code = code orelse return error.OAuthCallbackFailed;
+    const result_state = state orelse return error.OAuthCallbackFailed;
+    errdefer allocator.free(result_code);
+    defer allocator.free(result_state);
+
+    // Verify state matches (CSRF protection)
+    if (!std.mem.eql(u8, result_state, expected_state)) {
+        allocator.free(result_code);
+        return error.OAuthStateMismatch;
+    }
+
+    return CallbackResult{
+        .code = result_code,
+        .state = result_state,
+    };
 }
 
 /// Callback result from OAuth server
@@ -1210,18 +1264,139 @@ const CallbackResult = struct {
     state: []const u8,
 };
 
-/// Exchange authorization code for access token - stubbed out
+/// Exchange authorization code for access token via POST to token endpoint
 fn exchangeCodeForTokens(
     config: OAuthServerConfig,
     code: []const u8,
     code_verifier: []const u8,
     allocator: Allocator,
 ) !OAuthTokens {
-    _ = config;
-    _ = code;
-    _ = code_verifier;
-    _ = allocator;
-    return error.OAuthNotImplemented;
+    // Build request body: grant_type=authorization_code&code=...&redirect_uri=...&code_verifier=...
+    var body_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer body_buf.deinit();
+    const bw = body_buf.writer();
+
+    const redirect_uri = config.redirect_uri orelse "http://127.0.0.1:19876/mcp/oauth/callback";
+    try bw.print("grant_type=authorization_code&code={s}&redirect_uri={s}&code_verifier={s}", .{ code, redirect_uri, code_verifier });
+    if (config.client_id) |cid| {
+        try bw.print("&client_id={s}", .{cid});
+    }
+    if (config.client_secret) |cs| {
+        try bw.print("&client_secret={s}", .{cs});
+    }
+
+    // POST to token endpoint
+    const uri = std.Uri.parse(config.token_url) catch return error.OAuthTokenExchangeFailed;
+
+    var response_writer = std.Io.Writer.Allocating.init(allocator);
+    defer response_writer.deinit();
+
+    var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
+    defer headers.deinit();
+    try headers.append(.{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" });
+    try headers.append(.{ .name = "Accept", .value = "application/json" });
+
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    const fetch_result = client.fetch(.{
+        .method = .POST,
+        .location = .{ .uri = uri },
+        .payload = body_buf.items,
+        .extra_headers = headers.items,
+        .response_writer = &response_writer.writer,
+    }) catch return error.OAuthTokenExchangeFailed;
+
+    if (fetch_result.status != .ok) return error.OAuthTokenExchangeFailed;
+
+    // Parse JSON response: {"access_token":"...","token_type":"Bearer","expires_in":3600,"refresh_token":"..."}
+    const response_data = response_writer.written();
+    if (response_data.len == 0) return error.OAuthTokenExchangeFailed;
+
+    return parseTokenResponse(response_data, allocator);
+}
+
+/// Parse token endpoint JSON response into OAuthTokens
+fn parseTokenResponse(data: []const u8, allocator: Allocator) !OAuthTokens {
+    var access_token: ?[]const u8 = null;
+    var refresh_token: ?[]const u8 = null;
+    var token_type: []const u8 = "Bearer";
+    var expires_in: ?u64 = null;
+    var scope: ?[]const u8 = null;
+
+    // Simple JSON field extraction (avoid full parse for robustness with varied server responses)
+    var i: usize = 0;
+    // Skip to first {
+    while (i < data.len and data[i] != '{') : (i += 1) {}
+    if (i >= data.len) return error.OAuthTokenExchangeFailed;
+    i += 1; // skip {
+
+    while (i < data.len) {
+        // Skip whitespace
+        while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+        if (i >= data.len or data[i] == '}') break;
+        if (data[i] != '"') break;
+
+        // Parse field name
+        i += 1;
+        const fname_start = i;
+        while (i < data.len and data[i] != '"') : (i += 1) {}
+        const fname = data[fname_start..i];
+        i += 1;
+
+        // Skip to value
+        while (i < data.len and data[i] != ':') : (i += 1) {}
+        i += 1;
+        while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+
+        if (data[i] == '"') {
+            // String value
+            i += 1;
+            const vs = i;
+            while (i < data.len and data[i] != '"') : (i += 1) {}
+            const val = data[vs..i];
+            i += 1;
+
+            if (std.mem.eql(u8, fname, "access_token")) {
+                access_token = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "refresh_token")) {
+                refresh_token = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "token_type")) {
+                token_type = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "scope")) {
+                scope = try allocator.dupe(u8, val);
+            }
+        } else {
+            // Number value
+            const ns = i;
+            while (i < data.len and data[i] != ',' and data[i] != '}') : (i += 1) {}
+            const num_str = std.mem.trim(u8, data[ns..i], " \t\n\r");
+
+            if (std.mem.eql(u8, fname, "expires_in")) {
+                expires_in = std.fmt.parseInt(u64, num_str, 10) catch null;
+            }
+        }
+
+        // Skip comma
+        while (i < data.len and (data[i] == ',' or data[i] == ' ')) : (i += 1) {}
+    }
+
+    const at = access_token orelse return error.OAuthTokenExchangeFailed;
+
+    // Calculate expires_at from expires_in
+    const expires_at: ?i64 = if (expires_in) |ei|
+        std.time.timestamp() + @as(i64, @intCast(ei))
+    else
+        null;
+
+    return OAuthTokens{
+        .access_token = at,
+        .refresh_token = refresh_token,
+        .token_type = token_type,
+        .expires_in = expires_in,
+        .expires_at = expires_at,
+        .scope = scope,
+    };
 }
 
 /// Get path to MCP token storage file (~/.crushcode/mcp_tokens.json)
@@ -1366,7 +1541,7 @@ fn storeOAuthTokens(server_name: []const u8, tokens: OAuthTokens, allocator: All
     std.log.info("Stored tokens for server '{s}'", .{server_name});
 }
 
-/// Refresh expired OAuth tokens - stubbed out
+/// Refresh expired OAuth tokens using refresh_token grant
 pub fn refreshOAuthTokens(
     self: *MCPClient,
     server_name: []const u8,
@@ -1376,10 +1551,58 @@ pub fn refreshOAuthTokens(
 ) !OAuthTokens {
     _ = self;
     _ = server_name;
-    _ = config;
-    _ = tokens;
-    _ = allocator;
-    return error.OAuthNotImplemented;
+
+    const refresh_token = tokens.refresh_token orelse return error.NoRefreshToken;
+
+    // Build request body: grant_type=refresh_token&refresh_token=...
+    var body_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer body_buf.deinit();
+    const bw = body_buf.writer();
+
+    try bw.print("grant_type=refresh_token&refresh_token={s}", .{refresh_token});
+    if (config.client_id) |cid| {
+        try bw.print("&client_id={s}", .{cid});
+    }
+    if (config.client_secret) |cs| {
+        try bw.print("&client_secret={s}", .{cs});
+    }
+
+    // POST to token endpoint
+    const uri = std.Uri.parse(config.token_url) catch return error.OAuthTokenRefreshFailed;
+
+    var response_writer = std.Io.Writer.Allocating.init(allocator);
+    defer response_writer.deinit();
+
+    var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
+    defer headers.deinit();
+    try headers.append(.{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" });
+    try headers.append(.{ .name = "Accept", .value = "application/json" });
+
+    var client = std.http.Client{ .allocator = allocator };
+    defer client.deinit();
+
+    const fetch_result = client.fetch(.{
+        .method = .POST,
+        .location = .{ .uri = uri },
+        .payload = body_buf.items,
+        .extra_headers = headers.items,
+        .response_writer = &response_writer.writer,
+    }) catch return error.OAuthTokenRefreshFailed;
+
+    if (fetch_result.status != .ok) return error.OAuthTokenRefreshFailed;
+
+    const response_data = response_writer.written();
+    if (response_data.len == 0) return error.OAuthTokenRefreshFailed;
+
+    // Parse new tokens — some providers return a new refresh_token, some don't
+    var new_tokens = try parseTokenResponse(response_data, allocator);
+
+    // If server didn't return a new refresh_token, preserve the old one
+    if (new_tokens.refresh_token == null) {
+        new_tokens.refresh_token = try allocator.dupe(u8, refresh_token);
+    }
+
+    return new_tokens;
 }
 
 /// Get OAuth tokens for a server, refreshing if expired
