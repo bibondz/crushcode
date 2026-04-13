@@ -25,6 +25,7 @@ const connect_mod = @import("connect");
 const profile_mod = @import("profile");
 const checkpoint_mod = @import("checkpoint");
 const ast_grep_mod = @import("ast_grep");
+const lsp_mod = @import("lsp");
 const array_list_compat = @import("array_list_compat");
 
 const Config = config_mod.Config;
@@ -504,6 +505,18 @@ pub fn handleGrep(args: args_mod.Args) !void {
     }
 }
 
+/// Handle LSP (Language Server Protocol) commands
+pub fn handleLSP(args: args_mod.Args) !void {
+    _ = args;
+    std.debug.print("LSP client - stub implementation\n", .{});
+    std.debug.print("Usage: crushcode lsp goto <file> <line> <char>\n", .{});
+    std.debug.print("       crushcode lsp refs <file> <line> <char>\n", .{});
+    std.debug.print("       crushcode lsp hover <file> <line> <char>\n", .{});
+    std.debug.print("       crushcode lsp complete <file> <line> <char>\n", .{});
+    std.debug.print("       crushcode lsp diagnostics <file>\n", .{});
+    std.debug.print("       crushcode lsp --lang <language>\n", .{});
+}
+
 pub fn handleList(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
@@ -653,6 +666,7 @@ pub fn printHelp() !void {
         \\  connect        Add API credentials for providers
         \\  checkpoint    List, restore, or delete checkpoints
         \\  grep           AST-grep pattern search
+        \\  lsp            Language Server Protocol client
         \\  help           Show this help message
         \\  version        Show version information
         \\

@@ -504,6 +504,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // LSP module (Phase 11 - Language Server Protocol client)
+    const lsp_mod = b.createModule(.{
+        .root_source_file = b.path("src/lsp/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Register Phase 17-22 modules on main
     main_mod.addImport("fallback", fallback_mod);
     main_mod.addImport("parallel", parallel_mod);
@@ -513,6 +520,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("intent_gate", intent_gate_mod);
     main_mod.addImport("checkpoint", checkpoint_mod);
     main_mod.addImport("memory", memory_mod);
+    main_mod.addImport("lsp", lsp_mod);
 
     // Wire Phase 17-22 modules into command handlers
     chat_mod.addImport("intent_gate", intent_gate_mod);
@@ -524,6 +532,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("skill_import", skill_import_mod);
     handlers_mod.addImport("checkpoint", checkpoint_mod);
     handlers_mod.addImport("ast_grep", ast_grep_mod);
+    handlers_mod.addImport("lsp", lsp_mod);
 
     // Phase 23: Codebase Knowledge Graph (Graphify-inspired)
     const graph_types_mod = b.createModule(.{
@@ -696,6 +705,7 @@ pub fn build(b: *std.Build) !void {
         theme_mod,
         checkpoint_mod,
         memory_mod,
+        lsp_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
