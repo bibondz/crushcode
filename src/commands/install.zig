@@ -8,7 +8,7 @@ const Allocator = std.mem.Allocator;
 
 /// Install command — downloads crushcode binary from GitHub releases or builds from source
 pub const Installer = struct {
-    const version = "0.2.1";
+    const version = "0.2.2";
     const github_repo = "crushcode/crushcode";
     const releases_base = "https://github.com/crushcode/crushcode/releases";
 

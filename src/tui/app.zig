@@ -266,7 +266,7 @@ pub const TUIApp = struct {
         } else if (std.mem.eql(u8, trimmed, "/exit") or std.mem.eql(u8, trimmed, "/quit") or std.mem.eql(u8, trimmed, "/q")) {
             try self.addAssistantLine("Goodbye!");
         } else if (std.mem.eql(u8, trimmed, "/version") or std.mem.eql(u8, trimmed, "/v")) {
-            try self.addAssistantLine("Crushcode TUI v0.2.1");
+            try self.addAssistantLine("Crushcode TUI v0.2.2");
             try self.addAssistantLine("Zig-based AI coding assistant");
         } else {
             try self.addErrorLine("Unknown command");
@@ -283,7 +283,7 @@ pub fn runTUI(allocator: std.mem.Allocator, prompt_fn: anytype) !void {
 
     // Welcome message
     try app.addLine("═══════════════════════════════════════════════════");
-    try app.addLine("              Crushcode TUI v0.2.1");
+    try app.addLine("              Crushcode TUI v0.2.2");
     try app.addLine("═══════════════════════════════════════════════════");
     try app.addLine("");
     try app.addLine("Type your message and press Enter to chat.");
@@ -359,7 +359,7 @@ pub fn runTUIWithClient(allocator: std.mem.Allocator, client: *AIClient) !void {
 
     // Welcome message with AI info
     try app.addLine("═══════════════════════════════════════════════════");
-    try app.addLine("              Crushcode TUI v0.2.1");
+    try app.addLine("              Crushcode TUI v0.2.2");
     try app.addLine("═══════════════════════════════════════════════════");
     try app.addLine("");
     try app.addLine("AI Chat Mode - Connected to your configured provider");

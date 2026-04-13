@@ -2,6 +2,50 @@
 
 All notable changes to Crushcode.
 
+## [0.2.2] — 2026-04-14
+
+### Added — Architecture & Features (Phase A–D)
+- **Architecture reorganization** — shared task primitives, plugin trinity consolidation, CapabilityCatalog, file splits across 6 modules
+- **F1: Output Intensity** (`src/core/intensity.zig`) — lite/full/ultra output modes
+- **F2: Tiered Context Loading** (`src/core/tiered_loader.zig`) — LoadTier enum with token budgets
+- **F5/F6: XML Atomic Plan + Gap Closure** (`src/workflow/phase.zig`) — structured plan format with phase management
+- **F8: Revision Loop** (`src/core/revision_loop.zig`) — iterative refinement tracking
+- **F10: Adversarial Review** (`src/core/adversarial_review.zig`) — dual-model review framework
+- **F11: Session Summarization** (`src/core/session_summarizer.zig`) — session stats on exit
+- **F13: Model Hot-Swap** (`src/core/model_hotswap.zig`) — `/model provider/model` with swap history
+- **F14: Convergence Detection** (`src/core/convergence.zig`) — plateau detection for agent iterations
+- **F15: Custom Commands** (`src/commands/custom_commands.zig`) — markdown-defined slash commands
+- **F16: Slash Commands** (`src/core/slash_commands.zig`) — interactive /help, /clear, /exit, /status, /version, /tools, /tokens, /cost
+- **F18: Knowledge Lint** (`src/core/knowledge_lint.zig`) — knowledge base consistency checker
+- **F19: Source Tracking** (`src/core/source_tracker.zig`) — response provenance metadata
+- **F22: Typed Colors** (`src/core/color.zig`) — type-safe ANSI styles replacing raw escape codes
+
+### Changed — Shelfware Integration (Phase E)
+- Wired 10 modules into chat.zig runtime: color, slash commands, intensity, model hotswap, session summarizer, tiered loader, convergence, capability catalog, usage budget/report
+- Fixed `src/capability/catalog.zig` to use array_list_compat + file_compat
+- Fixed `src/usage/report.zig` relative imports → named module imports
+- Fixed `src/core/slash_commands.zig` execute() return type handling
+
+### Added — UI/UX (Phase F)
+- **Streaming Spinner** (`src/core/spinner.zig`) — shows `⠹ Thinking...` indicator while waiting for AI responses
+- **Markdown Renderer** (`src/core/markdown_renderer.zig`) — ANSI-styled headers, bold, italic, code, lists, blockquotes for AI responses
+- **Boxed Error Display** (`src/core/error_display.zig`) — Unicode box-drawn error/warning/info messages with color-coded severity
+- Wired spinner into interactive AI request flow
+- Wired markdown renderer into single-message response output
+- Wired error display into 6 error/warning sites across chat.zig
+
+### Added — Config Externalization (Phase G)
+- **[model] config section** — `max_tokens` (default 4096) and `temperature` (default 0.7) now configurable via config.toml
+- **[[provider_overrides]] config section** — per-provider base_url customization
+- Added `max_tokens` and `temperature` fields to AIClient struct, replaced 5 hardcoded 2048/0.7 values
+- `buildStreamingBodyFromMessages` now accepts max_tokens/temperature parameters
+- Config values wired through both single-message and interactive chat clients
+
+### Changed
+- Version bumped to 0.2.2 across install, mcp/client, tui/app
+
+---
+
 ## [0.2.1] — 2026-04-13
 
 ### Added

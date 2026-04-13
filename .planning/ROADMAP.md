@@ -11,14 +11,15 @@
 - **v0.1.0** (2026-04-11) — All 27 phases implemented. Initial release.
 - **v0.2.0** (2026-04-12) — Stubs resolved, dead code removed, orphaned modules wired, duplication consolidated.
 - **v0.2.1** (2026-04-13) — Plugins fixed and wired, `crushcode plugin` command, json extraction, proper I/O routing (502 stderr→stdout fixes).
+- **v0.2.2** (2026-04-14) — Architecture reorg (Phase A), 11 feature modules (B–D), 10 shelfware wired (E), spinner/markdown/errors UI (F), config externalization for max_tokens/temperature/provider URLs (G).
 
-## Next: v0.2.2
+## Next: v0.3.0
 
-Focus areas for v0.2.2:
+Focus areas for v0.3.0:
+- **TUI mode** — wire `src/tui/` as `--tui` interactive mode
 - **Integration tests** — end-to-end command testing (chat, shell, mcp, plugin)
-- **Config validation** — TOML schema validation, missing field defaults
-- **Error message quality** — consistent error format across all commands
 - **Documentation** — man-page style help for each command (`crushcode help <cmd>`)
+- **Streaming UX** — real-time token streaming with animated spinner
 
 ---
 
