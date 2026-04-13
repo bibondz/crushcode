@@ -9,6 +9,7 @@ pub const Args = struct {
     interactive: bool = false,
     tui: bool = false,
     json: bool = false,
+    color: ?[]const u8 = null, // "auto", "always", "never"
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -74,6 +75,12 @@ pub const Args = struct {
                     result.tui = true;
                 } else if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "-j")) {
                     result.json = true;
+                } else if (std.mem.eql(u8, arg, "--color")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.color = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--color=")) {
+                    result.color = arg[8..];
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -96,6 +103,7 @@ pub const Args = struct {
             .interactive = result.interactive,
             .tui = result.tui,
             .json = result.json,
+            .color = if (result.color) |c| try allocator.dupe(u8, c) else null,
             .remaining = remaining,
             .has_command = has_command,
         };

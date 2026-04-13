@@ -440,6 +440,7 @@ pub fn printHelp() !void {
         \\  --profile <name>   Use specific profile
         \\  --config <path>    Use custom config file
         \\  --json, -j         Output JSON Lines (machine-readable)
+        \\  --color <mode>     Color output: auto, always, never
         \\  --interactive, -i  Start interactive chat
         \\  --tui, -t          Launch terminal UI
         \\

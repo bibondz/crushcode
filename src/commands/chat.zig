@@ -19,9 +19,12 @@ const tool_loader = @import("tool_loader");
 const skills_loader_mod = @import("skills_loader");
 const json_output_mod = @import("json_output");
 const permission_mod = @import("permission_evaluate");
+const theme_mod = @import("theme");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
+const Theme = theme_mod.Theme;
+const ColorMode = theme_mod.ColorMode;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;

@@ -332,6 +332,14 @@ pub fn build(b: *std.Build) !void {
     });
     chat_mod.addImport("permission_evaluate", permission_evaluate_mod);
 
+    // Theme/color system module (Phase 6)
+    const theme_mod = b.createModule(.{
+        .root_source_file = b.path("src/theme/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    chat_mod.addImport("theme", theme_mod);
+
     // Usage tracking modules (Phase 15)
     const usage_tracker_mod = b.createModule(.{
         .root_source_file = b.path("src/usage/tracker.zig"),
@@ -658,6 +666,7 @@ pub fn build(b: *std.Build) !void {
         connect_mod,
         json_output_mod,
         permission_evaluate_mod,
+        theme_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
