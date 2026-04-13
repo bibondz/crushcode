@@ -479,10 +479,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         defer allocator.free(warn_msg);
         error_display_mod.printWarning("Missing API Key", warn_msg);
 
-        if (!std.mem.eql(u8, provider_name, "ollama") and
-            !std.mem.eql(u8, provider_name, "lm_studio") and
-            !std.mem.eql(u8, provider_name, "llama_cpp"))
-        {
+        if (!provider.config.is_local) {
             return error.MissingApiKey;
         }
     }
@@ -652,10 +649,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         api_key = config.getApiKey(current_provider_name) orelse "";
     }
 
-    if (api_key.len == 0 and !std.mem.eql(u8, current_provider_name, "ollama") and
-        !std.mem.eql(u8, current_provider_name, "lm_studio") and
-        !std.mem.eql(u8, current_provider_name, "llama_cpp"))
-    {
+    if (api_key.len == 0 and !provider.config.is_local) {
         const key_msg = std.fmt.allocPrint(allocator, "No API key found for provider '{s}'. Add to ~/.crushcode/config.toml or profile.", .{current_provider_name}) catch "Missing API key";
         defer allocator.free(key_msg);
         error_display_mod.printError("Missing API Key", key_msg);

@@ -1,6 +1,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
+const registry_mod = @import("registry");
 
 pub const ChatMessage = ai_types.ChatMessage;
 pub const ToolCallInfo = ai_types.ToolCallInfo;
@@ -8,6 +9,7 @@ pub const ChatResponse = ai_types.ChatResponse;
 pub const ChatChoice = ai_types.ChatChoice;
 pub const Usage = ai_types.Usage;
 pub const StreamCallback = ai_types.StreamCallback;
+pub const ApiFormat = registry_mod.ApiFormat;
 
 pub const StreamingToolCall = struct {
     id: ?[]const u8 = null,
@@ -37,14 +39,11 @@ pub const StreamFormat = enum {
     sse,
 };
 
-pub fn detectStreamingFormat(provider_name: []const u8) StreamFormat {
-    if (std.mem.eql(u8, provider_name, "ollama") or
-        std.mem.eql(u8, provider_name, "lm_studio") or
-        std.mem.eql(u8, provider_name, "llama_cpp"))
-    {
-        return .ndjson;
-    }
-    return .sse;
+pub fn detectStreamingFormat(api_format: ApiFormat) StreamFormat {
+    return switch (api_format) {
+        .ollama => .ndjson,
+        .openai, .anthropic, .google => .sse,
+    };
 }
 
 pub fn jsonU32(value: ?std.json.Value) u32 {
@@ -374,7 +373,7 @@ pub fn processSSELine(
 
 pub fn processStreamLine(
     allocator: std.mem.Allocator,
-    provider_name: []const u8,
+    api_format: ApiFormat,
     line: []const u8,
     full_content: *array_list_compat.ArrayList(u8),
     finish_reason: *?[]const u8,
@@ -392,7 +391,7 @@ pub fn processStreamLine(
         return;
     }
 
-    switch (detectStreamingFormat(provider_name)) {
+    switch (detectStreamingFormat(api_format)) {
         .ndjson => try processNDJSONLine(allocator, trimmed, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls),
         .sse => try processSSELine(allocator, trimmed, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls),
     }
@@ -400,7 +399,7 @@ pub fn processStreamLine(
 
 pub fn processStreamChunk(
     allocator: std.mem.Allocator,
-    provider_name: []const u8,
+    api_format: ApiFormat,
     partial_line: *array_list_compat.ArrayList(u8),
     chunk: []const u8,
     full_content: *array_list_compat.ArrayList(u8),
@@ -415,7 +414,7 @@ pub fn processStreamChunk(
     var start: usize = 0;
     for (partial_line.items, 0..) |byte, i| {
         if (byte == '\n') {
-            try processStreamLine(allocator, provider_name, partial_line.items[start..i], full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
+            try processStreamLine(allocator, api_format, partial_line.items[start..i], full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
             start = i + 1;
         }
     }
@@ -491,7 +490,7 @@ pub fn buildStreamingBodyFromMessages(
     system_prompt: ?[]const u8,
     messages: []const ChatMessage,
     tools_json: []const u8,
-    provider_name: []const u8,
+    api_format: ApiFormat,
     max_tokens: u32,
     temperature: f32,
 ) ![]const u8 {
@@ -524,7 +523,7 @@ pub fn buildStreamingBodyFromMessages(
     if (tools_json.len > 0) {
         try json_body.appendSlice(tools_json);
     }
-    if (!std.mem.eql(u8, provider_name, "ollama")) {
+    if (api_format != .ollama) {
         try json_body.appendSlice(",\"stream\":true");
     }
     try json_body.appendSlice("}");

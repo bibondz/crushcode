@@ -54,11 +54,21 @@ pub const ProviderType = enum {
     }
 };
 
+pub const ApiFormat = enum {
+    openai,
+    anthropic,
+    google,
+    ollama,
+};
+
 pub const ProviderConfig = struct {
     base_url: []const u8,
     api_key: []const u8,
     models: []const []const u8,
     is_models_static: bool = false,
+    api_format: ApiFormat = .openai,
+    is_local: bool = false,
+    keep_prefix: bool = false,
 };
 
 pub const Provider = struct {
@@ -97,84 +107,101 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .anthropic => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.anthropic.com/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229" },
             .is_models_static = true,
+            .api_format = .anthropic,
         },
         .gemini => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://generativelanguage.googleapis.com/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash" },
             .is_models_static = true,
+            .api_format = .google,
         },
         .xai => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.x.ai/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "grok-beta", "grok-2-1212" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .mistral => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.mistral.ai/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "mistral-large-latest", "mistral-medium-latest", "mistral-small-latest" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .groq => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.groq.com/openai/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "llama-3.3-70b-versatile", "llama-3.3-8b-instant", "mixtral-8x7b-32768" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .deepseek => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.deepseek.com/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "deepseek-chat", "deepseek-coder" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .together => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.together.xyz/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .azure => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "gpt-4o", "gpt-4-turbo", "gpt-35-turbo" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .vertexai => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/YOUR_LOCATION/publishers/google/models"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "gemini-2.0-flash-exp", "gemini-1.5-pro-001", "gemini-1.5-flash-001" },
             .is_models_static = true,
+            .api_format = .google,
         },
         .bedrock => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://bedrock-runtime.us-east-1.amazonaws.com"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "anthropic.claude-3-5-sonnet-20241022-v2:0", "us.anthropic.claude-3-5-haiku-20241022-v1:0" },
             .is_models_static = true,
+            .api_format = .anthropic,
         },
         .ollama => ProviderConfig{
             .base_url = try allocator.dupe(u8, "http://localhost:11434/api"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "gemma4:31b-cloud", "phi3.5:3.8b-mini-instruct-q5_K_M", "llama3.3:70b-cloud", "mistral-small:24b-cloud", "qwen3:30b-cloud", "deepseek-r1:cloud", "devstral:24b-cloud" },
             .is_models_static = true,
+            .api_format = .ollama,
+            .is_local = true,
         },
         .lm_studio => ProviderConfig{
             .base_url = try allocator.dupe(u8, "http://localhost:1234/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "local-model", "your-model-name" },
             .is_models_static = true,
+            .api_format = .openai,
+            .is_local = true,
         },
         .llama_cpp => ProviderConfig{
             .base_url = try allocator.dupe(u8, "http://localhost:8080/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "default", "your-model" },
             .is_models_static = true,
+            .api_format = .openai,
+            .is_local = true,
         },
         .openrouter => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://openrouter.ai/api/v1"),
@@ -208,18 +235,22 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
                 "z-ai/glm-4.5-air",
             },
             .is_models_static = true,
+            .api_format = .openai,
+            .keep_prefix = true,
         },
         .zai => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://open.bigmodel.cn/api/paas/v4"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{ "glm-4-flash", "glm-4-plus", "glm-4.5-air" },
             .is_models_static = true,
+            .api_format = .openai,
         },
         .vercel_gateway => ProviderConfig{
             .base_url = try allocator.dupe(u8, "https://api.vercel.ai/v1"),
             .api_key = try allocator.dupe(u8, ""),
             .models = &[_][]const u8{"your-provider-model"},
             .is_models_static = true,
+            .api_format = .openai,
         },
         .opencode_zen => ProviderConfig{
             // OpenCode Zen - models tested by OpenCode team
@@ -249,6 +280,8 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
                 "opencode/kimi-k2.5",
             },
             .is_models_static = true,
+            .api_format = .openai,
+            .is_local = true,
         },
         .opencode_go => ProviderConfig{
             // OpenCode Go - low cost subscription ($5 first month, $10/month)
@@ -266,8 +299,17 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
                 "minimax-m2.5",
             },
             .is_models_static = true,
+            .api_format = .openai,
+            .is_local = true,
         },
     };
+}
+
+fn parseApiFormat(api_format: []const u8) ApiFormat {
+    if (std.mem.eql(u8, api_format, "anthropic")) return .anthropic;
+    if (std.mem.eql(u8, api_format, "google")) return .google;
+    if (std.mem.eql(u8, api_format, "ollama")) return .ollama;
+    return .openai;
 }
 
 pub const ProviderRegistry = struct {
@@ -292,6 +334,156 @@ pub const ProviderRegistry = struct {
     pub fn registerProvider(self: *ProviderRegistry, provider_type: ProviderType) !void {
         const provider = try Provider.init(self.allocator, provider_type);
         try self.providers.put(provider.name, provider);
+    }
+
+    /// Generic fetch models from any provider based on api_format.
+    /// Returns a caller-owned slice of model ID strings.
+    pub fn fetchModels(self: *ProviderRegistry, provider_name: []const u8, api_key: []const u8) ![]const []const u8 {
+        const provider = self.providers.get(provider_name) orelse return error.ProviderNotFound;
+        const base_url = provider.config.base_url;
+        const fmt = provider.config.api_format;
+
+        switch (fmt) {
+            .openai => {
+                const url = try std.fmt.allocPrint(self.allocator, "{s}/models", .{base_url});
+                defer self.allocator.free(url);
+
+                var headers = array_list_compat.ArrayList(std.http.Header).init(self.allocator);
+                defer headers.deinit();
+                if (api_key.len > 0) {
+                    const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
+                    defer self.allocator.free(auth);
+                    try headers.append(.{ .name = "Authorization", .value = auth });
+                }
+
+                const response = http_client.httpGet(self.allocator, url, headers.items) catch return error.FetchFailed;
+                defer self.allocator.free(response.body);
+                if (response.status != .ok) return error.FetchFailed;
+
+                return self.parseOpenAIModelsJson(response.body);
+            },
+            .ollama => {
+                // Ollama base_url already contains /api (e.g. http://localhost:11434/api)
+                // but we need the /api/tags endpoint for listing
+                var url: []const u8 = undefined;
+                if (std.mem.endsWith(u8, base_url, "/api")) {
+                    url = try std.fmt.allocPrint(self.allocator, "{s}/tags", .{base_url});
+                } else {
+                    url = try std.fmt.allocPrint(self.allocator, "{s}/api/tags", .{base_url});
+                }
+                defer self.allocator.free(url);
+
+                const response = http_client.httpGet(self.allocator, url, null) catch return error.FetchFailed;
+                defer self.allocator.free(response.body);
+                if (response.status != .ok) return error.FetchFailed;
+
+                return self.parseOllamaModelsJson(response.body);
+            },
+            .anthropic => {
+                const url = try std.fmt.allocPrint(self.allocator, "{s}/models", .{base_url});
+                defer self.allocator.free(url);
+
+                var headers = array_list_compat.ArrayList(std.http.Header).init(self.allocator);
+                defer headers.deinit();
+                if (api_key.len > 0) {
+                    const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
+                    defer self.allocator.free(auth);
+                    try headers.append(.{ .name = "x-api-key", .value = auth });
+                    try headers.append(.{ .name = "anthropic-version", .value = "2023-06-01" });
+                }
+
+                const response = http_client.httpGet(self.allocator, url, headers.items) catch return error.FetchFailed;
+                defer self.allocator.free(response.body);
+                if (response.status != .ok) return error.FetchFailed;
+
+                return self.parseOpenAIModelsJson(response.body);
+            },
+            .google => {
+                // Gemini uses query param auth: ?key=API_KEY
+                const url = if (api_key.len > 0)
+                    try std.fmt.allocPrint(self.allocator, "https://generativelanguage.googleapis.com/v1beta/models?key={s}", .{api_key})
+                else
+                    try std.fmt.allocPrint(self.allocator, "{s}/models", .{base_url});
+                defer self.allocator.free(url);
+
+                const response = http_client.httpGet(self.allocator, url, null) catch return error.FetchFailed;
+                defer self.allocator.free(response.body);
+                if (response.status != .ok) return error.FetchFailed;
+
+                return self.parseGeminiModelsJson(response.body);
+            },
+        }
+    }
+
+    /// Parse OpenAI-compatible /v1/models response: {"data":[{"id":"..."},...]}
+    fn parseOpenAIModelsJson(self: *ProviderRegistry, body: []const u8) ![]const []const u8 {
+        var model_list = array_list_compat.ArrayList([]const u8).init(self.allocator);
+        var search_idx: usize = 0;
+        while (search_idx < body.len) {
+            if (std.mem.indexOf(u8, body[search_idx..], "\"id\":\"")) |idx| {
+                const start = search_idx + idx + 5;
+                if (start < body.len) {
+                    if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
+                        const model_id = body[start..(start + end_idx)];
+                        if (model_id.len > 0 and model_id.len < 200) {
+                            try model_list.append(try self.allocator.dupe(u8, model_id));
+                        }
+                        search_idx = start + end_idx;
+                        continue;
+                    }
+                }
+            }
+            search_idx += 1;
+        }
+        return model_list.toOwnedSlice();
+    }
+
+    /// Parse Ollama /api/tags response: {"models":[{"name":"..."},...]}
+    fn parseOllamaModelsJson(self: *ProviderRegistry, body: []const u8) ![]const []const u8 {
+        var model_list = array_list_compat.ArrayList([]const u8).init(self.allocator);
+        var search_idx: usize = 0;
+        while (search_idx < body.len) {
+            if (std.mem.indexOf(u8, body[search_idx..], "\"name\":\"")) |idx| {
+                const start = search_idx + idx + 8;
+                if (start < body.len) {
+                    if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
+                        const model_id = body[start..(start + end_idx)];
+                        if (model_id.len > 0 and model_id.len < 200) {
+                            try model_list.append(try self.allocator.dupe(u8, model_id));
+                        }
+                        search_idx = start + end_idx;
+                        continue;
+                    }
+                }
+            }
+            search_idx += 1;
+        }
+        return model_list.toOwnedSlice();
+    }
+
+    /// Parse Gemini /v1beta/models response: {"models":[{"name":"models/..."},...]}
+    fn parseGeminiModelsJson(self: *ProviderRegistry, body: []const u8) ![]const []const u8 {
+        var model_list = array_list_compat.ArrayList([]const u8).init(self.allocator);
+        var search_idx: usize = 0;
+        while (search_idx < body.len) {
+            if (std.mem.indexOf(u8, body[search_idx..], "\"name\":\"")) |idx| {
+                const start = search_idx + idx + 8;
+                if (start < body.len) {
+                    if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
+                        const raw = body[start..(start + end_idx)];
+                        // Strip "models/" prefix from Gemini model names
+                        const model_id = if (std.mem.startsWith(u8, raw, "models/")) raw["models/".len..] else raw;
+                        if (model_id.len > 0 and model_id.len < 200) {
+                            try model_list.append(try self.allocator.dupe(u8, model_id));
+                        }
+                        search_idx = start + end_idx;
+                        continue;
+                    }
+                }
+            }
+            search_idx += 1;
+        }
+        return model_list.toOwnedSlice();
     }
 
     /// Fetch available models from OpenCode Zen API
@@ -433,6 +625,9 @@ pub const ProviderRegistry = struct {
                 .api_key = try self.allocator.dupe(u8, ""),
                 .models = models,
                 .is_models_static = false,
+                .api_format = parseApiFormat(def.api_format),
+                .is_local = def.is_local,
+                .keep_prefix = def.keep_prefix,
             },
             .allocator = self.allocator,
         };

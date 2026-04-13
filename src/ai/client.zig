@@ -131,13 +131,11 @@ pub const AIClient = struct {
 
     /// Get the actual model name to send to API.
     /// Strips provider prefix (e.g. "openai/gpt-4o-mini" → "gpt-4o-mini")
-    /// unless the provider is OpenRouter, which expects "provider/model" format.
+    /// unless the provider config keeps the provider/model prefix.
     pub fn getApiModelName(self: *AIClient) []const u8 {
-        // OpenRouter uses "provider/model" format — keep as-is
-        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
+        if (self.provider.config.keep_prefix) {
             return self.model;
         }
-        // Strip any "provider/" prefix for direct API calls
         if (std.mem.indexOfScalar(u8, self.model, '/')) |idx| {
             return self.model[idx + 1 ..];
         }
@@ -164,11 +162,7 @@ pub const AIClient = struct {
         }
 
         const has_key = self.api_key.len > 0;
-        const is_local = std.mem.eql(u8, self.provider.name, "ollama") or
-            std.mem.eql(u8, self.provider.name, "lm_studio") or
-            std.mem.eql(u8, self.provider.name, "llama_cpp") or
-            std.mem.eql(u8, self.provider.name, "opencode-zen") or
-            std.mem.eql(u8, self.provider.name, "opencode-go");
+        const is_local = self.provider.config.is_local;
 
         if (!has_key and !is_local) {
             return error.AuthenticationError;
@@ -342,11 +336,7 @@ pub const AIClient = struct {
         }
 
         const has_key = self.api_key.len > 0;
-        const is_local = std.mem.eql(u8, self.provider.name, "ollama") or
-            std.mem.eql(u8, self.provider.name, "lm_studio") or
-            std.mem.eql(u8, self.provider.name, "llama_cpp") or
-            std.mem.eql(u8, self.provider.name, "opencode-zen") or
-            std.mem.eql(u8, self.provider.name, "opencode-go");
+        const is_local = self.provider.config.is_local;
 
         if (!has_key and !is_local) {
             return error.AuthenticationError;
@@ -356,7 +346,7 @@ pub const AIClient = struct {
             std.log.debug("\n=== Crushcode AI Client ===", .{});
             std.log.debug("Provider: {s}", .{self.provider.name});
             std.log.debug("Model: {s}", .{self.model});
-            std.log.debug("API Endpoint: {s}/chat/completions", .{self.provider.config.base_url});
+            std.log.debug("API Endpoint: {s}{s}", .{ self.provider.config.base_url, self.getChatPath() });
             if (single_message) |msg| {
                 std.log.debug("User Message: {s}", .{msg});
             } else if (messages) |msgs| {
@@ -407,7 +397,7 @@ pub const AIClient = struct {
         _ = has_key;
         _ = _attempt;
 
-        const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else if (std.mem.eql(u8, self.provider.name, "opencode-zen")) "/chat/completions" else if (std.mem.eql(u8, self.provider.name, "opencode-go")) "/chat/completions" else "/chat/completions";
+        const chat_path = self.getChatPath();
 
         if (debug) {
             std.log.debug("\n[HTTP Request]", .{});
@@ -457,7 +447,7 @@ pub const AIClient = struct {
 
         // For Ollama, responses contain multiple JSON objects (streaming)
         // Parse each line and accumulate the full content
-        if (std.mem.eql(u8, self.provider.name, "ollama")) {
+        if (self.provider.config.api_format == .ollama) {
             var full_content = array_list_compat.ArrayList(u8).init(allocator);
             defer full_content.deinit();
 
@@ -534,7 +524,7 @@ pub const AIClient = struct {
         _ = has_key;
         _ = _attempt;
 
-        const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else "/chat/completions";
+        const chat_path = self.getChatPath();
 
         if (debug) {
             std.log.debug("\n[HTTP Request with History]", .{});
@@ -615,7 +605,7 @@ pub const AIClient = struct {
         const response_slice = fetch_result.body;
 
         // For Ollama, responses contain multiple JSON objects (streaming)
-        if (std.mem.eql(u8, self.provider.name, "ollama")) {
+        if (self.provider.config.api_format == .ollama) {
             var full_content = array_list_compat.ArrayList(u8).init(allocator);
             defer full_content.deinit();
 
@@ -686,7 +676,7 @@ pub const AIClient = struct {
     }
 
     fn detectStreamingFormat(self: *AIClient) StreamFormat {
-        return streaming_parsers.detectStreamingFormat(self.provider.name);
+        return streaming_parsers.detectStreamingFormat(self.provider.config.api_format);
     }
 
     fn jsonU32(value: ?std.json.Value) u32 {
@@ -774,7 +764,7 @@ pub const AIClient = struct {
         saw_done: *bool,
         streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
-        return streaming_parsers.processStreamLine(self.allocator, self.provider.name, line, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
+        return streaming_parsers.processStreamLine(self.allocator, self.provider.config.api_format, line, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
     }
 
     fn processStreamChunk(
@@ -788,7 +778,7 @@ pub const AIClient = struct {
         saw_done: *bool,
         streaming_tool_calls: *array_list_compat.ArrayList(StreamingToolCall),
     ) !void {
-        return streaming_parsers.processStreamChunk(self.allocator, self.provider.name, partial_line, chunk, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
+        return streaming_parsers.processStreamChunk(self.allocator, self.provider.config.api_format, partial_line, chunk, full_content, finish_reason, usage, callback, saw_done, streaming_tool_calls);
     }
 
     fn appendEscapedJsonString(json_body: *array_list_compat.ArrayList(u8), value: []const u8) !void {
@@ -838,11 +828,7 @@ pub const AIClient = struct {
             try json_body.appendSlice(tools_json);
         }
         if (stream) {
-            // Ollama: disable streaming to avoid Zig stdlib HTTP state machine bug
-            // The non-streaming path works correctly and returns full response
-            if (std.mem.eql(u8, self.provider.name, "ollama")) {
-                // Use stream:false - non-streaming works correctly
-            } else {
+            if (self.provider.config.api_format != .ollama) {
                 try json_body.appendSlice(",\"stream\":true");
             }
         }
@@ -863,7 +849,7 @@ pub const AIClient = struct {
         const tools_json = try self.buildToolsJson(self.allocator);
         defer self.allocator.free(tools_json);
 
-        return streaming_parsers.buildStreamingBodyFromMessages(self.allocator, self.getApiModelName(), self.system_prompt, messages, tools_json, self.provider.name, self.max_tokens, self.temperature);
+        return streaming_parsers.buildStreamingBodyFromMessages(self.allocator, self.getApiModelName(), self.system_prompt, messages, tools_json, self.provider.config.api_format, self.max_tokens, self.temperature);
     }
 
     fn buildStreamingResponse(self: *AIClient, content_slice: []const u8, final_finish_reason: []const u8, usage: ?Usage, streaming_tool_calls: []const StreamingToolCall) !ChatResponse {
@@ -993,7 +979,7 @@ pub const AIClient = struct {
 
     /// Get the chat endpoint path for this provider
     pub fn getChatPath(self: *AIClient) []const u8 {
-        if (std.mem.eql(u8, self.provider.name, "ollama")) return "/chat";
+        if (self.provider.config.api_format == .ollama) return "/chat";
         return "/chat/completions";
     }
 };

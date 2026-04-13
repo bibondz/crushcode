@@ -78,6 +78,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     ai_streaming_parsers_mod.addImport("ai_types", ai_types_mod);
+    ai_streaming_parsers_mod.addImport("registry", registry_mod);
 
     const tool_loader_mod = b.createModule(.{
         .root_source_file = b.path("src/config/tool_loader.zig"),
