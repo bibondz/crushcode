@@ -154,7 +154,7 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         .ollama => ProviderConfig{
             .base_url = try allocator.dupe(u8, "http://localhost:11434/api"),
             .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{"phi3.5:3.8b-mini-instruct-q5_K_M"},
+            .models = &[_][]const u8{ "gemma4:31b-cloud", "phi3.5:3.8b-mini-instruct-q5_K_M" },
             .is_models_static = true,
         },
         .lm_studio => ProviderConfig{
