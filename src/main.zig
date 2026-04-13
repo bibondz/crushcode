@@ -4,6 +4,10 @@ const args_mod = @import("args");
 const commands = @import("handlers");
 const config_mod = @import("config");
 
+pub const std_options = std.Options{
+    .log_level = .warn,
+};
+
 inline fn err_print(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stderr().writer().print(fmt, args) catch {};
 }
@@ -166,6 +170,7 @@ pub fn main() !void {
             .memory = null,
             .memory_limit = 100,
             .stream = false,
+            .debug = false,
             .permission = null,
             .intensity = null,
             .remaining = &.{},

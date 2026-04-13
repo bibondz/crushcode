@@ -17,6 +17,7 @@ pub const Args = struct {
     memory: ?[]const u8 = null, // session memory/history (file path or "auto")
     memory_limit: u32 = 100, // max messages to remember
     stream: bool = false, // enable streaming output
+    debug: bool = false, // enable debug output
     permission: ?[]const u8 = null, // permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
     intensity: ?[]const u8 = null, // output intensity: lite, normal, full, ultra (F1: Caveman-inspired)
     remaining: [][]const u8,
@@ -132,6 +133,8 @@ pub const Args = struct {
                     }
                 } else if (std.mem.eql(u8, arg, "--stream") or std.mem.eql(u8, arg, "-s")) {
                     result.stream = true;
+                } else if (std.mem.eql(u8, arg, "--debug") or std.mem.eql(u8, arg, "-d")) {
+                    result.debug = true;
                 } else if (std.mem.startsWith(u8, arg, "--intensity=")) {
                     result.intensity = arg[12..];
                 } else if (std.mem.eql(u8, arg, "--intensity")) {
@@ -168,6 +171,7 @@ pub const Args = struct {
             .memory = if (result.memory) |m| try allocator.dupe(u8, m) else null,
             .memory_limit = result.memory_limit,
             .stream = result.stream,
+            .debug = result.debug,
             .permission = if (result.permission) |p| try allocator.dupe(u8, p) else null,
             .intensity = if (result.intensity) |i| try allocator.dupe(u8, i) else null,
             .remaining = remaining,
