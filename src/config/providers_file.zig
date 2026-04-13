@@ -164,10 +164,10 @@ const default_providers_content =
     \\models = ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "openai/gpt-oss-20b:free", "z-ai/glm-4.5-air:free", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku", "deepseek/deepseek-chat", "deepseek/deepseek-v3.2", "deepseek/deepseek-r1", "openai/gpt-5.2", "openai/gpt-4o", "openai/gpt-4o-mini", "google/gemini-2.0-flash-001", "google/gemini-2.0-flash", "meta-llama/llama-3.1-8b-instruct", "z-ai/glm-5.1", "z-ai/glm-4.5-air"]
     \\
     \\[providers.zai]
-    \\base_url = "https://open.bigmodel.cn/api/paas/v4"
-    \\description = "GLM models from Z.AI"
+    \\base_url = "https://api.z.ai/api/coding/paas/v4"
+    \\description = "GLM models from Z.AI (Coding Plan)"
     \\api_format = "openai"
-    \\models = ["glm-4-flash", "glm-4-plus", "glm-4.5-air"]
+    \\models = ["glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5", "glm-5.1"]
     \\
     \\[providers.vercel-gateway]
     \\base_url = "https://api.vercel.ai/v1"

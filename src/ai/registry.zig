@@ -239,9 +239,9 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .keep_prefix = true,
         },
         .zai => ProviderConfig{
-            .base_url = try allocator.dupe(u8, "https://open.bigmodel.cn/api/paas/v4"),
+            .base_url = try allocator.dupe(u8, "https://api.z.ai/api/coding/paas/v4"),
             .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{ "glm-4-flash", "glm-4-plus", "glm-4.5-air" },
+            .models = &[_][]const u8{ "glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5", "glm-5.1" },
             .is_models_static = true,
             .api_format = .openai,
         },
