@@ -79,6 +79,30 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Auth module (credentials storage)
+    const auth_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/auth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Profile module (named configuration profiles)
+    const profile_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/profile.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Connect module (interactive provider setup)
+    const connect_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/connect.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    connect_mod.addImport("auth", auth_mod);
+    connect_mod.addImport("registry", registry_mod);
+    connect_mod.addImport("config", config_mod);
+
     config_mod.addImport("toml", toml_mod);
     provider_config_mod.addImport("toml", toml_mod);
 
@@ -112,6 +136,7 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("ai_types", ai_types_mod);
     chat_mod.addImport("registry", registry_mod);
     chat_mod.addImport("config", config_mod);
+    chat_mod.addImport("profile", profile_mod);
     chat_mod.addImport("client", client_mod);
     chat_mod.addImport("provider_config", provider_config_mod);
     chat_mod.addImport("plugin", plugin_mod);
@@ -370,6 +395,8 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("usage_tracker", usage_tracker_mod);
     handlers_mod.addImport("usage_pricing", usage_pricing_mod);
     handlers_mod.addImport("core_api", core_api_mod);
+    handlers_mod.addImport("connect", connect_mod);
+    handlers_mod.addImport("profile", profile_mod);
 
     // Main module
     const main_mod = b.createModule(.{
@@ -391,6 +418,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("usage_budget", usage_budget_mod);
     main_mod.addImport("usage_report", usage_report_mod);
     main_mod.addImport("validated_edit", validated_edit_mod);
+    main_mod.addImport("profile", profile_mod);
 
     // Phase 17-22 modules
     const fallback_mod = b.createModule(.{
@@ -606,6 +634,9 @@ pub fn build(b: *std.Build) !void {
         mcp_client_mod,
         mcp_discovery_mod,
         mcp_bridge_mod,
+        auth_mod,
+        profile_mod,
+        connect_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

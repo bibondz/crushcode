@@ -52,6 +52,8 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "scaffold") or
         std.mem.eql(u8, command, "list") or
         std.mem.eql(u8, command, "usage") or
+        std.mem.eql(u8, command, "connect") or
+        std.mem.eql(u8, command, "profile") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
         std.mem.eql(u8, command, "-h") or
@@ -174,6 +176,10 @@ pub fn main() !void {
         try commands.handleList(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "usage")) {
         try commands.handleUsage(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "connect")) {
+        try commands.handleConnect(parsed_args);
+    } else if (std.mem.eql(u8, parsed_args.command, "profile")) {
+        try commands.handleProfile(parsed_args);
     } else if (std.mem.eql(u8, parsed_args.command, "help") or
         std.mem.eql(u8, parsed_args.command, "--help") or
         std.mem.eql(u8, parsed_args.command, "-h"))

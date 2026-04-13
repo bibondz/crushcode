@@ -21,6 +21,8 @@ const tools_mod = @import("tools");
 const core_api = @import("core_api");
 const worktree_mod = @import("worktree");
 const agent_loop_mod = @import("agent_loop");
+const connect_mod = @import("connect");
+const profile_mod = @import("profile");
 
 const Config = config_mod.Config;
 
@@ -349,6 +351,9 @@ pub fn handleList(args: args_mod.Args) !void {
         const provider_name = args.remaining[0];
         if (std.mem.eql(u8, provider_name, "--providers") or std.mem.eql(u8, provider_name, "-p")) {
             try registry.printProviders();
+        } else if (std.mem.eql(u8, provider_name, "--refresh") or std.mem.eql(u8, provider_name, "-r")) {
+            // Refresh models from OpenRouter (no auth required)
+            try registry.printOpenRouterModelsLive();
         } else if (std.mem.eql(u8, provider_name, "--models") or std.mem.eql(u8, provider_name, "-m")) {
             if (args.remaining.len < 2) {
                 std.debug.print("Error: Provider name required for --models\n\n", .{});
@@ -365,6 +370,8 @@ pub fn handleList(args: args_mod.Args) !void {
         std.debug.print("\nTo see models for a provider:\n", .{});
         std.debug.print("  crushcode list <provider-name>\n", .{});
         std.debug.print("  crushcode list --models <provider-name>\n", .{});
+        std.debug.print("\nTo fetch live models from OpenRouter:\n", .{});
+        std.debug.print("  crushcode list --refresh\n", .{});
     }
 }
 
@@ -397,6 +404,7 @@ pub fn printHelp() !void {
         \\  scaffold       Generate project scaffolding
         \\  list           List providers or models
         \\  usage         Show token usage and cost tracking
+        \\  connect        Add API credentials for providers
         \\  help           Show this help message
         \\  version        Show version information
         \\
@@ -471,6 +479,14 @@ pub fn handleUsage(_: args_mod.Args) !void {
     std.debug.print("  [budget]\n", .{});
     std.debug.print("  daily_limit_usd = 1.0\n", .{});
     std.debug.print("  monthly_limit_usd = 50.0\n", .{});
+}
+
+pub fn handleConnect(args: args_mod.Args) !void {
+    try connect_mod.handleConnect(args.remaining);
+}
+
+pub fn handleProfile(args: args_mod.Args) !void {
+    try profile_mod.handleProfile(args.remaining);
 }
 
 pub fn printVersion() !void {

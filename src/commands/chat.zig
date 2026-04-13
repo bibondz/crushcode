@@ -5,6 +5,7 @@ const ai_types = @import("ai_types");
 const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
+const profile_mod = @import("profile");
 const client_mod = @import("client");
 const core = @import("core_api");
 const intent_gate_mod = @import("intent_gate");
@@ -17,6 +18,7 @@ const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
 
 const Config = config_mod.Config;
+const Profile = profile_mod.Profile;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
@@ -747,8 +749,13 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
 
     const message = args.remaining[0];
-    const provider_name = args.provider orelse config.default_provider;
-    const model_name = args.model orelse config.default_model;
+
+    // Try to load current profile for provider/model defaults
+    var profile_opt: ?Profile = profile_mod.loadCurrentProfile(allocator) catch null;
+    defer if (profile_opt) |*p| p.deinit();
+
+    const provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
+    const model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
 
     // Initialize registry and get provider
     var registry = registry_mod.ProviderRegistry.init(allocator);
@@ -761,8 +768,14 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         return error.ProviderNotFound;
     };
 
-    // Get API key from config
-    const api_key = config.getApiKey(provider_name) orelse "";
+    // Get API key - check profile first, then config
+    var api_key: []const u8 = "";
+    if (profile_opt) |*p| {
+        api_key = p.getApiKey(provider_name) orelse "";
+    }
+    if (api_key.len == 0) {
+        api_key = config.getApiKey(provider_name) orelse "";
+    }
 
     if (api_key.len == 0) {
         std.debug.print("Warning: No API key found for provider '{s}'\n", .{provider_name});
@@ -778,17 +791,24 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
 
     // Initialize AI client
-    var client = try core.AIClient.init(allocator, provider, model_name, api_key);
-    defer client.deinit();
+    var ai_client = try core.AIClient.init(allocator, provider, model_name, api_key);
+    defer ai_client.deinit();
 
-    // Set system prompt from config if available
-    if (config.getSystemPrompt()) |sys_prompt| {
-        client.setSystemPrompt(sys_prompt);
+    // Set system prompt from profile or config if available
+    var chat_sys_prompt: ?[]const u8 = null;
+    if (profile_opt) |*p| {
+        if (p.system_prompt.len > 0) chat_sys_prompt = p.system_prompt;
+    }
+    if (chat_sys_prompt == null) {
+        chat_sys_prompt = config.getSystemPrompt();
+    }
+    if (chat_sys_prompt) |sp| {
+        ai_client.setSystemPrompt(sp);
     }
 
     std.debug.print("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
-    const response = client.sendChat(message) catch |err| {
+    const response = ai_client.sendChat(message) catch |err| {
         std.debug.print("\nError sending request: {}\n", .{err});
         return err;
     };
@@ -816,7 +836,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
             usage.total_tokens,
         });
         // Show extended usage info
-        const ext = client.extractExtendedUsage(&response);
+        const ext = ai_client.extractExtendedUsage(&response);
         std.debug.print("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
     }
 }

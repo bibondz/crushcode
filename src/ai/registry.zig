@@ -343,6 +343,59 @@ pub const ProviderRegistry = struct {
         return model_list.toOwnedSlice();
     }
 
+    /// Fetch available models from OpenRouter API (no auth required)
+    /// Returns models in format "provider/model-name"
+    pub fn fetchOpenRouterModels(self: *ProviderRegistry) ![]const []const u8 {
+        // Use curl to fetch models (avoids HTTP client compression issues)
+        const argv: [5][]const u8 = .{ "curl", "-s", "-m", "30", "https://openrouter.ai/api/v1/models" };
+        var child = std.process.Child.init(&argv, self.allocator);
+        child.stdout_behavior = .Pipe;
+        child.stderr_behavior = .Pipe;
+
+        _ = try child.spawn();
+
+        var stdout = std.ArrayListUnmanaged(u8){};
+        var stderr = std.ArrayListUnmanaged(u8){};
+        defer {
+            stdout.deinit(self.allocator);
+            stderr.deinit(self.allocator);
+        }
+
+        try child.collectOutput(self.allocator, &stdout, &stderr, 10 * 1024 * 1024);
+
+        const term = try child.wait();
+
+        if (term.Exited != 0) {
+            return error.FetchFailed;
+        }
+
+        const body = stdout.items;
+
+        // Parse JSON response - search for "id":" patterns
+        var model_list = array_list_compat.ArrayList([]const u8).init(self.allocator);
+
+        var search_idx: usize = 0;
+        while (search_idx < body.len) {
+            const id_pattern = "\"id\":\"";
+            if (std.mem.indexOf(u8, body[search_idx..], id_pattern)) |idx| {
+                const start = search_idx + idx + id_pattern.len;
+                if (start < body.len) {
+                    if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
+                        const model_id = body[start..(start + end_idx)];
+                        if (model_id.len > 0 and model_id.len < 200 and !std.mem.startsWith(u8, model_id, "__")) {
+                            try model_list.append(try std.fmt.allocPrint(self.allocator, "{s}", .{model_id}));
+                        }
+                        search_idx = start + end_idx;
+                        continue;
+                    }
+                }
+            }
+            search_idx += 1;
+        }
+
+        return model_list.toOwnedSlice();
+    }
+
     pub fn registerAllProviders(self: *ProviderRegistry) !void {
         const all_providers = comptime std.enums.values(ProviderType);
         inline for (all_providers) |provider_type| {
@@ -386,7 +439,30 @@ pub const ProviderRegistry = struct {
 
         std.debug.print("Available Models for {s}:\n\n", .{provider_name});
         for (models, 0..) |model, i| {
-            std.debug.print("  {}. {s}\n", .{ i + 1, model });
+            std.debug.print("  {d}. {s}\n", .{ i + 1, model });
+        }
+    }
+
+    /// Print models fetched live from OpenRouter API
+    pub fn printOpenRouterModelsLive(self: *ProviderRegistry) !void {
+        std.debug.print("Fetching models from OpenRouter API...\n\n", .{});
+
+        const models = self.fetchOpenRouterModels() catch |err| {
+            std.debug.print("Error fetching models: {}\n", .{err});
+            std.debug.print("Showing cached models instead:\n\n", .{});
+            try self.printModels("openrouter");
+            return;
+        };
+        defer self.allocator.free(models);
+
+        if (models.len == 0) {
+            std.debug.print("No models found\n", .{});
+            return;
+        }
+
+        std.debug.print("Live Models from OpenRouter ({d} total):\n\n", .{models.len});
+        for (models, 0..) |model, i| {
+            std.debug.print("  {d}. {s}\n", .{ i + 1, model });
         }
     }
 };
