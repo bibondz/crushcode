@@ -1,6 +1,8 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
+const env = @import("env");
+const http_client = @import("http_client");
 const MCPClient = @import("mcp_client").MCPClient;
 const MCPServerConfig = @import("mcp_client").MCPServerConfig;
 
@@ -103,7 +105,7 @@ pub const MCPDiscovery = struct {
         };
 
         // Also search HOME-based paths
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (env.getHomeDir(self.allocator)) |home| {
             defer self.allocator.free(home);
             const npx_path = std.fmt.allocPrint(self.allocator, "{s}/.local/share/npx", .{home}) catch return;
             defer self.allocator.free(npx_path);
@@ -238,7 +240,7 @@ pub const MCPDiscovery = struct {
 
     fn searchPackageManagers(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         // Search npm global packages for MCP servers
-        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+        if (env.getHomeDir(self.allocator)) |home| {
             defer self.allocator.free(home);
             const npm_path = std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{home}) catch return;
             defer self.allocator.free(npm_path);
@@ -257,33 +259,18 @@ pub const MCPDiscovery = struct {
         };
         defer self.allocator.free(search_url);
 
-        // Fetch search results via HTTP
-        var client = std.http.Client{ .allocator = self.allocator };
-        defer client.deinit();
-
-        const uri = std.Uri.parse(search_url) catch {
-            std.log.warn("Invalid npm search URL: {s}", .{search_url});
-            return;
-        };
-
-        var response_writer = std.Io.Writer.Allocating.init(self.allocator);
-        defer response_writer.deinit();
-
-        const req_result = client.fetch(.{
-            .location = .{ .uri = uri },
-            .method = .GET,
-            .response_writer = &response_writer.writer,
-        }) catch {
+        const req_result = http_client.httpGet(self.allocator, search_url, null) catch {
             std.log.info("Could not reach npm registry", .{});
             return;
         };
+        defer self.allocator.free(req_result.body);
 
         if (req_result.status != .ok) {
             std.log.info("npm registry returned status {}", .{req_result.status});
             return;
         }
 
-        const data = response_writer.written();
+        const data = req_result.body;
         if (data.len == 0) return;
 
         // Parse response: {"objects":[{"package":{"name":"@mcp/server","description":"...","links":{"npm":"..."}}}]}
@@ -374,21 +361,13 @@ pub const MCPDiscovery = struct {
 
     fn searchConfig(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         // Read user-configured MCP servers from ~/.crushcode/mcp_servers.json
-        const config_path = blk: {
-            const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch |err| {
-                if (err == error.EnvironmentVariableNotFound) {
-                    const userprofile = std.process.getEnvVarOwned(self.allocator, "USERPROFILE") catch {
-                        std.log.info("Cannot determine home directory for MCP server config", .{});
-                        return;
-                    };
-                    defer self.allocator.free(userprofile);
-                    break :blk try std.fmt.allocPrint(self.allocator, "{s}\\.crushcode\\mcp_servers.json", .{userprofile});
-                }
-                return;
-            };
-            defer self.allocator.free(home);
-            break :blk try std.fmt.allocPrint(self.allocator, "{s}/.crushcode/mcp_servers.json", .{home});
+        const config_dir = env.getConfigDir(self.allocator) catch {
+            std.log.info("Cannot determine home directory for MCP server config", .{});
+            return;
         };
+        defer self.allocator.free(config_dir);
+
+        const config_path = try std.fs.path.join(self.allocator, &.{ config_dir, "mcp_servers.json" });
         defer self.allocator.free(config_path);
 
         const file = std.fs.cwd().openFile(config_path, .{}) catch {

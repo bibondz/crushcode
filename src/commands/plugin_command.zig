@@ -1,6 +1,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const default_commands = @import("default_commands");
+const env = @import("env");
 
 /// A plugin command definition loaded from config.
 pub const PluginCommand = struct {
@@ -45,18 +46,10 @@ fn getStringField(object: std.json.ObjectMap, key: []const u8) ![]const u8 {
 }
 
 fn getUserCommandsDir(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        if (err == error.EnvironmentVariableNotFound) {
-            const userprofile = std.process.getEnvVarOwned(allocator, "USERPROFILE") catch return error.HomeNotFound;
-            defer allocator.free(userprofile);
-            return std.fs.path.join(allocator, &.{ userprofile, ".crushcode", "commands" });
-        }
+    const config_dir = try env.getConfigDir(allocator);
+    defer allocator.free(config_dir);
 
-        return err;
-    };
-    defer allocator.free(home);
-
-    return std.fs.path.join(allocator, &.{ home, ".crushcode", "commands" });
+    return std.fs.path.join(allocator, &.{ config_dir, "commands" });
 }
 
 /// Load default plugin commands embedded in binary.

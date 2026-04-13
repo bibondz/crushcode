@@ -13,6 +13,16 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    const env_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/env.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const http_client_mod = b.createModule(.{
+        .root_source_file = b.path("src/http/client.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
 
     // CLI module
     const cli_mod = b.createModule(.{
@@ -27,6 +37,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    registry_mod.addImport("http_client", http_client_mod);
 
     // Protocol modules — standalone type definitions
     const ai_types_mod = b.createModule(.{
@@ -47,6 +58,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     tool_loader_mod.addImport("tool_types", tool_types_mod);
+    tool_loader_mod.addImport("env", env_mod);
 
     // Client module
     const client_mod = b.createModule(.{
@@ -57,6 +69,7 @@ pub fn build(b: *std.Build) !void {
     client_mod.addImport("registry", registry_mod);
     client_mod.addImport("ai_types", ai_types_mod);
     client_mod.addImport("tool_types", tool_types_mod);
+    client_mod.addImport("http_client", http_client_mod);
 
     // Config module
     const config_mod = b.createModule(.{
@@ -64,6 +77,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    config_mod.addImport("env", env_mod);
 
     // Provider config module
     const provider_config_mod = b.createModule(.{
@@ -85,6 +99,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    auth_mod.addImport("env", env_mod);
 
     // Profile module (named configuration profiles)
     const profile_mod = b.createModule(.{
@@ -92,6 +107,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    profile_mod.addImport("env", env_mod);
 
     // Connect module (interactive provider setup)
     const connect_mod = b.createModule(.{
@@ -153,6 +169,7 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     plugin_command_mod.addImport("default_commands", default_commands_mod);
+    plugin_command_mod.addImport("env", env_mod);
 
     // Shell module
     const shell_mod = b.createModule(.{
@@ -198,6 +215,8 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    install_mod.addImport("env", env_mod);
+    install_mod.addImport("http_client", http_client_mod);
 
     // Jobs module
     const jobs_mod = b.createModule(.{
@@ -578,12 +597,16 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    mcp_client_mod.addImport("env", env_mod);
+    mcp_client_mod.addImport("http_client", http_client_mod);
     const mcp_discovery_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/discovery.zig"),
         .target = target,
         .optimize = optimize,
     });
     mcp_discovery_mod.addImport("mcp_client", mcp_client_mod);
+    mcp_discovery_mod.addImport("env", env_mod);
+    mcp_discovery_mod.addImport("http_client", http_client_mod);
 
     const mcp_bridge_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/bridge.zig"),
@@ -625,6 +648,8 @@ pub fn build(b: *std.Build) !void {
 
     for (&[_]*std.Build.Module{
         cli_mod,
+        env_mod,
+        http_client_mod,
         registry_mod,
         ai_types_mod,
         tool_types_mod,

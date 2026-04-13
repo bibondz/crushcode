@@ -2,6 +2,8 @@ const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
 const builtin = @import("builtin");
+const env_config = @import("env");
+const http_client = @import("http_client");
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
@@ -503,36 +505,10 @@ pub const MCPClient = struct {
         const url = connection.url orelse return error.InvalidUrl;
         std.log.info("Sending SSE request to {s}", .{url});
 
-        // Build HTTP request
-        const uri = try std.Uri.parse(url);
+        const headers = try MCPClient.buildConnectionHeaders(allocator, connection, "text/event-stream");
+        defer MCPClient.freeOwnedHeaders(allocator, headers);
 
-        var client: std.http.Client = .{ .allocator = allocator };
-        defer client.deinit();
-
-        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers_buf.deinit();
-
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Accept"), .value = try allocator.dupe(u8, "text/event-stream") });
-
-        // Add custom headers from connection
-        var header_iter = connection.headers.iterator();
-        while (header_iter.next()) |entry| {
-            if (entry.value_ptr.* == .string) {
-                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
-            }
-        }
-
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
-
-        const fetch_result = client.fetch(.{
-            .method = .POST,
-            .location = .{ .uri = uri },
-            .payload = request,
-            .extra_headers = headers_buf.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const fetch_result = http_client.httpPost(allocator, url, headers, request) catch |err| {
             std.log.err("SSE HTTP request failed: {s}", .{@errorName(err)});
             var error_obj = std.json.ObjectMap.init(allocator);
             try error_obj.put("code", .{ .integer = -32603 });
@@ -545,6 +521,7 @@ pub const MCPClient = struct {
 
             return .{ .object = response_obj };
         };
+        defer allocator.free(fetch_result.body);
 
         if (fetch_result.status != .ok) {
             std.log.err("SSE response status: {any}", .{fetch_result.status});
@@ -562,7 +539,7 @@ pub const MCPClient = struct {
 
         // Parse SSE response: extract JSON from "data: ..." lines
         // SSE format: "data: {json}\n\n" or "data: {json}\n"
-        const response_body = response_writer.written();
+        const response_body = fetch_result.body;
         var sse_iter = std.mem.splitSequence(u8, response_body, "data: ");
         while (sse_iter.next()) |data_line| {
             // Trim trailing newlines and whitespace
@@ -629,35 +606,10 @@ pub const MCPClient = struct {
 
         std.log.info("Sending HTTP {s} request to {s}", .{ method, connection.url.? });
 
-        // Build HTTP request
-        const uri = try std.Uri.parse(connection.url.?);
+        const headers = try MCPClient.buildConnectionHeaders(allocator, connection, null);
+        defer MCPClient.freeOwnedHeaders(allocator, headers);
 
-        var client: std.http.Client = .{ .allocator = allocator };
-        defer client.deinit();
-
-        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers_buf.deinit();
-
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
-
-        // Add custom headers from connection
-        var header_iter = connection.headers.iterator();
-        while (header_iter.next()) |entry| {
-            if (entry.value_ptr.* == .string) {
-                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
-            }
-        }
-
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
-
-        const fetch_result = client.fetch(.{
-            .method = .POST,
-            .location = .{ .uri = uri },
-            .payload = request,
-            .extra_headers = headers_buf.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const fetch_result = http_client.httpPost(allocator, connection.url.?, headers, request) catch |err| {
             std.log.err("HTTP request failed: {s}", .{@errorName(err)});
             var error_obj = std.json.ObjectMap.init(allocator);
             try error_obj.put("code", .{ .integer = -32603 });
@@ -670,6 +622,7 @@ pub const MCPClient = struct {
 
             return .{ .object = response_obj };
         };
+        defer allocator.free(fetch_result.body);
 
         if (fetch_result.status != .ok) {
             std.log.err("HTTP response status: {any}", .{fetch_result.status});
@@ -686,10 +639,10 @@ pub const MCPClient = struct {
         }
 
         // Parse response
-        const response_body = response_writer.written();
+        const response_body = fetch_result.body;
         var response_json = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch |err| {
             std.log.err("Failed to parse response: {s}", .{@errorName(err)});
-            return json.Value{ .string = response_body };
+            return json.Value{ .string = try allocator.dupe(u8, response_body) };
         };
         defer response_json.deinit();
 
@@ -718,33 +671,10 @@ pub const MCPClient = struct {
         const url = connection.url orelse return error.InvalidUrl;
         std.log.info("Sending WebSocket-HTTP request to {s}", .{url});
 
-        const uri = try std.Uri.parse(url);
+        const headers = try MCPClient.buildConnectionHeaders(allocator, connection, null);
+        defer MCPClient.freeOwnedHeaders(allocator, headers);
 
-        var client: std.http.Client = .{ .allocator = allocator };
-        defer client.deinit();
-
-        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers_buf.deinit();
-
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
-
-        var header_iter = connection.headers.iterator();
-        while (header_iter.next()) |entry| {
-            if (entry.value_ptr.* == .string) {
-                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
-            }
-        }
-
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
-
-        const fetch_result = client.fetch(.{
-            .method = .POST,
-            .location = .{ .uri = uri },
-            .payload = request,
-            .extra_headers = headers_buf.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const fetch_result = http_client.httpPost(allocator, url, headers, request) catch |err| {
             std.log.err("WebSocket-HTTP request failed: {s}", .{@errorName(err)});
             var error_obj = std.json.ObjectMap.init(allocator);
             try error_obj.put("code", .{ .integer = -32603 });
@@ -757,6 +687,7 @@ pub const MCPClient = struct {
 
             return .{ .object = response_obj };
         };
+        defer allocator.free(fetch_result.body);
 
         if (fetch_result.status != .ok) {
             std.log.err("WebSocket-HTTP response status: {any}", .{fetch_result.status});
@@ -772,7 +703,7 @@ pub const MCPClient = struct {
             return .{ .object = response_obj };
         }
 
-        const response_body = response_writer.written();
+        const response_body = fetch_result.body;
         var response_json = json.parseFromSlice(json.Value, allocator, response_body, .{}) catch {
             std.log.err("Failed to parse WebSocket-HTTP response", .{});
             return json.Value{ .string = try allocator.dupe(u8, response_body) };
@@ -831,6 +762,33 @@ pub const MCPClient = struct {
     // Generate unique request ID
     fn generateRequestId(self: *MCPClient) u64 {
         return self.next_request_id.fetchAdd(1, .monotonic);
+    }
+
+    fn freeOwnedHeaders(allocator: Allocator, headers: []std.http.Header) void {
+        for (headers) |header| {
+            allocator.free(header.name);
+            allocator.free(header.value);
+        }
+        allocator.free(headers);
+    }
+
+    fn buildConnectionHeaders(allocator: Allocator, connection: MCPConnection, accept_value: ?[]const u8) ![]std.http.Header {
+        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
+        errdefer headers_buf.deinit();
+
+        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
+        if (accept_value) |accept| {
+            try headers_buf.append(.{ .name = try allocator.dupe(u8, "Accept"), .value = try allocator.dupe(u8, accept) });
+        }
+
+        var header_iter = connection.headers.iterator();
+        while (header_iter.next()) |entry| {
+            if (entry.value_ptr.* == .string) {
+                try headers_buf.append(.{ .name = try allocator.dupe(u8, entry.key_ptr.*), .value = try allocator.dupe(u8, entry.value_ptr.*.string) });
+            }
+        }
+
+        return headers_buf.toOwnedSlice();
     }
 };
 
@@ -1285,32 +1243,17 @@ fn exchangeCodeForTokens(
         try bw.print("&client_secret={s}", .{cs});
     }
 
-    // POST to token endpoint
-    const uri = std.Uri.parse(config.token_url) catch return error.OAuthTokenExchangeFailed;
+    const headers = [_]std.http.Header{
+        .{ .name = "Accept", .value = "application/json" },
+    };
 
-    var response_writer = std.Io.Writer.Allocating.init(allocator);
-    defer response_writer.deinit();
-
-    var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
-    defer headers.deinit();
-    try headers.append(.{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" });
-    try headers.append(.{ .name = "Accept", .value = "application/json" });
-
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
-
-    const fetch_result = client.fetch(.{
-        .method = .POST,
-        .location = .{ .uri = uri },
-        .payload = body_buf.items,
-        .extra_headers = headers.items,
-        .response_writer = &response_writer.writer,
-    }) catch return error.OAuthTokenExchangeFailed;
+    const fetch_result = http_client.httpPostForm(allocator, config.token_url, body_buf.items, &headers) catch return error.OAuthTokenExchangeFailed;
+    defer allocator.free(fetch_result.body);
 
     if (fetch_result.status != .ok) return error.OAuthTokenExchangeFailed;
 
     // Parse JSON response: {"access_token":"...","token_type":"Bearer","expires_in":3600,"refresh_token":"..."}
-    const response_data = response_writer.written();
+    const response_data = fetch_result.body;
     if (response_data.len == 0) return error.OAuthTokenExchangeFailed;
 
     return parseTokenResponse(response_data, allocator);
@@ -1401,17 +1344,10 @@ fn parseTokenResponse(data: []const u8, allocator: Allocator) !OAuthTokens {
 
 /// Get path to MCP token storage file (~/.crushcode/mcp_tokens.json)
 fn getTokenStorePath(allocator: Allocator) ![]const u8 {
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        if (err == error.EnvironmentVariableNotFound) {
-            if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |userprofile| {
-                return std.fmt.allocPrint(allocator, "{s}\\.crushcode\\mcp_tokens.json", .{userprofile});
-            } else |_| {
-                return error.HomeNotFound;
-            }
-        }
-        return err;
-    };
-    return std.fmt.allocPrint(allocator, "{s}/.crushcode/mcp_tokens.json", .{home});
+    const config_dir = try env_config.getConfigDir(allocator);
+    defer allocator.free(config_dir);
+
+    return std.fs.path.join(allocator, &.{ config_dir, "mcp_tokens.json" });
 }
 
 /// Store OAuth tokens for a server — persists to ~/.crushcode/mcp_tokens.json
@@ -1567,31 +1503,16 @@ pub fn refreshOAuthTokens(
         try bw.print("&client_secret={s}", .{cs});
     }
 
-    // POST to token endpoint
-    const uri = std.Uri.parse(config.token_url) catch return error.OAuthTokenRefreshFailed;
+    const headers = [_]std.http.Header{
+        .{ .name = "Accept", .value = "application/json" },
+    };
 
-    var response_writer = std.Io.Writer.Allocating.init(allocator);
-    defer response_writer.deinit();
-
-    var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
-    defer headers.deinit();
-    try headers.append(.{ .name = "Content-Type", .value = "application/x-www-form-urlencoded" });
-    try headers.append(.{ .name = "Accept", .value = "application/json" });
-
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
-
-    const fetch_result = client.fetch(.{
-        .method = .POST,
-        .location = .{ .uri = uri },
-        .payload = body_buf.items,
-        .extra_headers = headers.items,
-        .response_writer = &response_writer.writer,
-    }) catch return error.OAuthTokenRefreshFailed;
+    const fetch_result = http_client.httpPostForm(allocator, config.token_url, body_buf.items, &headers) catch return error.OAuthTokenRefreshFailed;
+    defer allocator.free(fetch_result.body);
 
     if (fetch_result.status != .ok) return error.OAuthTokenRefreshFailed;
 
-    const response_data = response_writer.written();
+    const response_data = fetch_result.body;
     if (response_data.len == 0) return error.OAuthTokenRefreshFailed;
 
     // Parse new tokens — some providers return a new refresh_token, some don't

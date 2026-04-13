@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const env = @import("env");
 
 /// Profile - a named configuration set
 /// Profiles allow users to switch between different AI provider configurations
@@ -255,18 +256,7 @@ fn getCrushcodeDir(allocator: std.mem.Allocator) ![]const u8 {
         return path;
     } else |_| {}
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        if (err == error.EnvironmentVariableNotFound) {
-            if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |userprofile| {
-                return std.fmt.allocPrint(allocator, "{s}\\.crushcode", .{userprofile});
-            } else |_| {
-                return error.HomeNotFound;
-            }
-        }
-        return err;
-    };
-
-    return std.fmt.allocPrint(allocator, "{s}/.crushcode", .{home});
+    return env.getConfigDir(allocator);
 }
 
 /// Load the current active profile

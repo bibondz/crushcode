@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const env = @import("env");
 const QuantizationConfig = @import("quantization_config.zig").QuantizationConfig;
 pub const ConfigBackup = @import("backup").ConfigBackup;
 pub const ConfigMigrator = @import("backup").ConfigMigrator;
@@ -224,18 +225,10 @@ pub fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
         return path;
     } else |_| {}
 
-    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-        if (err == error.EnvironmentVariableNotFound) {
-            if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |userprofile| {
-                return std.fmt.allocPrint(allocator, "{s}\\.crushcode\\config.toml", .{userprofile});
-            } else |_| {
-                return error.HomeNotFound;
-            }
-        }
-        return err;
-    };
+    const config_dir = try env.getConfigDir(allocator);
+    defer allocator.free(config_dir);
 
-    return std.fmt.allocPrint(allocator, "{s}/.crushcode/config.toml", .{home});
+    return std.fs.path.join(allocator, &.{ config_dir, "config.toml" });
 }
 
 pub fn createDefaultConfig(config_path: []const u8) !void {

@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const http_client = @import("http_client");
 
 pub const ProviderType = enum {
     openai,
@@ -293,10 +294,6 @@ pub const ProviderRegistry = struct {
             return error.AuthenticationRequired;
         }
 
-        var client: std.http.Client = .{ .allocator = self.allocator };
-        defer client.deinit();
-
-        const uri = try std.Uri.parse("https://opencode.ai/zen/v1/models");
         const auth_header = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
         defer self.allocator.free(auth_header);
 
@@ -304,17 +301,10 @@ pub const ProviderRegistry = struct {
             .{ .name = "Authorization", .value = auth_header },
         };
 
-        var response_writer = std.Io.Writer.Allocating.init(self.allocator);
-        defer response_writer.deinit();
+        const response = try http_client.httpGet(self.allocator, "https://opencode.ai/zen/v1/models", &headers);
+        defer self.allocator.free(response.body);
 
-        const response = try client.fetch(.{
-            .method = .GET,
-            .location = .{ .uri = uri },
-            .extra_headers = &headers,
-            .response_writer = &response_writer.writer,
-        });
-
-        const body = response_writer.written();
+        const body = response.body;
 
         if (response.status != .ok) {
             return error.FetchFailed;

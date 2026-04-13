@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const env = @import("env");
 
 /// Authentication credentials stored separately from config for security
 /// Stored in ~/.crushcode/auth.json
@@ -38,18 +39,10 @@ pub const Auth = struct {
             return path;
         } else |_| {}
 
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
-            if (err == error.EnvironmentVariableNotFound) {
-                if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |userprofile| {
-                    return std.fmt.allocPrint(allocator, "{s}\\.crushcode\\auth.json", .{userprofile});
-                } else |_| {
-                    return error.HomeNotFound;
-                }
-            }
-            return err;
-        };
+        const config_dir = try env.getConfigDir(allocator);
+        defer allocator.free(config_dir);
 
-        return std.fmt.allocPrint(allocator, "{s}/.crushcode/auth.json", .{home});
+        return std.fs.path.join(allocator, &.{ config_dir, "auth.json" });
     }
 
     /// Load auth data from file

@@ -1,6 +1,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
+const http_client = @import("http_client");
 const registry_mod = @import("registry");
 const tool_types = @import("tool_types");
 const error_handler_mod = @import("error_handler.zig");
@@ -425,42 +426,16 @@ pub const AIClient = struct {
         const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, chat_path });
         defer allocator.free(endpoint);
 
-        const uri = try std.Uri.parse(endpoint);
-
-        var client: std.http.Client = .{ .allocator = allocator };
-        defer client.deinit();
-
         const json_body = try std.fmt.allocPrint(allocator,
             \\{{"model":"{s}","messages":[{{"role":"user","content":"{s}"}}],"max_tokens":2048,"temperature":0.7}}
         , .{ self.getApiModelName(), user_message });
         defer allocator.free(json_body);
         if (debug) std.debug.print("Body: {s}\n", .{json_body});
 
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
+        const headers = try self.buildHeaders();
+        defer freeHeaders(allocator, headers);
 
-        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers_buf.deinit();
-
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
-
-        // OpenRouter app identification headers (optional but recommended)
-        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "HTTP-Referer"), .value = try allocator.dupe(u8, "https://github.com/crushcode/crushcode") });
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "X-Title"), .value = try allocator.dupe(u8, "Crushcode") });
-        }
-
-        if (self.api_key.len > 0) {
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "Authorization"), .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
-        }
-
-        const fetch_result = client.fetch(.{
-            .method = .POST,
-            .location = .{ .uri = uri },
-            .payload = json_body,
-            .extra_headers = headers_buf.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const fetch_result = http_client.httpPost(allocator, endpoint, headers, json_body) catch |err| {
             if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
@@ -470,11 +445,12 @@ pub const AIClient = struct {
                 .response = null,
             };
         };
+        defer allocator.free(fetch_result.body);
 
         if (debug) std.debug.print("Response Status: {}\n", .{fetch_result.status});
 
         if (fetch_result.status != .ok) {
-            const error_body = response_writer.written();
+            const error_body = fetch_result.body;
             if (debug) std.debug.print("Error Response: {s}\n", .{error_body});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
@@ -485,7 +461,7 @@ pub const AIClient = struct {
             };
         }
 
-        const response_slice = response_writer.written();
+        const response_slice = fetch_result.body;
 
         // For Ollama, responses contain multiple JSON objects (streaming)
         // Parse each line and accumulate the full content
@@ -577,11 +553,6 @@ pub const AIClient = struct {
         const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, chat_path });
         defer allocator.free(endpoint);
 
-        const uri = try std.Uri.parse(endpoint);
-
-        var client: std.http.Client = .{ .allocator = allocator };
-        defer client.deinit();
-
         // Build JSON body with message history
         var json_body = array_list_compat.ArrayList(u8).init(allocator);
         defer json_body.deinit();
@@ -636,31 +607,10 @@ pub const AIClient = struct {
 
         if (debug) std.debug.print("Body: {s}\n", .{json_body_slice[0..@min(200, json_body_slice.len)]});
 
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
+        const headers = try self.buildHeaders();
+        defer freeHeaders(allocator, headers);
 
-        var headers_buf = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers_buf.deinit();
-
-        try headers_buf.append(.{ .name = try allocator.dupe(u8, "Content-Type"), .value = try allocator.dupe(u8, "application/json") });
-
-        // OpenRouter app identification headers (optional but recommended)
-        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "HTTP-Referer"), .value = try allocator.dupe(u8, "https://github.com/crushcode/crushcode") });
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "X-Title"), .value = try allocator.dupe(u8, "Crushcode") });
-        }
-
-        if (self.api_key.len > 0) {
-            try headers_buf.append(.{ .name = try allocator.dupe(u8, "Authorization"), .value = try std.fmt.allocPrint(allocator, "Bearer {s}", .{self.api_key}) });
-        }
-
-        const fetch_result = client.fetch(.{
-            .method = .POST,
-            .location = .{ .uri = uri },
-            .payload = json_body_slice,
-            .extra_headers = headers_buf.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const fetch_result = http_client.httpPost(allocator, endpoint, headers, json_body_slice) catch |err| {
             if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
@@ -670,6 +620,7 @@ pub const AIClient = struct {
                 .response = null,
             };
         };
+        defer allocator.free(fetch_result.body);
 
         if (debug) std.debug.print("Response Status: {}\n", .{fetch_result.status});
 
@@ -677,13 +628,13 @@ pub const AIClient = struct {
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.ServerError,
-                    try response_writer.toOwnedSlice(),
+                    try allocator.dupe(u8, fetch_result.body),
                 ),
                 .response = null,
             };
         }
 
-        const response_slice = response_writer.written();
+        const response_slice = fetch_result.body;
 
         // For Ollama, responses contain multiple JSON objects (streaming)
         if (std.mem.eql(u8, self.provider.name, "ollama")) {

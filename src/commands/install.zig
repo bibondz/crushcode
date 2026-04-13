@@ -1,6 +1,7 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
-const array_list_compat = @import("array_list_compat");
+const env = @import("env");
+const http_client = @import("http_client");
 
 const Allocator = std.mem.Allocator;
 
@@ -52,29 +53,17 @@ pub const Installer = struct {
     pub fn getLatestVersion(allocator: Allocator) ![]const u8 {
         const api_url = "https://api.github.com/repos/crushcode/crushcode/releases/latest";
 
-        var client = std.http.Client{ .allocator = allocator };
-        defer client.deinit();
+        const headers = [_]std.http.Header{
+            .{ .name = "User-Agent", .value = "crushcode-installer" },
+            .{ .name = "Accept", .value = "application/json" },
+        };
 
-        const uri = std.Uri.parse(api_url) catch return error.NetworkError;
+        const response = http_client.httpGet(allocator, api_url, &headers) catch return error.NetworkError;
+        defer allocator.free(response.body);
 
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
+        if (response.status != .ok) return error.NetworkError;
 
-        var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers.deinit();
-        try headers.append(.{ .name = "User-Agent", .value = "crushcode-installer" });
-        try headers.append(.{ .name = "Accept", .value = "application/json" });
-
-        const result = client.fetch(.{
-            .location = .{ .uri = uri },
-            .method = .GET,
-            .extra_headers = headers.items,
-            .response_writer = &response_writer.writer,
-        }) catch return error.NetworkError;
-
-        if (result.status != .ok) return error.NetworkError;
-
-        const data = response_writer.written();
+        const data = response.body;
         if (data.len == 0) return error.NetworkError;
 
         // Extract "tag_name":"vX.Y.Z" from JSON response
@@ -95,18 +84,10 @@ pub const Installer = struct {
     pub fn downloadFile(allocator: Allocator, url: []const u8, dest_path: []const u8) !void {
         const stdout = file_compat.File.stdout().writer();
 
-        var client = std.http.Client{ .allocator = allocator };
-        defer client.deinit();
-
-        const uri = std.Uri.parse(url) catch {
-            try stdout.print("Error: Invalid download URL\n", .{});
-            return error.InvalidURL;
+        const headers = [_]std.http.Header{
+            .{ .name = "User-Agent", .value = "crushcode-installer" },
+            .{ .name = "Accept", .value = "application/octet-stream" },
         };
-
-        var headers = array_list_compat.ArrayList(std.http.Header).init(allocator);
-        defer headers.deinit();
-        try headers.append(.{ .name = "User-Agent", .value = "crushcode-installer" });
-        try headers.append(.{ .name = "Accept", .value = "application/octet-stream" });
 
         // Open destination file
         const dest_file = std.fs.cwd().createFile(dest_path, .{ .truncate = true }) catch |err| {
@@ -115,27 +96,20 @@ pub const Installer = struct {
         };
         defer dest_file.close();
 
-        var response_writer = std.Io.Writer.Allocating.init(allocator);
-        defer response_writer.deinit();
-
         try stdout.print("Downloading {s}...\n", .{url});
 
-        const result = client.fetch(.{
-            .location = .{ .uri = uri },
-            .method = .GET,
-            .extra_headers = headers.items,
-            .response_writer = &response_writer.writer,
-        }) catch |err| {
+        const response = http_client.httpGet(allocator, url, &headers) catch |err| {
             try stdout.print("Error: Download failed: {}\n", .{err});
             return err;
         };
+        defer allocator.free(response.body);
 
-        if (result.status != .ok) {
-            try stdout.print("Error: Server returned status {d}\n", .{result.status});
+        if (response.status != .ok) {
+            try stdout.print("Error: Server returned status {d}\n", .{response.status});
             return error.DownloadFailed;
         }
 
-        const data = response_writer.written();
+        const data = response.body;
         try dest_file.writeAll(data);
 
         // Make executable (Unix only)
@@ -218,9 +192,7 @@ pub const Installer = struct {
         } else |_| {}
 
         // Default to ~/.local/bin
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch
-            std.process.getEnvVarOwned(allocator, "USERPROFILE") catch
-            return error.HomeNotFound;
+        const home = try env.getHomeDir(allocator);
         defer allocator.free(home);
 
         return std.fs.path.join(allocator, &[_][]const u8{ home, ".local", "bin" });
@@ -231,10 +203,10 @@ pub const Installer = struct {
         const stdout = file_compat.File.stdout().writer();
 
         // Check if install_dir is already in PATH
-        const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch "";
-        defer allocator.free(path_env);
+        const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch null;
+        defer if (path_env) |value| allocator.free(value);
 
-        if (std.mem.indexOf(u8, path_env, install_dir) != null) {
+        if (std.mem.indexOf(u8, path_env orelse "", install_dir) != null) {
             try stdout.print("{s} is already in PATH.\n", .{install_dir});
             return;
         }
@@ -243,7 +215,7 @@ pub const Installer = struct {
         try stdout.print("  export PATH=\"{s}:$PATH\"\n\n", .{install_dir});
 
         // Detect which rc file to suggest
-        const home = std.process.getEnvVarOwned(allocator, "HOME") catch return;
+        const home = env.getHomeDir(allocator) catch return;
         defer allocator.free(home);
 
         const zshrc = try std.fs.path.join(allocator, &[_][]const u8{ home, ".zshrc" });
