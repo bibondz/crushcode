@@ -132,8 +132,12 @@ pub const PermissionRequest = struct {
             allocator.free(desc);
         }
         if (self.context) |*ctx| {
-            // TODO: Free json context if needed
-            _ = ctx;
+            // json.Value objects/arrays own their allocations — free them
+            switch (ctx.*) {
+                .object => |*obj| obj.deinit(),
+                .array => |*arr| arr.deinit(),
+                else => {},
+            }
         }
     }
 

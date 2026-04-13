@@ -228,21 +228,262 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchRegistry(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        _ = self;
-        _ = results;
-        _ = term;
+        // Search npm registry for MCP servers matching the search term
+        // Uses the npm search API: https://registry.npmjs.org/-/v1/search?text=mcp+<term>
+        const search_url = std.fmt.allocPrint(self.allocator, "https://registry.npmjs.org/-/v1/search?text=mcp+{s}&size=5", .{term}) catch {
+            std.log.warn("Failed to build npm search URL", .{});
+            return;
+        };
+        defer self.allocator.free(search_url);
 
-        // TODO: Search npm registry for MCP servers
-        std.log.info("Searching npm registry for MCP servers");
+        // Fetch search results via HTTP
+        var header_buf: [4096]u8 = undefined;
+        const uri = std.Uri.parse(search_url) catch {
+            std.log.warn("Invalid npm search URL: {s}", .{search_url});
+            return;
+        };
+
+        var client = std.http.Client{ .allocator = self.allocator };
+        defer client.deinit();
+
+        const req_result = client.fetch(.{
+            .location = .{ .url = uri },
+            .method = .GET,
+            .headers = .{ .allocator = self.allocator },
+            .max_headers = &header_buf,
+        }) catch {
+            std.log.info("Could not reach npm registry", .{});
+            return;
+        };
+
+        if (req_result.status != .ok) {
+            std.log.info("npm registry returned status {}", .{req_result.status});
+            return;
+        }
+
+        const body = req_result.body orelse return;
+        const data = body.items;
+
+        // Parse response: {"objects":[{"package":{"name":"@mcp/server","description":"...","links":{"npm":"..."}}}]}
+        // Find the "objects" array
+        const objects_key = "\"objects\"";
+        const objects_idx = std.mem.indexOf(u8, data, objects_key) orelse return;
+        var idx = objects_idx + objects_key.len;
+
+        // Skip to array
+        while (idx < data.len and data[idx] != '[') : (idx += 1) {}
+        if (idx >= data.len) return;
+        idx += 1; // skip [
+
+        var count: usize = 0;
+        while (idx < data.len and count < 5) {
+            while (idx < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[idx]) != null) : (idx += 1) {}
+            if (idx >= data.len or data[idx] == ']') break;
+            if (data[idx] != '{') break;
+
+            // Parse this package object
+            idx += 1;
+            var pkg_name: []const u8 = "unknown";
+            var pkg_desc: []const u8 = "";
+            var pkg_url: ?[]const u8 = null;
+
+            while (idx < data.len) {
+                while (idx < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[idx]) != null) : (idx += 1) {}
+                if (idx >= data.len or data[idx] == '}') {
+                    idx += 1;
+                    break;
+                }
+                if (data[idx] != '"') break;
+
+                idx += 1;
+                const fk_start = idx;
+                while (idx < data.len and data[idx] != '"') : (idx += 1) {}
+                const fk_end = idx;
+                const field_key = data[fk_start..fk_end];
+                idx += 1;
+
+                while (idx < data.len and data[idx] != ':') : (idx += 1) {}
+                idx += 1;
+                while (idx < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[idx]) != null) : (idx += 1) {}
+
+                if (data[idx] == '"') {
+                    idx += 1;
+                    const vs = idx;
+                    while (idx < data.len and data[idx] != '"') : (idx += 1) {}
+                    const val = data[vs..idx];
+                    idx += 1;
+
+                    if (std.mem.eql(u8, field_key, "name")) {
+                        pkg_name = val;
+                    } else if (std.mem.eql(u8, field_key, "description")) {
+                        pkg_desc = val;
+                    } else if (std.mem.eql(u8, field_key, "npm")) {
+                        pkg_url = val;
+                    }
+                } else if (data[idx] == '{') {
+                    // Skip nested object
+                    var depth: usize = 1;
+                    idx += 1;
+                    while (idx < data.len and depth > 0) : (idx += 1) {
+                        if (data[idx] == '{') depth += 1;
+                        if (data[idx] == '}') depth -= 1;
+                    }
+                }
+
+                while (idx < data.len and (data[idx] == ',' or data[idx] == ' ')) : (idx += 1) {}
+            }
+
+            try results.append(MCPDiscoveryResult{
+                .name = pkg_name,
+                .description = pkg_desc,
+                .url = pkg_url,
+                .type = .npm,
+                .install_command = try std.fmt.allocPrint(self.allocator, "npm install -g {s}", .{pkg_name}),
+                .capabilities = "",
+            });
+            count += 1;
+
+            // Skip comma
+            while (idx < data.len and (data[idx] == ',' or data[idx] == ' ')) : (idx += 1) {}
+        }
+
+        std.log.info("Found {d} MCP servers from npm registry matching '{s}'", .{ count, term });
     }
 
     fn searchConfig(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        _ = self;
-        _ = results;
-        _ = term;
+        // Read user-configured MCP servers from ~/.crushcode/mcp_servers.json
+        const config_path = blk: {
+            const home = std.process.getEnvVarOwned(self.allocator, "HOME") catch |err| {
+                if (err == error.EnvironmentVariableNotFound) {
+                    const userprofile = std.process.getEnvVarOwned(self.allocator, "USERPROFILE") catch {
+                        std.log.info("Cannot determine home directory for MCP server config", .{});
+                        return;
+                    };
+                    defer self.allocator.free(userprofile);
+                    break :blk try std.fmt.allocPrint(self.allocator, "{s}\\.crushcode\\mcp_servers.json", .{userprofile});
+                }
+                return;
+            };
+            defer self.allocator.free(home);
+            break :blk try std.fmt.allocPrint(self.allocator, "{s}/.crushcode/mcp_servers.json", .{home});
+        };
+        defer self.allocator.free(config_path);
 
-        // TODO: Read user configuration for MCP servers
-        std.log.info("Searching user configuration for MCP servers");
+        const file = std.fs.cwd().openFile(config_path, .{}) catch {
+            std.log.info("No MCP server config file at {s}", .{config_path});
+            return;
+        };
+        defer file.close();
+
+        const file_size = try file.getEndPos();
+        if (file_size == 0 or file_size > 1024 * 1024) return;
+        const buf = try self.allocator.alloc(u8, file_size);
+        defer self.allocator.free(buf);
+
+        const bytes_read = try file.readAll(buf);
+        const data = buf[0..bytes_read];
+
+        // Parse JSON: {"server_name":{"transport":"stdio","command":"...","url":"...","description":"..."}}
+        var i: usize = 0;
+        while (i < data.len and data[i] != '{') : (i += 1) {}
+        if (i >= data.len) return;
+        i += 1;
+
+        while (i < data.len) {
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+            if (i >= data.len or data[i] == '}') break;
+            if (data[i] != '"') break;
+
+            // Parse server name
+            i += 1;
+            const name_start = i;
+            while (i < data.len and data[i] != '"') : (i += 1) {}
+            const server_name = data[name_start..i];
+            i += 1;
+
+            // Skip to value
+            while (i < data.len and data[i] != ':') : (i += 1) {}
+            i += 1;
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+            if (i >= data.len or data[i] != '{') break;
+
+            // Parse server config fields
+            i += 1;
+            var transport: []const u8 = "stdio";
+            var command: ?[]const u8 = null;
+            var url: ?[]const u8 = null;
+            var description: []const u8 = "User-configured MCP server";
+
+            while (i < data.len) {
+                while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+                if (i >= data.len or data[i] == '}') {
+                    i += 1;
+                    break;
+                }
+                if (data[i] != '"') break;
+
+                i += 1;
+                const field_start = i;
+                while (i < data.len and data[i] != '"') : (i += 1) {}
+                const field_name = data[field_start..i];
+                i += 1;
+
+                while (i < data.len and data[i] != ':') : (i += 1) {}
+                i += 1;
+                while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+
+                // Parse string values
+                if (data[i] == '"') {
+                    i += 1;
+                    const vs = i;
+                    while (i < data.len and data[i] != '"') : (i += 1) {}
+                    const val = data[vs..i];
+                    i += 1;
+
+                    if (std.mem.eql(u8, field_name, "transport")) {
+                        transport = val;
+                    } else if (std.mem.eql(u8, field_name, "command")) {
+                        command = val;
+                    } else if (std.mem.eql(u8, field_name, "url")) {
+                        url = val;
+                    } else if (std.mem.eql(u8, field_name, "description")) {
+                        description = val;
+                    }
+                }
+
+                while (i < data.len and (data[i] == ',' or data[i] == ' ')) : (i += 1) {}
+            }
+
+            // Filter by search term
+            if (std.mem.indexOf(u8, server_name, term) != null or
+                std.mem.indexOf(u8, description, term) != null)
+            {
+                const server_type = if (std.mem.eql(u8, transport, "stdio"))
+                    MCPServerType.stdio
+                else if (std.mem.eql(u8, transport, "sse"))
+                    MCPServerType.sse
+                else if (std.mem.eql(u8, transport, "http"))
+                    MCPServerType.http
+                else if (std.mem.eql(u8, transport, "websocket"))
+                    MCPServerType.websocket
+                else
+                    MCPServerType.local;
+
+                try results.append(MCPDiscoveryResult{
+                    .name = server_name,
+                    .description = description,
+                    .url = url,
+                    .type = server_type,
+                    .install_command = command,
+                    .capabilities = "",
+                });
+            }
+
+            // Skip trailing comma
+            while (i < data.len and (data[i] == ',' or data[i] == ' ' or data[i] == '\n')) : (i += 1) {}
+        }
+
+        std.log.info("Searched user configuration for MCP servers matching '{s}'", .{term});
     }
 
     pub fn validateServer(self: *MCPDiscovery, config: MCPServerConfig) !bool {
