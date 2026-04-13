@@ -26,6 +26,7 @@ const profile_mod = @import("profile");
 const checkpoint_mod = @import("checkpoint");
 const ast_grep_mod = @import("ast_grep");
 const lsp_mod = @import("lsp");
+const mcp_bridge_mod = @import("mcp_bridge");
 const array_list_compat = @import("array_list_compat");
 
 const Config = config_mod.Config;
@@ -517,6 +518,17 @@ pub fn handleLSP(args: args_mod.Args) !void {
     std.debug.print("       crushcode lsp --lang <language>\n", .{});
 }
 
+/// Handle MCP tool listing
+pub fn handleMCP(args: args_mod.Args) !void {
+    _ = args;
+
+    std.debug.print("MCP Tools - stub implementation\n", .{});
+    std.debug.print("Usage: crushcode mcp list\n", .{});
+    std.debug.print("       crushcode mcp execute <server> <tool>\n", .{});
+    std.debug.print("\nOptions:\n", .{});
+    std.debug.print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
+}
+
 pub fn handleList(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
@@ -667,6 +679,7 @@ pub fn printHelp() !void {
         \\  checkpoint    List, restore, or delete checkpoints
         \\  grep           AST-grep pattern search
         \\  lsp            Language Server Protocol client
+        \\  mcp            MCP tools management
         \\  help           Show this help message
         \\  version        Show version information
         \\

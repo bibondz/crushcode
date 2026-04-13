@@ -61,6 +61,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "checkpoint") or
         std.mem.eql(u8, command, "grep") or
         std.mem.eql(u8, command, "lsp") or
+        std.mem.eql(u8, command, "mcp") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
         std.mem.eql(u8, command, "-h") or
@@ -214,6 +215,8 @@ pub fn main() !void {
             break :blk commands.handleGrep(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "lsp")) {
             break :blk commands.handleLSP(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "mcp")) {
+            break :blk commands.handleMCP(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "help") or
             std.mem.eql(u8, parsed_args.command, "--help") or
             std.mem.eql(u8, parsed_args.command, "-h"))
