@@ -24,6 +24,7 @@ const agent_loop_mod = @import("agent_loop");
 const connect_mod = @import("connect");
 const profile_mod = @import("profile");
 const checkpoint_mod = @import("checkpoint");
+const ast_grep_mod = @import("ast_grep");
 const array_list_compat = @import("array_list_compat");
 
 const Config = config_mod.Config;
@@ -438,6 +439,71 @@ fn parseCategory(name: []const u8) ?tools_mod.Tool.ToolCategory {
     return null;
 }
 
+/// Handle ast-grep pattern search
+pub fn handleGrep(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    if (args.remaining.len < 2) {
+        std.debug.print("Usage: crushcode grep <pattern> <file-or-dir> [--lang <language>]\n", .{});
+        std.debug.print("\nAST-grep pattern examples:\n", .{});
+        std.debug.print("  crushcode grep 'console.log($MSG)' src/\n", .{});
+        std.debug.print("  crushcode grep 'function $NAME(...) {{ ... }}' --lang javascript\n", .{});
+        std.debug.print("  crushcode grep 'await $FETCH(...)' --lang ts\n", .{});
+        return;
+    }
+
+    const pattern = args.remaining[0];
+    const target = args.remaining[1];
+
+    // Parse language from --lang flag
+    var language = ast_grep_mod.AstGrep.Language.unknown;
+    for (args.remaining, 0..) |arg, i| {
+        if (std.mem.eql(u8, arg, "--lang") or std.mem.eql(u8, arg, "-l")) {
+            if (i + 1 < args.remaining.len) {
+                language = ast_grep_mod.parseLanguage(args.remaining[i + 1]);
+            }
+        }
+    }
+
+    var grep = ast_grep_mod.AstGrep.init(allocator, pattern, language);
+
+    // Check if target is a file - use stat instead of access
+    const file_exists = std.fs.cwd().statFile(target) catch null;
+
+    if (file_exists != null) {
+        // It's a file - search directly
+        const matches = grep.search(target) catch |err| {
+            std.debug.print("Error searching '{s}': {}\n", .{ target, err });
+            return;
+        };
+        defer {
+            for (matches) |m| {
+                allocator.free(m.file);
+                allocator.free(m.matched_text);
+                allocator.free(m.context);
+            }
+            allocator.free(matches);
+        }
+        ast_grep_mod.AstGrep.printMatches(matches);
+    } else {
+        // It's a directory - search all matching files
+        std.debug.print("Searching in directory: {s}\n", .{target});
+        const matches = grep.searchGlob(target, pattern) catch |err| {
+            std.debug.print("Error searching directory '{s}': {}\n", .{ target, err });
+            return;
+        };
+        defer {
+            for (matches) |m| {
+                allocator.free(m.file);
+                allocator.free(m.matched_text);
+                allocator.free(m.context);
+            }
+            allocator.free(matches);
+        }
+        ast_grep_mod.AstGrep.printMatches(matches);
+    }
+}
+
 pub fn handleList(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
@@ -586,6 +652,7 @@ pub fn printHelp() !void {
         \\  usage         Show token usage and cost tracking
         \\  connect        Add API credentials for providers
         \\  checkpoint    List, restore, or delete checkpoints
+        \\  grep           AST-grep pattern search
         \\  help           Show this help message
         \\  version        Show version information
         \\

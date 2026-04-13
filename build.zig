@@ -372,6 +372,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // AST-grep module (Phase 10)
+    const ast_grep_mod = b.createModule(.{
+        .root_source_file = b.path("src/edit/ast_grep.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const hash_index_mod = b.createModule(.{
         .root_source_file = b.path("src/edit/hash_index.zig"),
         .target = target,
@@ -516,6 +523,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("worktree", worktree_mod);
     handlers_mod.addImport("skill_import", skill_import_mod);
     handlers_mod.addImport("checkpoint", checkpoint_mod);
+    handlers_mod.addImport("ast_grep", ast_grep_mod);
 
     // Phase 23: Codebase Knowledge Graph (Graphify-inspired)
     const graph_types_mod = b.createModule(.{
@@ -661,6 +669,7 @@ pub fn build(b: *std.Build) !void {
         hash_index_mod,
         conflict_mod,
         validated_edit_mod,
+        ast_grep_mod,
         handlers_mod,
         main_mod,
         fallback_mod,
