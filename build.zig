@@ -361,6 +361,38 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Typed color specs (F22)
+    const color_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/color.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    color_mod.addImport("array_list_compat", compat_array_list_mod);
+
+    // Source-tracking metadata (F19)
+    const source_tracker_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/source_tracker.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    source_tracker_mod.addImport("array_list_compat", compat_array_list_mod);
+
+    // Knowledge lint (F18)
+    const knowledge_lint_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/knowledge_lint.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    knowledge_lint_mod.addImport("array_list_compat", compat_array_list_mod);
+
+    // Interactive slash commands (F16)
+    const slash_commands_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/slash_commands.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    slash_commands_mod.addImport("array_list_compat", compat_array_list_mod);
+
     const revision_loop_mod = b.createModule(.{
         .root_source_file = b.path("src/core/revision_loop.zig"),
         .target = target,
@@ -405,6 +437,10 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("intensity", intensity_mod);
     chat_mod.addImport("tiered_loader", tiered_loader_mod);
     chat_mod.addImport("convergence", convergence_mod);
+    chat_mod.addImport("color", color_mod);
+    chat_mod.addImport("source_tracker", source_tracker_mod);
+    chat_mod.addImport("knowledge_lint", knowledge_lint_mod);
+    chat_mod.addImport("slash_commands", slash_commands_mod);
     chat_mod.addImport("revision_loop", revision_loop_mod);
 
     // Session summarizer (F11)
@@ -611,6 +647,9 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("profile", profile_mod);
     main_mod.addImport("json_output", json_output_mod);
     main_mod.addImport("custom_commands", custom_commands_mod);
+    main_mod.addImport("source_tracker", source_tracker_mod);
+    main_mod.addImport("knowledge_lint", knowledge_lint_mod);
+    main_mod.addImport("slash_commands", slash_commands_mod);
 
     // Phase 17-22 modules
     const fallback_mod = b.createModule(.{
@@ -827,6 +866,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("mcp_bridge", mcp_bridge_mod);
     handlers_mod.addImport("mcp_client", mcp_client_mod);
     handlers_mod.addImport("mcp_discovery", mcp_discovery_mod);
+    handlers_mod.addImport("slash_commands", slash_commands_mod);
 
     // Wire compaction into chat for auto-compaction
     chat_mod.addImport("compaction", compaction_mod);
@@ -915,6 +955,10 @@ pub fn build(b: *std.Build) !void {
         model_hotswap_mod,
         adversarial_review_mod,
         convergence_mod,
+        color_mod,
+        source_tracker_mod,
+        knowledge_lint_mod,
+        slash_commands_mod,
         scaffold_mod,
         mcp_transport_mod,
         mcp_oauth_mod,
