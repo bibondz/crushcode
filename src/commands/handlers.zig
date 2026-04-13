@@ -85,15 +85,24 @@ pub fn handleSkill(args: args_mod.Args) !void {
 }
 
 pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
-    _ = args;
-
     // Import TUI module
     const tui = @import("tui");
 
-    // Get provider and model from config
+    // Get allocator
     const allocator = std.heap.page_allocator;
-    const provider_name = config.default_provider;
-    const model_name = config.default_model;
+
+    // Load profile - use --profile flag if provided, otherwise load current
+    var profile_opt: ?profile_mod.Profile = null;
+    if (args.profile) |profile_name| {
+        profile_opt = profile_mod.loadProfileByName(allocator, profile_name) catch null;
+    } else {
+        profile_opt = profile_mod.loadCurrentProfile(allocator) catch null;
+    }
+    defer if (profile_opt) |*p| p.deinit();
+
+    // Get provider and model from profile or config
+    const provider_name = if (profile_opt) |*p| p.default_provider else config.default_provider;
+    const model_name = if (profile_opt) |*p| p.default_model else config.default_model;
 
     // Initialize registry
     var registry = registry_mod.ProviderRegistry.init(allocator);
@@ -105,10 +114,17 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         return error.ProviderNotFound;
     };
 
-    const api_key = config.getApiKey(provider_name) orelse "";
+    // Get API key - check profile first, then config
+    var api_key: []const u8 = "";
+    if (profile_opt) |*p| {
+        api_key = p.getApiKey(provider_name) orelse "";
+    }
+    if (api_key.len == 0) {
+        api_key = config.getApiKey(provider_name) orelse "";
+    }
 
     if (api_key.len == 0) {
-        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml\n", .{provider_name});
+        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
         return error.MissingApiKey;
     }
 
@@ -116,8 +132,12 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
     var client = try core_api.AIClient.init(allocator, provider, model_name, api_key);
     defer client.deinit();
 
-    // Set system prompt from config if available
-    if (config.getSystemPrompt()) |sys_prompt| {
+    // Set system prompt from profile or config if available
+    if (profile_opt) |*p| {
+        if (p.system_prompt.len > 0) {
+            client.setSystemPrompt(p.system_prompt);
+        }
+    } else if (config.getSystemPrompt()) |sys_prompt| {
         client.setSystemPrompt(sys_prompt);
     }
 
