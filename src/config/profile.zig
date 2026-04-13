@@ -249,8 +249,9 @@ pub const Profile = struct {
         const name_copy = try allocator.dupe(u8, name);
         errdefer allocator.free(name_copy);
         var profile = Profile.init(allocator, name_copy);
-        profile.default_provider = try allocator.dupe(u8, "openrouter");
-        profile.default_model = try allocator.dupe(u8, "openai/gpt-4o-mini");
+        // No hardcoded provider — user sets via 'crushcode profile set provider X'
+        profile.default_provider = try allocator.dupe(u8, "");
+        profile.default_model = try allocator.dupe(u8, "");
         return profile;
     }
 };

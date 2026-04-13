@@ -156,8 +156,36 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         client.setSystemPrompt(sys_prompt);
     }
 
-    // Run TUI with real AI client
-    try tui.runTUIWithClient(allocator, &client);
+    // Run TUI with real AI client — fall back to non-TUI mode if no terminal
+    tui.runTUIWithClient(allocator, &client) catch |err| switch (err) {
+        error.NotATerminal => {
+            stdout_print("Terminal UI not available (no TTY). Falling back to interactive chat.\n\n", .{});
+            const fallback_args = args_mod.Args{
+                .command = "",
+                .provider = args.provider,
+                .model = args.model,
+                .profile = args.profile,
+                .config_file = args.config_file,
+                .interactive = true,
+                .tui = false,
+                .json = false,
+                .color = null,
+                .checkpoint = null,
+                .restore = null,
+                .agents = null,
+                .max_agents = 5,
+                .memory = null,
+                .memory_limit = 100,
+                .stream = false,
+                .permission = null,
+                .intensity = null,
+                .remaining = &.{},
+                .has_command = true,
+            };
+            try chat_mod.handleChat(fallback_args, config);
+        },
+        else => return err,
+    };
 }
 
 pub fn handleInstall(args: args_mod.Args) !void {

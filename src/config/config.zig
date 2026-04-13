@@ -340,9 +340,9 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
     const api_keys_section =
         \\# Crushcode Configuration File
         \\
-        \\# Default provider and model
-        \\default_provider = "openai"
-        \\default_model = "gpt-4o"
+        \\# Default provider and model — run 'crushcode connect' to set up
+        \\# default_provider = ""
+        \\# default_model = ""
         \\
         \\# API Keys (replace with your actual keys)
         \\[api_keys]
@@ -358,23 +358,13 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
         \\vertexai = "your-vertexai-api-key"
         \\bedrock = "your-bedrock-api-key"
         \\ollama = ""
-        \\lm_studio = ""
-        \\llama_cpp = ""
+        \\lm-studio = ""
+        \\llama-cpp = ""
         \\openrouter = "sk-or-your-openrouter-api-key"
         \\zai = "your-zai-api-key"
-        \\vercel_gateway = "your-vercel-api-key"
-        \\opencode_zen = "your-opencode-zen-api-key"
-        \\opencode_go = "your-opencode-go-api-key"
-        \\
-        \\# Model parameters
-        \\[model]
-        \\max_tokens = 4096
-        \\temperature = 0.7
-        \\
-        \\# Provider URL overrides (uncomment to customize)
-        \\#[[provider_overrides]]
-        \\#provider = "ollama"
-        \\#base_url = "http://localhost:11434/api"
+        \\vercel-gateway = "your-vercel-api-key"
+        \\opencode-zen = "your-opencode-zen-api-key"
+        \\opencode-go = "your-opencode-go-api-key"
     ;
 
     const quantization_section = default_config.quantization.defaultToml();
@@ -415,6 +405,9 @@ pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
             return err;
         }
     };
+
+    // Ensure providers.toml exists (idempotent — skips if already present)
+    @import("providers_file").createDefaultProvidersFile() catch {};
 
     return config;
 }

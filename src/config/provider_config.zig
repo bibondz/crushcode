@@ -101,8 +101,8 @@ pub const ExtendedConfig = struct {
     pub fn init(allocator: std.mem.Allocator) !Self {
         return Self{
             .default = .{
-                .provider = "openai",
-                .model = "gpt-4",
+                .provider = "",
+                .model = "",
             },
             .providers = std.json.ObjectMap.init(allocator),
             .fallback = .{
@@ -210,9 +210,9 @@ pub const ExtendedConfig = struct {
                 return ProviderConfig{
                     .name = provider_name,
                     .type = if (provider_sec.getString("type")) |t| ProviderType.fromString(t) else .api,
-                    .base_url = provider_sec.getString("base_url") orelse "https://api.openai.com/v1",
-                    .models = &[_][]const u8{provider_sec.getString("default_model") orelse "gpt-4"},
-                    .default_model = provider_sec.getString("default_model") orelse "gpt-4",
+                    .base_url = provider_sec.getString("base_url") orelse "",
+                    .models = &[_][]const u8{provider_sec.getString("default_model") orelse ""},
+                    .default_model = provider_sec.getString("default_model") orelse "",
                     .rate_limits = .{
                         .requests_per_minute = @intCast(provider_sec.getInt("requests_per_minute") orelse 60),
                         .tokens_per_minute = if (provider_sec.getInt("tokens_per_minute")) |v| @intCast(v) else null,

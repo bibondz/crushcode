@@ -330,6 +330,11 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     const content = choice.message.content orelse "";
     const finish_reason_text = choice.finish_reason orelse "stop";
 
+    // Render AI response with markdown formatting
+    if (content.len > 0) {
+        markdown_mod.MarkdownRenderer.render(content);
+    }
+
     if (response.usage) |usage| {
         ctx.total_input_tokens.* += usage.prompt_tokens;
         ctx.total_output_tokens.* += usage.completion_tokens;
@@ -897,7 +902,8 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     out("=== Interactive Chat Mode (Streaming) ===\n", .{});
     out("Provider: {s} | Model: {s}\n", .{ current_provider_name, current_model_name });
     out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    out("Commands: /help | /usage | /clear | /hooks | /compact | /graph | /model | /exit\n", .{});
+    out("Commands: /help /clear /model /cost /compact /exit\n", .{});
+    out("Shortcuts: /h /c /m /q\n", .{});
     out("--------------------------------------------\n\n", .{});
 
     // JSON: emit session start
@@ -990,9 +996,13 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
-        // /model command — show or swap model
-        if (std.mem.eql(u8, user_message, "/model") or std.mem.startsWith(u8, user_message, "/model ")) {
-            const model_arg = std.mem.trim(u8, user_message["/model".len..], " ");
+        // /model command — show or swap model (also /m)
+        const is_model_cmd = std.mem.eql(u8, user_message, "/model") or std.mem.startsWith(u8, user_message, "/model ") or
+            std.mem.eql(u8, user_message, "/m") or std.mem.startsWith(u8, user_message, "/m ");
+        if (is_model_cmd) {
+            // Strip /model or /m prefix
+            const prefix_len: usize = if (std.mem.startsWith(u8, user_message, "/model")) "/model".len else "/m".len;
+            const model_arg = std.mem.trim(u8, user_message[prefix_len..], " ");
             if (model_arg.len == 0) {
                 if (hotswap) |hs| {
                     out("Current model: {s}/{s} (swaps: {d})\n", .{ hs.providerName(), hs.modelName(), hs.swapCount() });

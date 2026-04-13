@@ -76,6 +76,7 @@ pub const SlashCommandRegistry = struct {
 
     /// Register the built-in commands
     pub fn registerDefaults(self: *SlashCommandRegistry) !void {
+        // Full commands
         try self.register(SlashCommand{
             .name = "/help",
             .description = "Show available commands",
@@ -126,6 +127,15 @@ pub const SlashCommandRegistry = struct {
             .description = "Show session status",
             .handler = cmdStatus,
         });
+
+        // Short aliases for quick access
+        try self.register(SlashCommand{ .name = "/h", .description = "Alias for /help", .handler = cmdHelp });
+        try self.register(SlashCommand{ .name = "/c", .description = "Alias for /clear", .handler = cmdClear });
+        try self.register(SlashCommand{ .name = "/m", .description = "Alias for /model", .handler = cmdModel });
+        try self.register(SlashCommand{ .name = "/q", .description = "Alias for /exit", .handler = cmdExit });
+        try self.register(SlashCommand{ .name = "/s", .description = "Alias for /status", .handler = cmdStatus });
+        try self.register(SlashCommand{ .name = "/t", .description = "Alias for /tokens", .handler = cmdTokens });
+        try self.register(SlashCommand{ .name = "/v", .description = "Alias for /version", .handler = cmdVersion });
     }
 
     /// Register a custom command

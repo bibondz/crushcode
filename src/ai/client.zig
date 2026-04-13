@@ -129,10 +129,17 @@ pub const AIClient = struct {
         _ = self;
     }
 
-    /// Get the actual model name to send to API (strip "opencode/" prefix for Zen/Go)
+    /// Get the actual model name to send to API.
+    /// Strips provider prefix (e.g. "openai/gpt-4o-mini" → "gpt-4o-mini")
+    /// unless the provider is OpenRouter, which expects "provider/model" format.
     pub fn getApiModelName(self: *AIClient) []const u8 {
-        if (std.mem.startsWith(u8, self.model, "opencode/")) {
-            return self.model["opencode/".len..];
+        // OpenRouter uses "provider/model" format — keep as-is
+        if (std.mem.eql(u8, self.provider.name, "openrouter")) {
+            return self.model;
+        }
+        // Strip any "provider/" prefix for direct API calls
+        if (std.mem.indexOfScalar(u8, self.model, '/')) |idx| {
+            return self.model[idx + 1 ..];
         }
         return self.model;
     }
@@ -543,7 +550,7 @@ pub const AIClient = struct {
         defer json_body.deinit();
 
         try json_body.appendSlice("{\"model\":\"");
-        try json_body.appendSlice(self.model);
+        try json_body.appendSlice(self.getApiModelName());
         try json_body.appendSlice("\",\"messages\":[");
 
         // Prepend system message if system_prompt is set
@@ -565,24 +572,10 @@ pub const AIClient = struct {
             }
         }
 
+        // Use appendChatMessageJson which correctly handles tool_call_id and tool_calls
         for (messages, 0..) |msg, i| {
             if (i > 0) try json_body.appendSlice(",");
-            try json_body.appendSlice("{\"role\":\"");
-            try json_body.appendSlice(msg.role);
-            try json_body.appendSlice("\",\"content\":\"");
-            // Escape special characters in content
-            const msg_content = msg.content orelse "";
-            for (msg_content) |c| {
-                switch (c) {
-                    '"' => try json_body.appendSlice("\\\""),
-                    '\\' => try json_body.appendSlice("\\\\"),
-                    '\n' => try json_body.appendSlice("\\n"),
-                    '\r' => try json_body.appendSlice("\\r"),
-                    '\t' => try json_body.appendSlice("\\t"),
-                    else => try json_body.append(c),
-                }
-            }
-            try json_body.appendSlice("\"}");
+            try streaming_parsers.appendChatMessageJson(&json_body, msg);
         }
 
         try json_body.writer().print("],\"max_tokens\":{d},\"temperature\":{d:.2}}}", .{ self.max_tokens, self.temperature });

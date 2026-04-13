@@ -2,6 +2,7 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const http_client = @import("http_client");
+const providers_file = @import("providers_file");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -160,7 +161,7 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         .ollama => ProviderConfig{
             .base_url = try allocator.dupe(u8, "http://localhost:11434/api"),
             .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{ "gemma4:31b-cloud", "phi3.5:3.8b-mini-instruct-q5_K_M" },
+            .models = &[_][]const u8{ "gemma4:31b-cloud", "phi3.5:3.8b-mini-instruct-q5_K_M", "llama3.3:70b-cloud", "mistral-small:24b-cloud", "qwen3:30b-cloud", "deepseek-r1:cloud", "devstral:24b-cloud" },
             .is_models_static = true,
         },
         .lm_studio => ProviderConfig{
@@ -392,10 +393,51 @@ pub const ProviderRegistry = struct {
     }
 
     pub fn registerAllProviders(self: *ProviderRegistry) !void {
-        const all_providers = comptime std.enums.values(ProviderType);
-        inline for (all_providers) |provider_type| {
-            try self.registerProvider(provider_type);
+        // Try loading providers from config file first
+        if (providers_file.loadProvidersFromFile(self.allocator) catch null) |config_providers| {
+            for (config_providers.items) |def| {
+                self.registerProviderFromDef(def) catch |err| {
+                    out("Warning: Failed to register provider '{s}': {}\n", .{ def.name, err });
+                };
+            }
+            // Free the list container (individual defs are now owned by registry)
+            const mutable_ptr = @as(*providers_file.ProviderDef, @ptrFromInt(@intFromPtr(&config_providers)));
+            _ = mutable_ptr;
+            // Deinit just the array list, not the items (they're moved into registry)
+            var providers_list = config_providers;
+            providers_list.deinit();
+        } else {
+            // No config file — use hardcoded defaults
+            const all_providers = comptime std.enums.values(ProviderType);
+            inline for (all_providers) |provider_type| {
+                try self.registerProvider(provider_type);
+            }
         }
+    }
+
+    /// Register a provider from a config-loaded definition
+    fn registerProviderFromDef(self: *ProviderRegistry, def: providers_file.ProviderDef) !void {
+        // Allocate models slice for the provider
+        const models = try self.allocator.alloc([]const u8, def.models.len);
+        for (def.models, 0..) |m, i| {
+            models[i] = try self.allocator.dupe(u8, m);
+        }
+
+        const name = try self.allocator.dupe(u8, def.name);
+        const base_url = try self.allocator.dupe(u8, def.base_url);
+
+        const provider = Provider{
+            .name = name,
+            .config = .{
+                .base_url = base_url,
+                .api_key = try self.allocator.dupe(u8, ""),
+                .models = models,
+                .is_models_static = false,
+            },
+            .allocator = self.allocator,
+        };
+
+        try self.providers.put(name, provider);
     }
 
     pub fn getProvider(self: *ProviderRegistry, name: []const u8) ?Provider {

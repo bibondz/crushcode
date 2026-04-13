@@ -147,16 +147,16 @@ pub fn main() !void {
     // Skip config cleanup for now - see if basic commands work
     // defer config.deinit();
 
-    // No command provided — launch interactive chat by default
+    // No command provided — launch interactive TUI chat by default
     if (!parsed_args.has_command) {
         const interactive_args = args_mod.Args{
-            .command = try allocator.dupe(u8, "chat"),
+            .command = try allocator.dupe(u8, "tui"),
             .provider = null,
             .model = null,
             .profile = null,
             .config_file = null,
             .interactive = true,
-            .tui = false,
+            .tui = true,
             .json = false,
             .color = null,
             .checkpoint = null,
@@ -172,7 +172,7 @@ pub fn main() !void {
             .has_command = true,
         };
         defer allocator.free(interactive_args.command);
-        try commands.handleChat(interactive_args, &config);
+        try commands.handleTUI(interactive_args, &config);
         return;
     }
 

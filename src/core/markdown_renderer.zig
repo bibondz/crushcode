@@ -10,9 +10,38 @@ pub const MarkdownRenderer = struct {
     /// Render a complete markdown text (multi-line) to stdout.
     pub fn render(text: []const u8) void {
         var pos: usize = 0;
+        var in_code_block = false;
         while (pos < text.len) {
             const eol = if (std.mem.indexOfScalar(u8, text[pos..], '\n')) |i| pos + i else text.len;
-            renderLine(text[pos..eol]);
+            const line = text[pos..eol];
+
+            // Fenced code block toggle: ``` or ~~~
+            if (line.len >= 3 and (std.mem.startsWith(u8, line, "```") or std.mem.startsWith(u8, line, "~~~"))) {
+                if (!in_code_block) {
+                    // Opening fence — print language tag in dimmed style
+                    const stdout = file_compat.File.stdout().writer();
+                    const lang = std.mem.trim(u8, line[3..], " \t");
+                    if (lang.len > 0) {
+                        stdout.print("{s}{s}{s}\n", .{ "\x1b[90m", lang, "\x1b[0m" }) catch {};
+                    }
+                    in_code_block = true;
+                } else {
+                    // Closing fence
+                    in_code_block = false;
+                }
+                pos = eol + 1;
+                continue;
+            }
+
+            if (in_code_block) {
+                // Inside code block — print with background color
+                const stdout = file_compat.File.stdout().writer();
+                stdout.print("{s}{s}{s}\n", .{ "\x1b[48;5;236m\x1b[37m", line, "\x1b[0m" }) catch {};
+                pos = eol + 1;
+                continue;
+            }
+
+            renderLine(line);
             const stdout = file_compat.File.stdout().writer();
             stdout.print("\n", .{}) catch {};
             pos = eol + 1;

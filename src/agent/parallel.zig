@@ -25,29 +25,24 @@ pub const AgentCategory = enum {
 };
 
 /// Get default model for an agent category
+/// These are just suggestions — actual model comes from user's config
 pub fn getDefaultModelForCategory(category: AgentCategory) []const u8 {
     return switch (category) {
-        .visual_engineering => "claude-sonnet-4-20250514",
-        .ultrabrain => "gpt-5.4",
-        .deep => "claude-opus-4-6",
-        .quick => "claude-haiku-3",
-        .general => "claude-sonnet-4-20250514",
-        .review => "claude-sonnet-4-20250514",
-        .research => "claude-opus-4-6",
+        .visual_engineering => "default",
+        .ultrabrain => "default",
+        .deep => "default",
+        .quick => "default",
+        .general => "default",
+        .review => "default",
+        .research => "default",
     };
 }
 
 /// Get default provider for an agent category
+/// Uses user's configured default provider — no hardcoded bias
 pub fn getDefaultProviderForCategory(category: AgentCategory) []const u8 {
-    return switch (category) {
-        .visual_engineering => "anthropic",
-        .ultrabrain => "openrouter",
-        .deep => "anthropic",
-        .quick => "anthropic",
-        .general => "anthropic",
-        .review => "anthropic",
-        .research => "anthropic",
-    };
+    _ = category;
+    return "default";
 }
 
 /// Parse category from string (case-insensitive)

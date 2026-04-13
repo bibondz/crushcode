@@ -114,12 +114,30 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Providers file module (loads provider definitions from config)
+    const providers_file_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/providers_file.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // TOML parser module
     const toml_mod = b.createModule(.{
         .root_source_file = b.path("src/config/toml.zig"),
         .target = target,
         .optimize = optimize,
     });
+
+    // Wire config to providers_file (for first-run creation)
+    config_mod.addImport("providers_file", providers_file_mod);
+
+    // Wire providers_file to toml
+    providers_file_mod.addImport("toml", toml_mod);
+    providers_file_mod.addImport("array_list_compat", compat_array_list_mod);
+    providers_file_mod.addImport("file_compat", compat_file_mod);
+
+    // Wire registry to providers_file (for loading provider definitions from config)
+    registry_mod.addImport("providers_file", providers_file_mod);
 
     // Auth module (credentials storage)
     const auth_mod = b.createModule(.{
@@ -500,6 +518,8 @@ pub fn build(b: *std.Build) !void {
 
     // Add core_api to TUI module
     tui_mod.addImport("core_api", core_api_mod);
+    tui_mod.addImport("markdown_renderer", markdown_renderer_mod);
+    tui_mod.addImport("color", color_mod);
 
     // Wire streaming into chat module
     chat_mod.addImport("streaming", streaming_session_mod);
