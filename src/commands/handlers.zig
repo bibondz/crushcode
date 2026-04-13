@@ -616,6 +616,8 @@ pub fn printHelp() !void {
         \\  --restore <id>     Restore from checkpoint (alias)
         \\  --agents <cats>    Spawn agents with categories (comma-separated)
         \\  --max-agents <n>   Max concurrent agents (default: 5)
+        \\  --memory <path>   Session memory/history file
+        \\  --memory-limit <n>  Max messages to remember (default: 100)
         \\  --interactive, -i  Start interactive chat
         \\  --tui, -t          Launch terminal UI
         \\
@@ -623,6 +625,7 @@ pub fn printHelp() !void {
         \\  crushcode chat
         \\  crushcode chat --provider openai --model gpt-4o
         \\  crushcode chat --profile work
+        \\  crushcode chat --memory --memory-limit 50
         \\  crushcode agents --agents visual,deep,quick
         \\  crushcode agents --agents research,review --max-agents 3
         \\  crushcode read src/main.zig

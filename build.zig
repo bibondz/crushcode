@@ -459,6 +459,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Memory module (Phase 9 - session persistence)
+    const memory_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/memory.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const skill_import_mod = b.createModule(.{
         .root_source_file = b.path("src/skills/import.zig"),
         .target = target,
@@ -498,10 +505,12 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("lifecycle_hooks", lifecycle_hooks_mod);
     main_mod.addImport("intent_gate", intent_gate_mod);
     main_mod.addImport("checkpoint", checkpoint_mod);
+    main_mod.addImport("memory", memory_mod);
 
     // Wire Phase 17-22 modules into command handlers
     chat_mod.addImport("intent_gate", intent_gate_mod);
     chat_mod.addImport("lifecycle_hooks", lifecycle_hooks_mod);
+    chat_mod.addImport("memory", memory_mod);
     handlers_mod.addImport("fallback", fallback_mod);
     handlers_mod.addImport("parallel", parallel_mod);
     handlers_mod.addImport("worktree", worktree_mod);
@@ -677,6 +686,7 @@ pub fn build(b: *std.Build) !void {
         permission_evaluate_mod,
         theme_mod,
         checkpoint_mod,
+        memory_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

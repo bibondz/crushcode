@@ -20,6 +20,7 @@ const skills_loader_mod = @import("skills_loader");
 const json_output_mod = @import("json_output");
 const permission_mod = @import("permission_evaluate");
 const theme_mod = @import("theme");
+const memory_mod = @import("memory");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;

@@ -14,6 +14,8 @@ pub const Args = struct {
     restore: ?[]const u8 = null, // checkpoint ID to restore (alias for --checkpoint)
     agents: ?[]const u8 = null, // comma-separated agent categories to spawn
     max_agents: u32 = 5, // max concurrent agents
+    memory: ?[]const u8 = null, // session memory/history (file path or "auto")
+    memory_limit: u32 = 100, // max messages to remember
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -110,6 +112,15 @@ pub const Args = struct {
                     if (args_iter.next()) |next_arg| {
                         result.max_agents = std.fmt.parseInt(u32, next_arg, 10) catch 5;
                     }
+                } else if (std.mem.startsWith(u8, arg, "--memory=")) {
+                    result.memory = arg[9..];
+                } else if (std.mem.eql(u8, arg, "--memory") or std.mem.eql(u8, arg, "-m")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.memory = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--memory-limit=")) {
+                    const val = arg[15..];
+                    result.memory_limit = std.fmt.parseInt(u32, val, 10) catch 100;
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -137,6 +148,8 @@ pub const Args = struct {
             .restore = if (result.restore) |r| try allocator.dupe(u8, r) else null,
             .agents = if (result.agents) |a| try allocator.dupe(u8, a) else null,
             .max_agents = result.max_agents,
+            .memory = if (result.memory) |m| try allocator.dupe(u8, m) else null,
+            .memory_limit = result.memory_limit,
             .remaining = remaining,
             .has_command = has_command,
         };
