@@ -190,7 +190,7 @@ pub const PromptHandler = struct {
 
         while (std.time.milliTimestamp() - start_time < timeout_ms) {
             // Check if data is available (non-blocking)
-            var fds = std.os.poll_fd{ .fd = file_compat.File.stdin().handle, .events = std.os.POLL.IN, .revents = 0 };
+            const fds = std.os.poll_fd{ .fd = file_compat.File.stdin().handle, .events = std.os.POLL.IN, .revents = 0 };
             const ready = std.os.poll(&[_]std.os.poll_fd{fds}, 100) catch continue; // 100ms poll
 
             if (ready > 0 and (fds.revents & std.os.POLL.IN) != 0) {

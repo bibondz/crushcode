@@ -1,6 +1,9 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const QuantizationConfig = @import("quantization_config.zig").QuantizationConfig;
+pub const ConfigBackup = @import("backup").ConfigBackup;
+pub const ConfigMigrator = @import("backup").ConfigMigrator;
+pub const CURRENT_CONFIG_VERSION = @import("backup").CURRENT_CONFIG_VERSION;
 
 pub const MCPServerDef = struct {
     name: []const u8,

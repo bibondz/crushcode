@@ -1,4 +1,5 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
@@ -16,10 +17,11 @@ pub const DiffVisualizer = struct {
 
     /// Show a simple inline diff
     pub fn showInlineDiff(self: *DiffVisualizer, old_text: []const u8, new_text: []const u8) !void {
-        const stdout = std.io.getStdOut().writer();
+        _ = self;
+        const stdout = file_compat.File.stdout().writer();
 
         // Simple word-based diff visualization
-        std.debug.print("Changes detected:\n", .{});
+        stdout.print("Changes detected:\n", .{}) catch {};
 
         var old_iter = std.mem.splitScalar(u8, old_text, '\n').iterator();
         var new_iter = std.mem.splitScalar(u8, new_text, '\n').iterator();
@@ -49,17 +51,18 @@ pub const DiffVisualizer = struct {
         }
 
         if (diff_count > 0) {
-            std.debug.print("\n{d} line(s) changed\n", .{diff_count});
+            stdout.print("\n{d} line(s) changed\n", .{diff_count}) catch {};
         } else {
-            std.debug.print("No changes detected\n", .{});
+            stdout.print("No changes detected\n", .{}) catch {};
         }
     }
 
     /// Show unified diff format
     pub fn showUnifiedDiff(self: *DiffVisualizer, file_path: []const u8, old_text: []const u8, new_text: []const u8) !void {
-        const stdout = std.io.getStdOut().writer();
+        _ = self;
+        const stdout = file_compat.File.stdout().writer();
 
-        std.debug.print("Diff for {s}:\n", .{file_path});
+        stdout.print("Diff for {s}:\n", .{file_path}) catch {};
 
         var old_iter = std.mem.splitScalar(u8, old_text, '\n').iterator();
         var new_iter = std.mem.splitScalar(u8, new_text, '\n').iterator();
@@ -117,22 +120,23 @@ pub const DiffVisualizer = struct {
         }
 
         if (diff_count > 0) {
-            std.debug.print("\n{d} change(s)\n", .{diff_count});
+            stdout.print("\n{d} change(s)\n", .{diff_count}) catch {};
         } else {
-            std.debug.print("No changes\n", .{});
+            stdout.print("No changes\n", .{}) catch {};
         }
     }
 
     /// Compare two files and show diff
     pub fn compareFiles(self: *DiffVisualizer, old_path: []const u8, new_path: []const u8) !void {
+        const stdout = file_compat.File.stdout().writer();
         const old_content = std.fs.cwd().readFileAlloc(self.allocator, old_path, 10 * 1024 * 1024) catch {
-            std.debug.print("Error reading old file '{s}'\n", .{old_path});
+            stdout.print("Error reading old file '{s}'\n", .{old_path}) catch {};
             return;
         };
         defer self.allocator.free(old_content);
 
         const new_content = std.fs.cwd().readFileAlloc(self.allocator, new_path, 10 * 1024 * 1024) catch {
-            std.debug.print("Error reading new file '{s}'\n", .{new_path});
+            stdout.print("Error reading new file '{s}'\n", .{new_path}) catch {};
             return;
         };
         defer self.allocator.free(new_content);

@@ -68,8 +68,6 @@ pub const SecurityChecker = struct {
 
     /// Check for dangerous regex patterns (Claude Code pattern)
     pub fn checkRegexInjection(self: *const SecurityChecker, input: []const u8) ?[]const u8 {
-        _ = self;
-
         const dangerous_regex = [_][]const u8{
             // Shell command injection
             "(;|\\|\\||&&)\\s*\\w+",

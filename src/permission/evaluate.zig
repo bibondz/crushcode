@@ -8,6 +8,10 @@ pub const PermissionRule = @import("types.zig").PermissionRule;
 pub const PermissionRequest = @import("types.zig").PermissionRequest;
 pub const PermissionResult = @import("types.zig").PermissionResult;
 pub const PermissionConfig = @import("types.zig").PermissionConfig;
+pub const SecurityChecker = @import("security.zig").SecurityChecker;
+pub const PermissionPrompt = @import("prompt.zig").PermissionPrompt;
+pub const PromptResponse = @import("prompt.zig").PromptResponse;
+pub const PromptHandler = @import("prompt.zig").PromptHandler;
 
 /// Permission evaluator implementing OpenCode's pattern matching logic
 pub const PermissionEvaluator = struct {

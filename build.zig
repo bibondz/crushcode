@@ -401,6 +401,22 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("profile", profile_mod);
     handlers_mod.addImport("json_output", json_output_mod);
 
+    // Diff visualizer module
+    const diff_mod = b.createModule(.{
+        .root_source_file = b.path("src/diff/visualizer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    handlers_mod.addImport("diff", diff_mod);
+
+    // Config backup module
+    const backup_mod = b.createModule(.{
+        .root_source_file = b.path("src/config/backup.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    config_mod.addImport("backup", backup_mod);
+
     // Main module
     const main_mod = b.createModule(.{
         .root_source_file = b.path("src/main.zig"),
@@ -632,6 +648,8 @@ pub fn build(b: *std.Build) !void {
         jobs_mod,
         skills_loader_mod,
         tools_mod,
+        diff_mod,
+        backup_mod,
         streaming_types_mod,
         streaming_buffer_mod,
         streaming_display_mod,
