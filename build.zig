@@ -624,6 +624,8 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("compaction", compaction_mod);
     handlers_mod.addImport("scaffold", scaffold_mod);
     handlers_mod.addImport("mcp_bridge", mcp_bridge_mod);
+    handlers_mod.addImport("mcp_client", mcp_client_mod);
+    handlers_mod.addImport("mcp_discovery", mcp_discovery_mod);
 
     // Wire compaction into chat for auto-compaction
     chat_mod.addImport("compaction", compaction_mod);

@@ -27,6 +27,9 @@ const checkpoint_mod = @import("checkpoint");
 const ast_grep_mod = @import("ast_grep");
 const lsp_mod = @import("lsp");
 const mcp_bridge_mod = @import("mcp_bridge");
+const mcp_client_mod = @import("mcp_client");
+const mcp_discovery_mod = @import("mcp_discovery");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
 const Config = config_mod.Config;
@@ -518,15 +521,195 @@ pub fn handleLSP(args: args_mod.Args) !void {
     std.debug.print("       crushcode lsp --lang <language>\n", .{});
 }
 
-/// Handle MCP tool listing
+/// Handle MCP tool listing and execution
 pub fn handleMCP(args: args_mod.Args) !void {
-    _ = args;
+    const allocator = std.heap.page_allocator;
 
-    std.debug.print("MCP Tools - stub implementation\n", .{});
-    std.debug.print("Usage: crushcode mcp list\n", .{});
-    std.debug.print("       crushcode mcp execute <server> <tool>\n", .{});
-    std.debug.print("\nOptions:\n", .{});
-    std.debug.print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
+    // Subcommand parsing from remaining args
+    const subcommand = if (args.remaining.len > 0) args.remaining[0] else "";
+
+    if (subcommand.len == 0 or std.mem.eql(u8, subcommand, "help")) {
+        std.debug.print("MCP Tools — Model Context Protocol integration\n\n", .{});
+        std.debug.print("Usage:\n", .{});
+        std.debug.print("  crushcode mcp list                    List connected servers\n", .{});
+        std.debug.print("  crushcode mcp tools <server>          List tools on a server\n", .{});
+        std.debug.print("  crushcode mcp execute <server> <tool> [json]  Execute a tool\n", .{});
+        std.debug.print("  crushcode mcp connect <name> <command> [--args ...]  Connect via stdio\n", .{});
+        std.debug.print("  crushcode mcp discover [search]       Search for MCP servers\n", .{});
+        std.debug.print("\nOptions:\n", .{});
+        std.debug.print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
+        return;
+    }
+
+    var client = mcp_client_mod.MCPClient.init(allocator);
+    defer client.deinit();
+
+    if (std.mem.eql(u8, subcommand, "list")) {
+        // List all known servers from config
+        if (client.servers.count() == 0) {
+            std.debug.print("No MCP servers configured.\n", .{});
+            std.debug.print("Use 'crushcode mcp connect <name> <command>' to connect.\n", .{});
+            return;
+        }
+
+        std.debug.print("Connected MCP Servers:\n", .{});
+        std.debug.print("----------------------\n", .{});
+        var iter = client.servers.iterator();
+        while (iter.next()) |entry| {
+            const name = entry.key_ptr.*;
+            const info = entry.value_ptr.*;
+            const connected = if (info == .object) blk: {
+                if (info.object.get("connected")) |c| {
+                    break :blk c == .bool and c.bool;
+                }
+                break :blk false;
+            } else false;
+            const status = if (connected) "✓ connected" else "✗ disconnected";
+            std.debug.print("  {s} — {s}\n", .{ name, status });
+        }
+    } else if (std.mem.eql(u8, subcommand, "tools")) {
+        // List tools from a specific server
+        if (args.remaining.len < 2) {
+            std.debug.print("Usage: crushcode mcp tools <server>\n", .{});
+            return;
+        }
+        const server_name = args.remaining[1];
+
+        if (!client.connections.contains(server_name)) {
+            std.debug.print("Server '{s}' is not connected. Connect first.\n", .{server_name});
+            return;
+        }
+
+        const tools = client.discoverTools(server_name) catch |err| {
+            std.debug.print("Error discovering tools from '{s}': {}\n", .{ server_name, err });
+            return;
+        };
+
+        std.debug.print("Tools on '{s}' ({d} found):\n", .{ server_name, tools.len });
+        std.debug.print("----------------------\n", .{});
+        for (tools) |tool| {
+            std.debug.print("  {s}", .{tool.name});
+            if (tool.description.len > 0) {
+                std.debug.print(" — {s}", .{tool.description});
+            }
+            std.debug.print("\n", .{});
+        }
+    } else if (std.mem.eql(u8, subcommand, "execute")) {
+        // Execute a tool on a server
+        if (args.remaining.len < 3) {
+            std.debug.print("Usage: crushcode mcp execute <server> <tool> [json-args]\n", .{});
+            std.debug.print("Example: crushcode mcp execute filesystem read_file '{{\"path\":\"/tmp/test.txt\"}}'\n", .{});
+            return;
+        }
+        const server_name = args.remaining[1];
+        const tool_name = args.remaining[2];
+
+        if (!client.connections.contains(server_name)) {
+            std.debug.print("Server '{s}' is not connected. Connect first.\n", .{server_name});
+            return;
+        }
+
+        // Parse optional JSON arguments
+        var args_obj = std.json.ObjectMap.init(allocator);
+        if (args.remaining.len >= 4) {
+            const json_str = args.remaining[3];
+            const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch |err| {
+                std.debug.print("Error parsing JSON arguments: {}\n", .{err});
+                std.debug.print("Expected valid JSON object, got: {s}\n", .{json_str});
+                return;
+            };
+            defer parsed.deinit();
+            if (parsed.value == .object) {
+                args_obj = parsed.value.object;
+            }
+        }
+
+        const result = client.executeTool(server_name, tool_name, args_obj) catch |err| {
+            std.debug.print("Error executing tool '{s}' on '{s}': {}\n", .{ tool_name, server_name, err });
+            return;
+        };
+
+        if (result.success) {
+            std.debug.print("✓ Tool executed successfully\n", .{});
+            if (result.result) |res| {
+                const out = file_compat.File.stdout().writer();
+                out.print("{}\n", .{res}) catch {};
+                std.debug.print("\n", .{});
+            }
+        } else {
+            std.debug.print("✗ Tool execution failed: {s}\n", .{result.error_message orelse "unknown error"});
+        }
+    } else if (std.mem.eql(u8, subcommand, "connect")) {
+        // Connect to an MCP server via stdio
+        if (args.remaining.len < 3) {
+            std.debug.print("Usage: crushcode mcp connect <name> <command> [--args ...]\n", .{});
+            std.debug.print("Example: crushcode mcp connect filesystem mcp-server-filesystem /tmp\n", .{});
+            return;
+        }
+        const name = args.remaining[1];
+        const command = args.remaining[2];
+
+        // Collect extra args
+        var server_args = array_list_compat.ArrayList([]const u8).init(allocator);
+        defer server_args.deinit();
+        for (args.remaining[3..]) |arg| {
+            try server_args.append(arg);
+        }
+
+        const config = mcp_client_mod.MCPServerConfig{
+            .transport = .stdio,
+            .command = command,
+            .args = if (server_args.items.len > 0) server_args.items else null,
+        };
+
+        std.debug.print("Connecting to MCP server '{s}' via stdio...\n", .{name});
+        const conn = client.connectToServer(name, config) catch |err| {
+            std.debug.print("Error connecting to '{s}': {}\n", .{ name, err });
+            return;
+        };
+        std.debug.print("✓ Connected to '{s}' (transport: {s})\n", .{ name, @tagName(conn.transport) });
+
+        // Auto-discover tools
+        const tools = client.discoverTools(name) catch |err| {
+            std.debug.print("Connected but tool discovery failed: {}\n", .{err});
+            return;
+        };
+        std.debug.print("  Found {d} tools:\n", .{tools.len});
+        for (tools) |tool| {
+            std.debug.print("    • {s}\n", .{tool.name});
+        }
+    } else if (std.mem.eql(u8, subcommand, "discover")) {
+        // Search for MCP servers
+        const search_term = if (args.remaining.len >= 2) args.remaining[1] else "mcp";
+
+        const discovery_mod = @import("mcp_discovery");
+        var discovery = discovery_mod.MCPDiscovery.init(allocator, &client);
+        const results = discovery.discoverServers(search_term) catch |err| {
+            std.debug.print("Error discovering servers: {}\n", .{err});
+            return;
+        };
+        defer allocator.free(results);
+
+        std.debug.print("MCP Server Discovery (searching for '{s}'):\n", .{search_term});
+        std.debug.print("Found {d} results:\n\n", .{results.len});
+        for (results) |result| {
+            std.debug.print("  {s}", .{result.name});
+            if (result.description.len > 0) {
+                std.debug.print(" — {s}", .{result.description});
+            }
+            std.debug.print("\n", .{});
+            if (result.install_command) |cmd| {
+                std.debug.print("    Install: {s}\n", .{cmd});
+            }
+            if (result.url) |url| {
+                std.debug.print("    URL: {s}\n", .{url});
+            }
+            std.debug.print("\n", .{});
+        }
+    } else {
+        std.debug.print("Unknown MCP subcommand: '{s}'\n", .{subcommand});
+        std.debug.print("Run 'crushcode mcp help' for usage.\n", .{});
+    }
 }
 
 /// Handle diff visualization
@@ -737,6 +920,8 @@ pub fn printHelp() !void {
         \\  --memory-limit <n>  Max messages to remember (default: 100)
         \\  --interactive, -i  Start interactive chat
         \\  --tui, -t          Launch terminal UI
+        \\  --stream, -s       Enable streaming output
+        \\  --permission <mode> Permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
         \\
         \\Examples:
         \\  crushcode chat

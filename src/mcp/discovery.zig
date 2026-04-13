@@ -100,12 +100,22 @@ pub const MCPDiscovery = struct {
             "/usr/local/bin",
             "/opt/homebrew/bin",
             "/usr/local/share/mcp-servers",
-            std.fmt.allocPrint(self.allocator, "{s}/.local/share/npx", .{std.process.getEnvVar("HOME") orelse "/home"}),
-            std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{std.process.getEnvVar("HOME") orelse "/home/user"}),
         };
 
+        // Also search HOME-based paths
+        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+            defer self.allocator.free(home);
+            const npx_path = std.fmt.allocPrint(self.allocator, "{s}/.local/share/npx", .{home}) catch return;
+            defer self.allocator.free(npx_path);
+            if (self.searchDirectory(results, npx_path, term) catch false) return;
+
+            const npm_path = std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{home}) catch return;
+            defer self.allocator.free(npm_path);
+            if (self.searchDirectory(results, npm_path, term) catch false) return;
+        } else |_| {}
+
         for (search_paths) |search_path| {
-            if (self.searchDirectory(results, search_path, term)) {
+            if (self.searchDirectory(results, search_path, term) catch false) {
                 return; // Found what we're looking for
             }
         }
@@ -115,12 +125,13 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchDirectory(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), dir: []const u8, term: []const u8) !bool {
-        var dir_iter = std.fs.openDirAbsolute(dir, .{ .iterate = true }) catch |err| {
+        var opened_dir = std.fs.openDirAbsolute(dir, .{ .iterate = true }) catch |err| {
             std.log.err("Failed to open directory {s}: {}", .{ dir, err });
             return false;
         };
-        defer dir_iter.close();
+        defer opened_dir.close();
 
+        var dir_iter = opened_dir.iterate();
         while (dir_iter.next() catch null) |entry| {
             const filename = entry.name;
             if (self.isMCPServer(filename, term)) {
@@ -130,7 +141,7 @@ pub const MCPDiscovery = struct {
                 const description = try self.getServerDescription(full_path);
 
                 try results.append(MCPDiscoveryResult{
-                    .name = std.mem.slice(full_path, std.mem.lastIndexOf(u8, full_path, '/') + 1),
+                    .name = full_path[(std.mem.lastIndexOfScalar(u8, full_path, '/') orelse 0) + 1 ..],
                     .description = description,
                     .url = try std.fmt.allocPrint(self.allocator, "file://{s}", .{full_path}),
                     .type = .local,
@@ -143,10 +154,13 @@ pub const MCPDiscovery = struct {
         return false;
     }
 
-    fn isMCPServer(_: *MCPDiscovery, filename: []const u8, term: []const u8) bool {
+    fn isMCPServer(self: *MCPDiscovery, filename: []const u8, term: []const u8) bool {
         _ = term;
 
-        const lower_filename = std.ascii.lowerString(filename);
+        // Allocate a lowercase copy of the filename for case-insensitive matching
+        const lower_filename = self.allocator.alloc(u8, filename.len) catch return false;
+        defer self.allocator.free(lower_filename);
+        _ = std.ascii.lowerString(lower_filename, filename);
 
         // Check if filename contains common MCP server keywords
         const mcp_keywords = [_][]const u8{ "mcp", "server", "context", "model", "protocol", "gateway" };
@@ -166,7 +180,7 @@ pub const MCPDiscovery = struct {
         };
         defer file.close();
 
-        const content = try file.readToEndAlloc(self.allocator);
+        const content = try file.readToEndAlloc(self.allocator, 1024 * 1024);
         defer self.allocator.free(content);
 
         // Extract description from file content
@@ -200,31 +214,38 @@ pub const MCPDiscovery = struct {
 
     fn detectServerCapabilities(self: *MCPDiscovery, path: []const u8) ![]const u8 {
         // For local servers, assume basic capabilities
-        var capabilities = array_list_compat.ArrayList([]const u8).init(self.allocator);
-        defer capabilities.deinit();
+        var caps = array_list_compat.ArrayList([]const u8).init(self.allocator);
+        defer caps.deinit();
 
-        try capabilities.append("tools/list");
-        try capabilities.append("tools/call");
+        try caps.append("tools/list");
+        try caps.append("tools/call");
 
         // Check file extension for specific capabilities
-        if (std.mem.endsWith(u8, path, ".py")) {
-            try capabilities.append("read_file");
-            try capabilities.append("write_file");
-        }
-        if (std.mem.endsWith(u8, path, ".js")) {
-            try capabilities.append("read_file");
-            try capabilities.append("write_file");
+        if (std.mem.endsWith(u8, path, ".py") or std.mem.endsWith(u8, path, ".js")) {
+            try caps.append("read_file");
+            try caps.append("write_file");
         }
 
-        return capabilities.toOwnedSlice();
+        // Join capabilities into a comma-separated string
+        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+        defer buf.deinit();
+        for (caps.items, 0..) |cap, i| {
+            if (i > 0) try buf.append(',');
+            try buf.appendSlice(cap);
+        }
+        return buf.toOwnedSlice();
     }
 
     fn searchPackageManagers(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
         // Search npm global packages for MCP servers
-        const npm_path = try std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{std.process.getEnvVar("HOME") orelse "/home/user"});
-        if (self.searchDirectory(results, npm_path, term)) {
-            return;
-        }
+        if (std.process.getEnvVarOwned(self.allocator, "HOME")) |home| {
+            defer self.allocator.free(home);
+            const npm_path = std.fmt.allocPrint(self.allocator, "{s}/.npm-global/bin", .{home}) catch return;
+            defer self.allocator.free(npm_path);
+            if (self.searchDirectory(results, npm_path, term) catch false) {
+                return;
+            }
+        } else |_| {}
     }
 
     fn searchRegistry(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
@@ -237,20 +258,21 @@ pub const MCPDiscovery = struct {
         defer self.allocator.free(search_url);
 
         // Fetch search results via HTTP
-        var header_buf: [4096]u8 = undefined;
+        var client = std.http.Client{ .allocator = self.allocator };
+        defer client.deinit();
+
         const uri = std.Uri.parse(search_url) catch {
             std.log.warn("Invalid npm search URL: {s}", .{search_url});
             return;
         };
 
-        var client = std.http.Client{ .allocator = self.allocator };
-        defer client.deinit();
+        var response_writer = std.Io.Writer.Allocating.init(self.allocator);
+        defer response_writer.deinit();
 
         const req_result = client.fetch(.{
-            .location = .{ .url = uri },
+            .location = .{ .uri = uri },
             .method = .GET,
-            .headers = .{ .allocator = self.allocator },
-            .max_headers = &header_buf,
+            .response_writer = &response_writer.writer,
         }) catch {
             std.log.info("Could not reach npm registry", .{});
             return;
@@ -261,8 +283,8 @@ pub const MCPDiscovery = struct {
             return;
         }
 
-        const body = req_result.body orelse return;
-        const data = body.items;
+        const data = response_writer.written();
+        if (data.len == 0) return;
 
         // Parse response: {"objects":[{"package":{"name":"@mcp/server","description":"...","links":{"npm":"..."}}}]}
         // Find the "objects" array
@@ -489,16 +511,12 @@ pub const MCPDiscovery = struct {
     pub fn validateServer(self: *MCPDiscovery, config: MCPServerConfig) !bool {
         _ = self;
 
-        // Basic validation
-        if (config.name.len == 0) {
-            return false;
-        }
-
-        // Validate transport type
-        const valid_transports = [_]MCPServerType{ .stdio, .sse, .http, .websocket };
+        // Validate transport type (MCPServerType and TransportType share tag names)
+        const transport_tag = @tagName(config.transport);
+        const valid_tags = [_][]const u8{ "stdio", "sse", "http", "websocket" };
         var transport_valid = false;
-        for (valid_transports) |valid| {
-            if (config.transport == valid) {
+        for (valid_tags) |valid| {
+            if (std.mem.eql(u8, transport_tag, valid)) {
                 transport_valid = true;
             }
         }
