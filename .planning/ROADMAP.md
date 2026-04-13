@@ -6,6 +6,22 @@
 
 ---
 
+## Version Milestones
+
+- **v0.1.0** (2026-04-11) — All 27 phases implemented. Initial release.
+- **v0.2.0** (2026-04-12) — Stubs resolved, dead code removed, orphaned modules wired, duplication consolidated.
+- **v0.2.1** (2026-04-13) — Plugins fixed and wired, `crushcode plugin` command, json extraction, proper I/O routing (502 stderr→stdout fixes).
+
+## Next: v0.2.2
+
+Focus areas for v0.2.2:
+- **Integration tests** — end-to-end command testing (chat, shell, mcp, plugin)
+- **Config validation** — TOML schema validation, missing field defaults
+- **Error message quality** — consistent error format across all commands
+- **Documentation** — man-page style help for each command (`crushcode help <cmd>`)
+
+---
+
 ## Phases
 
 - [x] **Phase 1: Core Infrastructure** - Config, AI chat, CLI, build system
@@ -618,4 +634,4 @@ Sources: OpenHarness (Python agent harness), Graphify (Python knowledge graphs),
 
 ---
 
-*Last updated: 2026-04-11 — Phase 23-27 planned, ready for implementation*
+*Last updated: 2026-04-13 — v0.2.1 tagged. All phases complete. v0.2.2 planning in progress.*
