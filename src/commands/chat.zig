@@ -36,6 +36,9 @@ const convergence_mod = @import("convergence");
 const adversarial_mod = @import("adversarial_review");
 const source_tracker_mod = @import("source_tracker");
 const knowledge_lint_mod = @import("knowledge_lint");
+const spinner_mod = @import("spinner");
+const markdown_mod = @import("markdown_renderer");
+const error_display_mod = @import("error_display");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
@@ -288,6 +291,9 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     pre_request_ctx.token_count = clampUsizeToU32(last_content_len);
     try ctx.hooks.execute(.pre_request, &pre_request_ctx);
 
+    // Show thinking indicator while waiting for AI response (Phase F)
+    spinner_mod.StreamingSpinner.showStatic("Thinking");
+
     out("\n{s}Assistant:{s} ", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
 
     var response: core.ChatResponse = undefined;
@@ -295,21 +301,25 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
         // Streaming mode — print tokens as they arrive
         response = ctx.client.sendChatStreaming(ctx.messages.items, interactiveStreamCallback) catch |err| {
             ctx.turn_failed = true;
-            out("\n\nError: {}\n", .{err});
+            spinner_mod.StreamingSpinner.clearStatic();
+            error_display_mod.printError("Request Failed", @errorName(err));
             return err;
         };
     } else {
         // Non-streaming mode (default) — more reliable, avoids Zig stdlib HTTP bugs
         response = ctx.client.sendChatWithHistory(ctx.messages.items) catch |err| {
             ctx.turn_failed = true;
-            out("\n\nError: {}\n", .{err});
+            spinner_mod.StreamingSpinner.clearStatic();
+            error_display_mod.printError("Request Failed", @errorName(err));
             return err;
         };
     }
 
+    spinner_mod.StreamingSpinner.clearStatic();
+
     if (response.choices.len == 0) {
         ctx.turn_failed = true;
-        out("\n\nError: Empty response from AI\n", .{});
+        error_display_mod.printError("Empty Response", "The AI returned an empty response");
         return error.EmptyResponse;
     }
 
@@ -460,9 +470,9 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
 
     if (api_key.len == 0) {
-        out("Warning: No API key found for provider '{s}'\n", .{provider_name});
-        out("Add your API key to ~/.crushcode/config.toml\n", .{});
-        out("Example: {s} = \"your-api-key\"\n\n", .{provider_name});
+        const warn_msg = std.fmt.allocPrint(allocator, "No API key found for provider '{s}'. Add to ~/.crushcode/config.toml\nExample: {s} = \"your-api-key\"", .{ provider_name, provider_name }) catch "Missing API key";
+        defer allocator.free(warn_msg);
+        error_display_mod.printWarning("Missing API Key", warn_msg);
 
         if (!std.mem.eql(u8, provider_name, "ollama") and
             !std.mem.eql(u8, provider_name, "lm_studio") and
@@ -555,7 +565,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
         // Safety check - ensure we have a valid response
         if (response.choices.len == 0) {
-            out("\nError: Empty response from AI\n", .{});
+            error_display_mod.printError("Empty Response", "The AI returned an empty response");
             return error.EmptyResponse;
         }
 
@@ -564,9 +574,10 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         if (choice.message.content) |c| {
             content_slice = c;
         }
-        out("{s}\n\n", .{content_slice});
     }
-    out("\n{s}\n\n", .{content_slice});
+    // Render AI response with markdown formatting (Phase F)
+    markdown_mod.MarkdownRenderer.render(content_slice);
+    out("\n", .{});
     out("---\n", .{});
     out("Provider: {s}\n", .{provider_name});
     out("Model: {s}\n", .{model_name});
@@ -611,7 +622,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     try registry.registerAllProviders();
 
     const provider = registry.getProvider(current_provider_name) orelse {
-        out("Error: Provider '{s}' not found\n", .{current_provider_name});
+        const err_msg = std.fmt.allocPrint(allocator, "Provider '{s}' is not registered. Run 'crushcode list' to see available providers.", .{current_provider_name}) catch "Unknown provider";
+        defer allocator.free(err_msg);
+        error_display_mod.printError("Provider Not Found", err_msg);
         return error.ProviderNotFound;
     };
 
@@ -628,7 +641,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         !std.mem.eql(u8, current_provider_name, "lm_studio") and
         !std.mem.eql(u8, current_provider_name, "llama_cpp"))
     {
-        out("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{current_provider_name});
+        const key_msg = std.fmt.allocPrint(allocator, "No API key found for provider '{s}'. Add to ~/.crushcode/config.toml or profile.", .{current_provider_name}) catch "Missing API key";
+        defer allocator.free(key_msg);
+        error_display_mod.printError("Missing API Key", key_msg);
         return error.MissingApiKey;
     }
 
@@ -970,7 +985,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     const new_provider = model_arg[0..idx];
                     const new_model = model_arg[idx + 1 ..];
                     const new_provider_cfg = registry.getProvider(new_provider) orelse {
-                        out("Error: Provider '{s}' not found\n", .{new_provider});
+                        out("{s}Error: Provider '{s}' not found{s}\n", .{ Style.err.start(), new_provider, Style.err.reset() });
                         continue;
                     };
 
@@ -986,7 +1001,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                         !std.mem.eql(u8, new_provider, "lm_studio") and
                         !std.mem.eql(u8, new_provider, "llama_cpp"))
                     {
-                        out("Error: No API key for provider '{s}'\n", .{new_provider});
+                        out("{s}Error: No API key for provider '{s}'{s}\n", .{ Style.err.start(), new_provider, Style.err.reset() });
                         continue;
                     }
 

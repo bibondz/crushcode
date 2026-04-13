@@ -467,6 +467,37 @@ pub fn build(b: *std.Build) !void {
 
     chat_mod.addImport("adversarial_review", adversarial_review_mod);
 
+    // Streaming spinner (Phase F)
+    const spinner_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/spinner.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    spinner_mod.addImport("file_compat", compat_file_mod);
+    spinner_mod.addImport("color", color_mod);
+
+    // Markdown renderer (Phase F)
+    const markdown_renderer_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/markdown_renderer.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    markdown_renderer_mod.addImport("file_compat", compat_file_mod);
+    markdown_renderer_mod.addImport("color", color_mod);
+
+    // Boxed error display (Phase F)
+    const error_display_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/error_display.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    error_display_mod.addImport("file_compat", compat_file_mod);
+    error_display_mod.addImport("color", color_mod);
+
+    chat_mod.addImport("spinner", spinner_mod);
+    chat_mod.addImport("markdown_renderer", markdown_renderer_mod);
+    chat_mod.addImport("error_display", error_display_mod);
+
     // Add core_api to TUI module
     tui_mod.addImport("core_api", core_api_mod);
 
@@ -963,6 +994,9 @@ pub fn build(b: *std.Build) !void {
         session_summarizer_mod,
         model_hotswap_mod,
         adversarial_review_mod,
+        spinner_mod,
+        markdown_renderer_mod,
+        error_display_mod,
         convergence_mod,
         color_mod,
         source_tracker_mod,
