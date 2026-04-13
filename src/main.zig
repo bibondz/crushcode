@@ -42,6 +42,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "git") or
         std.mem.eql(u8, command, "skill") or
         std.mem.eql(u8, command, "skills-load") or
+        std.mem.eql(u8, command, "fallback") or
         std.mem.eql(u8, command, "parallel") or
         std.mem.eql(u8, command, "agents") or
         std.mem.eql(u8, command, "tools") or
@@ -177,6 +178,8 @@ pub fn main() !void {
             break :blk commands.handleSkill(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
             break :blk commands.handleSkillsLoad(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "fallback")) {
+            break :blk commands.handleFallback(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
             break :blk commands.handleParallel(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "agents")) {

@@ -115,12 +115,32 @@ pub fn handleWrite(args: [][]const u8) !void {
 
         if (is_glob) {
             std.debug.print("Glob pattern: {s}\n", .{p});
-            // TODO: Implement glob matching
-            const result = writeFiles(&.{p}, content.?);
-            if (result.success) {
-                std.debug.print("Written to {d} file(s)\n", .{result.files_written});
+            // Basic glob implementation - write to all files matching extension
+            const wildcard_pos = std.mem.lastIndexOfScalar(u8, p, '*');
+            if (wildcard_pos == null) {
+                std.debug.print("Error: Pattern must contain wildcard (*)\n", .{});
+                return;
+            }
+            const extension = p[@intCast(wildcard_pos + 1)..];
+
+            var files_written: usize = 0;
+            var dir = fs.cwd().openDir(".", .{}) catch |err| {
+                std.debug.print("Error opening directory: {}\n", .{err});
+                return;
+            };
+            defer dir.close();
+
+            while (dir.next() catch {}) |entry| {
+                if (std.mem.endsWith(u8, entry.name, extension)) {
+                    try writeFile(entry.name, content.?);
+                    files_written += 1;
+                }
+            }
+
+            if (files_written > 0) {
+                std.debug.print("Written to {d} file(s) matching {s}\n", .{ files_written, extension });
             } else {
-                std.debug.print("Error: {s}\n", .{result.errors});
+                std.debug.print("No files found matching {s}\n", .{extension});
             }
         } else {
             // Single file
