@@ -207,35 +207,6 @@ pub fn build(b: *std.Build) !void {
     });
     jobs_mod.addImport("shell", shell_mod);
 
-    // Quantization module (TurboQuant KV cache compression)
-    const quantization_mod = b.createModule(.{
-        .root_source_file = b.path("src/quantization/rotation.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const bitpack_mod = b.createModule(.{
-        .root_source_file = b.path("src/quantization/bitpack.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const value_quant_mod = b.createModule(.{
-        .root_source_file = b.path("src/quantization/value_quant.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    const key_quant_mod = b.createModule(.{
-        .root_source_file = b.path("src/quantization/key_quant.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-
-    // Link quantization modules
-    key_quant_mod.addImport("rotation", quantization_mod);
-    value_quant_mod.addImport("bitpack", bitpack_mod);
-
     // Skills loader module (SKILL.md parsing)
     const skills_loader_mod = b.createModule(.{
         .root_source_file = b.path("src/skills/types.zig"),
@@ -659,10 +630,6 @@ pub fn build(b: *std.Build) !void {
         tui_mod,
         install_mod,
         jobs_mod,
-        quantization_mod,
-        bitpack_mod,
-        value_quant_mod,
-        key_quant_mod,
         skills_loader_mod,
         tools_mod,
         streaming_types_mod,
