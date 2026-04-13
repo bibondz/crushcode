@@ -4,6 +4,96 @@ const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
+/// Agent category - determines which model to use for the task
+/// Reference: oh-my-openagent category delegation system
+pub const AgentCategory = enum {
+    /// Frontend, UI/UX, design, styling, animation
+    visual_engineering,
+    /// Hard logic, architecture decisions, algorithms
+    ultrabrain,
+    /// Autonomous research + end-to-end implementation
+    deep,
+    /// Single-file changes, typo fixes, simple modifications
+    quick,
+    /// General purpose - uses default model
+    general,
+    /// Code review and quality assurance
+    review,
+    /// Research and exploration
+    research,
+};
+
+/// Get default model for an agent category
+pub fn getDefaultModelForCategory(category: AgentCategory) []const u8 {
+    return switch (category) {
+        .visual_engineering => "claude-sonnet-4-20250514",
+        .ultrabrain => "gpt-5.4",
+        .deep => "claude-opus-4-6",
+        .quick => "claude-haiku-3",
+        .general => "claude-sonnet-4-20250514",
+        .review => "claude-sonnet-4-20250514",
+        .research => "claude-opus-4-6",
+    };
+}
+
+/// Get default provider for an agent category
+pub fn getDefaultProviderForCategory(category: AgentCategory) []const u8 {
+    return switch (category) {
+        .visual_engineering => "anthropic",
+        .ultrabrain => "openrouter",
+        .deep => "anthropic",
+        .quick => "anthropic",
+        .general => "anthropic",
+        .review => "anthropic",
+        .research => "anthropic",
+    };
+}
+
+/// Parse category from string (case-insensitive)
+pub fn parseCategory(s: []const u8) ?AgentCategory {
+    // Simple case-insensitive check - compare lowercase manually
+    if (std.ascii.startsWithIgnoreCase(s, "visual") or
+        std.mem.eql(u8, s, "visual-engineering") or
+        std.mem.eql(u8, s, "ui") or
+        std.mem.eql(u8, s, "frontend"))
+    {
+        return .visual_engineering;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "ultrabrain") or
+        std.mem.eql(u8, s, "logic") or
+        std.mem.eql(u8, s, "hard"))
+    {
+        return .ultrabrain;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "deep") or
+        std.mem.eql(u8, s, "autonomous"))
+    {
+        return .deep;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "quick") or
+        std.mem.eql(u8, s, "fast") or
+        std.mem.eql(u8, s, "simple"))
+    {
+        return .quick;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "review") or
+        std.mem.eql(u8, s, "qa"))
+    {
+        return .review;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "research") or
+        std.mem.eql(u8, s, "explore"))
+    {
+        return .research;
+    }
+    if (std.ascii.startsWithIgnoreCase(s, "general") or
+        std.mem.eql(u8, s, "default"))
+    {
+        return .general;
+    }
+    return null;
+}
+
 /// Status of a parallel task
 pub const TaskStatus = enum {
     pending,
@@ -33,17 +123,19 @@ pub const ParallelTask = struct {
     prompt: []const u8,
     provider: []const u8,
     model: []const u8,
+    category: AgentCategory,
     priority: u32,
     status: TaskStatus,
     result: ?[]const u8,
     allocator: Allocator,
 
-    pub fn init(allocator: Allocator, id: []const u8, prompt: []const u8, provider: []const u8, model: []const u8) !ParallelTask {
+    pub fn init(allocator: Allocator, id: []const u8, prompt: []const u8, provider: []const u8, model: []const u8, category: AgentCategory) !ParallelTask {
         return ParallelTask{
             .id = try allocator.dupe(u8, id),
             .prompt = try allocator.dupe(u8, prompt),
             .provider = try allocator.dupe(u8, provider),
             .model = try allocator.dupe(u8, model),
+            .category = category,
             .priority = 0,
             .status = .pending,
             .result = null,
@@ -84,12 +176,12 @@ pub const ParallelExecutor = struct {
     }
 
     /// Submit a new task to the executor
-    pub fn submit(self: *ParallelExecutor, prompt: []const u8, provider: []const u8, model: []const u8) ![]const u8 {
+    pub fn submit(self: *ParallelExecutor, prompt: []const u8, provider: []const u8, model: []const u8, category: AgentCategory) ![]const u8 {
         const id = try std.fmt.allocPrint(self.allocator, "task_{d}", .{self.next_id});
         self.next_id += 1;
 
         const task = try self.allocator.create(ParallelTask);
-        task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model);
+        task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model, category);
 
         try self.tasks.append(task);
         return id;
@@ -157,7 +249,7 @@ pub const ParallelExecutor = struct {
     /// Print executor status
     pub fn printStatus(self: *ParallelExecutor) void {
         const stdout = file_compat.File.stdout().writer();
-        stdout.print("\n=== Parallel Executor ===\n", .{}) catch {};
+        stdout.print("\n=== Multi-Agent Executor ===\n", .{}) catch {};
         stdout.print("  Max concurrent: {d}\n", .{self.max_concurrent}) catch {};
         stdout.print("  Pending: {d}\n", .{self.countByStatus(.pending)}) catch {};
         stdout.print("  Running: {d}\n", .{self.countByStatus(.running)}) catch {};
@@ -172,13 +264,41 @@ pub const ParallelExecutor = struct {
                 .failed => "❌",
                 .cancelled => "🚫",
             };
-            stdout.print("  {s} {s}: {s}/{s} — {s:.40}\n", .{
+            const category_name = @tagName(task.category);
+            stdout.print("  {s} [{s}] {s}: {s}/{s} — {s:.40}\n", .{
                 status_icon,
+                category_name,
                 task.id,
                 task.provider,
                 task.model,
                 task.prompt,
             }) catch {};
+        }
+    }
+
+    /// Print aggregated results summary
+    pub fn printSummary(self: *ParallelExecutor) void {
+        const stdout = file_compat.File.stdout().writer();
+        stdout.print("\n=== Agent Results Summary ===\n", .{}) catch {};
+
+        const completed = self.countByStatus(.completed);
+        const failed = self.countByStatus(.failed);
+        const total = self.tasks.items.len;
+
+        stdout.print("  Total: {d} | Completed: {d} | Failed: {d}\n\n", .{
+            total, completed, failed,
+        }) catch {};
+
+        for (self.completed_results.items) |result| {
+            const icon = switch (result.status) {
+                .completed => "✅",
+                .failed => "❌",
+                else => "❓",
+            };
+            stdout.print("  {s} {s}\n", .{ icon, result.task_id }) catch {};
+            if (result.output.len > 0) {
+                stdout.print("      {s:.100}\n", .{result.output}) catch {};
+            }
         }
     }
 

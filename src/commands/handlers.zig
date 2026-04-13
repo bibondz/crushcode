@@ -23,6 +23,8 @@ const worktree_mod = @import("worktree");
 const agent_loop_mod = @import("agent_loop");
 const connect_mod = @import("connect");
 const profile_mod = @import("profile");
+const checkpoint_mod = @import("checkpoint");
+const array_list_compat = @import("array_list_compat");
 
 const Config = config_mod.Config;
 
@@ -187,13 +189,14 @@ pub fn handleParallel(_: args_mod.Args) !void {
     var executor = parallel_mod.ParallelExecutor.init(allocator, 3);
     defer executor.deinit();
 
-    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4");
+    // Submit tasks with categories - agents will pick appropriate models
+    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4", .research);
     defer allocator.free(task_one);
 
-    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet");
+    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet", .review);
     defer allocator.free(task_two);
 
-    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3");
+    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3", .quick);
     defer allocator.free(task_three);
 
     if (executor.getTask(task_one)) |task| {
@@ -205,6 +208,82 @@ pub fn handleParallel(_: args_mod.Args) !void {
     executor.printStatus();
     std.debug.print("\nCan accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
     std.debug.print("Recorded results: {d}\n", .{executor.getResults().len});
+}
+
+/// Handle multi-agent spawning with category delegation
+pub fn handleAgents(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    // Parse agent categories from --agents flag
+    const agents_str = args.agents orelse {
+        std.debug.print("Usage: crushcode agents --agents <categories>\n", .{});
+        std.debug.print("Categories: visual-engineering, ultrabrain, deep, quick, review, research, general\n", .{});
+        std.debug.print("Example: crushcode agents --agents visual,deep,quick\n", .{});
+        return;
+    };
+
+    // Parse max concurrent agents
+    const max_concurrent = args.max_agents;
+
+    var executor = parallel_mod.ParallelExecutor.init(allocator, max_concurrent);
+    defer executor.deinit();
+
+    // Parse and validate categories - manual split approach
+    var categories = array_list_compat.ArrayList(parallel_mod.AgentCategory).init(allocator);
+    defer categories.deinit();
+
+    // Parse comma-separated categories manually
+    var start: usize = 0;
+    while (start < agents_str.len) {
+        var end = start;
+        while (end < agents_str.len and agents_str[end] != ',') {
+            end += 1;
+        }
+        const cat_str = std.mem.trim(u8, agents_str[start..end], " ");
+
+        if (parallel_mod.parseCategory(cat_str)) |cat| {
+            try categories.append(cat);
+        } else {
+            std.debug.print("Warning: Unknown category '{s}' - skipping\n", .{cat_str});
+        }
+
+        if (end < agents_str.len and agents_str[end] == ',') {
+            start = end + 1;
+        } else {
+            break;
+        }
+    }
+
+    if (categories.items.len == 0) {
+        std.debug.print("Error: No valid categories provided\n", .{});
+        return;
+    }
+
+    // Submit tasks for each category
+    for (categories.items) |cat| {
+        const default_provider = parallel_mod.getDefaultProviderForCategory(cat);
+        const default_model = parallel_mod.getDefaultModelForCategory(cat);
+
+        const task_desc = switch (cat) {
+            .visual_engineering => "Review and improve UI components",
+            .ultrabrain => "Analyze complex architecture decisions",
+            .deep => "Research and implement feature end-to-end",
+            .quick => "Fix simple issues and typos",
+            .general => "Handle general purpose tasks",
+            .review => "Perform code review and QA",
+            .research => "Research patterns and documentation",
+        };
+
+        const task_id = try executor.submit(task_desc, default_provider, default_model, cat);
+        std.debug.print("Spawned agent: {s} ({s}/{s})\n", .{
+            @tagName(cat), default_provider, default_model,
+        });
+        allocator.free(task_id);
+    }
+
+    std.debug.print("\nTotal agents spawned: {d}\n", .{categories.items.len});
+    std.debug.print("Max concurrent: {d}\n", .{max_concurrent});
+    std.debug.print("\nUse 'crushcode parallel' to see status\n", .{});
 }
 
 pub fn handleWorktree(_: args_mod.Args) !void {
@@ -395,6 +474,86 @@ pub fn handleList(args: args_mod.Args) !void {
     }
 }
 
+/// Handle checkpoint list/save/restore commands
+pub fn handleCheckpoint(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    // Default checkpoint directory
+    const checkpoint_dir = ".crushcode/checkpoints";
+    var mgr = checkpoint_mod.CheckpointManager.init(allocator, checkpoint_dir);
+
+    if (args.remaining.len == 0) {
+        // List checkpoints
+        const checkpoints = try mgr.list();
+        defer {
+            for (checkpoints) |cp| allocator.free(cp);
+            allocator.free(checkpoints);
+        }
+
+        if (checkpoints.len == 0) {
+            std.debug.print("No checkpoints found.\n", .{});
+            std.debug.print("Run with --checkpoint during chat to save snapshots.\n", .{});
+            return;
+        }
+
+        std.debug.print("Available checkpoints:\n", .{});
+        for (checkpoints) |cp| {
+            // Try to load checkpoint for timestamp info
+            var cp_data = mgr.load(cp) catch continue;
+            defer cp_data.deinit();
+
+            std.debug.print("  {s}  (timestamp: {d}, {d} messages)\n", .{
+                cp,
+                cp_data.timestamp,
+                cp_data.messages.len,
+            });
+        }
+    } else {
+        const action = args.remaining[0];
+
+        if (std.mem.eql(u8, action, "save")) {
+            // Manual save (not typically used - auto-save happens)
+            std.debug.print("Checkpoints are saved automatically.\n", .{});
+            std.debug.print("Use --checkpoint flag during chat to enable.\n", .{});
+        } else if (std.mem.eql(u8, action, "restore") or std.mem.eql(u8, action, "load")) {
+            if (args.remaining.len < 2) {
+                std.debug.print("Error:checkpoint ID required\n", .{});
+                std.debug.print("Usage: crushcode checkpoint restore <id>\n", .{});
+                return;
+            }
+            const cp_id = args.remaining[1];
+            var cp = mgr.load(cp_id) catch |err| {
+                std.debug.print("Error loading checkpoint '{s}': {}\n", .{ cp_id, err });
+                return;
+            };
+            defer cp.deinit();
+
+            std.debug.print("Restored checkpoint '{s}'\n", .{cp_id});
+            std.debug.print("  Messages: {d}\n", .{cp.messages.len});
+            std.debug.print("  Tool calls: {d}\n", .{cp.tool_calls});
+            std.debug.print("  Tokens used: {d}\n", .{cp.tokens_used});
+        } else if (std.mem.eql(u8, action, "delete")) {
+            if (args.remaining.len < 2) {
+                std.debug.print("Error: checkpoint ID required\n", .{});
+                std.debug.print("Usage: crushcode checkpoint delete <id>\n", .{});
+                return;
+            }
+            const cp_id = args.remaining[1];
+            mgr.delete(cp_id) catch |err| {
+                std.debug.print("Error deleting checkpoint '{s}': {}\n", .{ cp_id, err });
+                return;
+            };
+            std.debug.print("Deleted checkpoint '{s}'\n", .{cp_id});
+        } else {
+            std.debug.print("Unknown checkpoint action: {s}\n", .{action});
+            std.debug.print("\nUsage:\n", .{});
+            std.debug.print("  crushcode checkpoint           List all checkpoints\n", .{});
+            std.debug.print("  crushcode checkpoint restore <id>  Restore a checkpoint\n", .{});
+            std.debug.print("  crushcode checkpoint delete <id>   Delete a checkpoint\n", .{});
+        }
+    }
+}
+
 pub fn printHelp() !void {
     std.debug.print(
         \\Crushcode - AI Coding Assistant
@@ -412,6 +571,7 @@ pub fn printHelp() !void {
         \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
         \\  skills-load [dir]  Load and list SKILL.md files (default: skills/)
         \\  parallel      Show parallel executor status
+        \\  agents       Spawn multiple AI agents in parallel
         \\  tools         List, enable, disable, check tools
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
@@ -425,6 +585,7 @@ pub fn printHelp() !void {
         \\  list           List providers or models
         \\  usage         Show token usage and cost tracking
         \\  connect        Add API credentials for providers
+        \\  checkpoint    List, restore, or delete checkpoints
         \\  help           Show this help message
         \\  version        Show version information
         \\
@@ -432,8 +593,18 @@ pub fn printHelp() !void {
         \\  /usage         Show session token usage
         \\  /clear         Clear conversation history
         \\  /hooks         Show registered lifecycle hooks
+        \\  /checkpoint    Save checkpoint manually
+        \\  /agents        Spawn agents for task
         \\  /exit          Exit chat
         \\
+        \\Agent Categories (--agents):
+        \\  visual-engineering  UI/UX, frontend, design
+        \\  ultrabrain         Hard logic, architecture
+        \\  deep              Autonomous research + execution
+        \\  quick             Single-file changes, typos
+        \\  review            Code review and QA
+        \\  research          Research and exploration
+        \\  general           Default category
         \\Options:
         \\  --provider <id>    Use specific AI provider
         \\  --model <id>       Use specific model
@@ -441,6 +612,10 @@ pub fn printHelp() !void {
         \\  --config <path>    Use custom config file
         \\  --json, -j         Output JSON Lines (machine-readable)
         \\  --color <mode>     Color output: auto, always, never
+        \\  --checkpoint <id>  Restore from checkpoint
+        \\  --restore <id>     Restore from checkpoint (alias)
+        \\  --agents <cats>    Spawn agents with categories (comma-separated)
+        \\  --max-agents <n>   Max concurrent agents (default: 5)
         \\  --interactive, -i  Start interactive chat
         \\  --tui, -t          Launch terminal UI
         \\
@@ -448,6 +623,8 @@ pub fn printHelp() !void {
         \\  crushcode chat
         \\  crushcode chat --provider openai --model gpt-4o
         \\  crushcode chat --profile work
+        \\  crushcode agents --agents visual,deep,quick
+        \\  crushcode agents --agents research,review --max-agents 3
         \\  crushcode read src/main.zig
         \\  crushcode shell "ls -la"
         \\  crushcode write test.txt "Hello World"

@@ -10,6 +10,10 @@ pub const Args = struct {
     tui: bool = false,
     json: bool = false,
     color: ?[]const u8 = null, // "auto", "always", "never"
+    checkpoint: ?[]const u8 = null, // checkpoint ID to restore
+    restore: ?[]const u8 = null, // checkpoint ID to restore (alias for --checkpoint)
+    agents: ?[]const u8 = null, // comma-separated agent categories to spawn
+    max_agents: u32 = 5, // max concurrent agents
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -81,6 +85,31 @@ pub const Args = struct {
                     }
                 } else if (std.mem.startsWith(u8, arg, "--color=")) {
                     result.color = arg[8..];
+                } else if (std.mem.startsWith(u8, arg, "--checkpoint=")) {
+                    result.checkpoint = arg[13..];
+                } else if (std.mem.eql(u8, arg, "--checkpoint")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.checkpoint = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--restore=")) {
+                    result.restore = arg[10..];
+                } else if (std.mem.eql(u8, arg, "--restore")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.restore = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--agents=")) {
+                    result.agents = arg[9..];
+                } else if (std.mem.eql(u8, arg, "--agents") or std.mem.eql(u8, arg, "-a")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.agents = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--max-agents=")) {
+                    const val = arg[13..];
+                    result.max_agents = std.fmt.parseInt(u32, val, 10) catch 5;
+                } else if (std.mem.eql(u8, arg, "--max-agents")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.max_agents = std.fmt.parseInt(u32, next_arg, 10) catch 5;
+                    }
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -104,6 +133,10 @@ pub const Args = struct {
             .tui = result.tui,
             .json = result.json,
             .color = if (result.color) |c| try allocator.dupe(u8, c) else null,
+            .checkpoint = if (result.checkpoint) |c| try allocator.dupe(u8, c) else null,
+            .restore = if (result.restore) |r| try allocator.dupe(u8, r) else null,
+            .agents = if (result.agents) |a| try allocator.dupe(u8, a) else null,
+            .max_agents = result.max_agents,
             .remaining = remaining,
             .has_command = has_command,
         };

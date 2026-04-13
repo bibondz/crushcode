@@ -483,6 +483,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Checkpoint module (Phase 7 - session persistence)
+    const checkpoint_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/checkpoint.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Register Phase 17-22 modules on main
     main_mod.addImport("fallback", fallback_mod);
     main_mod.addImport("parallel", parallel_mod);
@@ -490,6 +497,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("worktree", worktree_mod);
     main_mod.addImport("lifecycle_hooks", lifecycle_hooks_mod);
     main_mod.addImport("intent_gate", intent_gate_mod);
+    main_mod.addImport("checkpoint", checkpoint_mod);
 
     // Wire Phase 17-22 modules into command handlers
     chat_mod.addImport("intent_gate", intent_gate_mod);
@@ -498,6 +506,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("parallel", parallel_mod);
     handlers_mod.addImport("worktree", worktree_mod);
     handlers_mod.addImport("skill_import", skill_import_mod);
+    handlers_mod.addImport("checkpoint", checkpoint_mod);
 
     // Phase 23: Codebase Knowledge Graph (Graphify-inspired)
     const graph_types_mod = b.createModule(.{
@@ -667,6 +676,7 @@ pub fn build(b: *std.Build) !void {
         json_output_mod,
         permission_evaluate_mod,
         theme_mod,
+        checkpoint_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

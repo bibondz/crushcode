@@ -43,6 +43,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "skill") or
         std.mem.eql(u8, command, "skills-load") or
         std.mem.eql(u8, command, "parallel") or
+        std.mem.eql(u8, command, "agents") or
         std.mem.eql(u8, command, "tools") or
         std.mem.eql(u8, command, "tui") or
         std.mem.eql(u8, command, "install") or
@@ -57,6 +58,7 @@ fn isCommandRecognized(command: []const u8) bool {
         std.mem.eql(u8, command, "usage") or
         std.mem.eql(u8, command, "connect") or
         std.mem.eql(u8, command, "profile") or
+        std.mem.eql(u8, command, "checkpoint") or
         std.mem.eql(u8, command, "help") or
         std.mem.eql(u8, command, "--help") or
         std.mem.eql(u8, command, "-h") or
@@ -174,6 +176,8 @@ pub fn main() !void {
             break :blk commands.handleSkillsLoad(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
             break :blk commands.handleParallel(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "agents")) {
+            break :blk commands.handleAgents(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
             break :blk commands.handleTools(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
@@ -202,6 +206,8 @@ pub fn main() !void {
             break :blk commands.handleConnect(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "profile")) {
             break :blk commands.handleProfile(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "checkpoint")) {
+            break :blk commands.handleCheckpoint(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "help") or
             std.mem.eql(u8, parsed_args.command, "--help") or
             std.mem.eql(u8, parsed_args.command, "-h"))
