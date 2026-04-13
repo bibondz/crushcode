@@ -20,24 +20,31 @@ fn executeRequest(
     var client = std.http.Client{ .allocator = allocator };
     defer client.deinit();
 
+    // Inject Accept-Encoding: identity to prevent gzip.
+    // Zig 0.15.2's std.Io.Writer.Allocating doesn't implement rebase,
+    // which crashes on gzip responses.
+    var merged = array_list_compat.ArrayList(std.http.Header).init(allocator);
+    defer merged.deinit();
+    try merged.append(.{ .name = "Accept-Encoding", .value = "identity" });
+    if (headers) |h| {
+        try merged.appendSlice(h);
+    }
+
     var response_writer = std.Io.Writer.Allocating.init(allocator);
     defer response_writer.deinit();
-
-    const empty_headers = [_]std.http.Header{};
-    const resolved_headers = headers orelse empty_headers[0..];
 
     const result = switch (method) {
         .GET => try client.fetch(.{
             .location = .{ .uri = uri },
             .method = .GET,
-            .extra_headers = resolved_headers,
+            .extra_headers = merged.items,
             .response_writer = &response_writer.writer,
         }),
         else => try client.fetch(.{
             .location = .{ .uri = uri },
             .method = method,
             .payload = body orelse "",
-            .extra_headers = resolved_headers,
+            .extra_headers = merged.items,
             .response_writer = &response_writer.writer,
         }),
     };

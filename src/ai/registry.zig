@@ -348,15 +348,17 @@ pub const ProviderRegistry = struct {
                 const url = try std.fmt.allocPrint(self.allocator, "{s}/models", .{base_url});
                 defer self.allocator.free(url);
 
-                var headers = array_list_compat.ArrayList(std.http.Header).init(self.allocator);
-                defer headers.deinit();
+                var headers_buf: [2]std.http.Header = undefined;
+                var headers_len: usize = 0;
+                var auth_buf: ?[]const u8 = null;
                 if (api_key.len > 0) {
-                    const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
-                    defer self.allocator.free(auth);
-                    try headers.append(.{ .name = "Authorization", .value = auth });
+                    auth_buf = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
+                    headers_buf[headers_len] = .{ .name = "Authorization", .value = auth_buf.? };
+                    headers_len += 1;
                 }
+                defer if (auth_buf) |a| self.allocator.free(a);
 
-                const response = http_client.httpGet(self.allocator, url, headers.items) catch return error.FetchFailed;
+                const response = http_client.httpGet(self.allocator, url, headers_buf[0..headers_len]) catch return error.FetchFailed;
                 defer self.allocator.free(response.body);
                 if (response.status != .ok) return error.FetchFailed;
 
@@ -421,7 +423,7 @@ pub const ProviderRegistry = struct {
         var search_idx: usize = 0;
         while (search_idx < body.len) {
             if (std.mem.indexOf(u8, body[search_idx..], "\"id\":\"")) |idx| {
-                const start = search_idx + idx + 5;
+                const start = search_idx + idx + 6;
                 if (start < body.len) {
                     if (std.mem.indexOf(u8, body[start..], "\"")) |end_idx| {
                         const model_id = body[start..(start + end_idx)];

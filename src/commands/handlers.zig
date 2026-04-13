@@ -1063,6 +1063,69 @@ pub fn handleConnect(args: args_mod.Args) !void {
     try connect_mod.handleConnect(args.remaining);
 }
 
+pub fn handleFetchModels(args: args_mod.Args, config: *config_mod.Config) !void {
+    const allocator = std.heap.page_allocator;
+
+    if (args.remaining.len == 0) {
+        stdout_print("Usage: crushcode fetch-models <provider>\n\n", .{});
+        stdout_print("Fetch live model list from a provider's API.\n", .{});
+        stdout_print("Requires API key in config.toml or profile.\n\n", .{});
+        stdout_print("Examples:\n", .{});
+        stdout_print("  crushcode fetch-models zai\n", .{});
+        stdout_print("  crushcode fetch-models openrouter\n", .{});
+        stdout_print("  crushcode fetch-models groq\n", .{});
+        return;
+    }
+
+    const provider_name = args.remaining[0];
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerAllProviders();
+
+    const provider = registry.getProvider(provider_name) orelse {
+        stdout_print("Error: Provider '{s}' not found. Run 'crushcode list' to see available providers.\n", .{provider_name});
+        return;
+    };
+
+    // Resolve API key: profile → config
+    var api_key: []const u8 = "";
+    var profile_opt: ?profile_mod.Profile = profile_mod.loadCurrentProfile(allocator) catch null;
+    defer if (profile_opt) |*p| p.deinit();
+    if (profile_opt) |*p| {
+        api_key = p.getApiKey(provider_name) orelse "";
+    }
+    if (api_key.len == 0) {
+        api_key = config.getApiKey(provider_name) orelse "";
+    }
+
+    if (api_key.len == 0 and !provider.config.is_local) {
+        stdout_print("Error: No API key for '{s}'. Add to ~/.crushcode/config.toml or run 'crushcode connect {s}'\n", .{ provider_name, provider_name });
+        return;
+    }
+
+    stdout_print("Fetching models from {s}...\n\n", .{provider_name});
+
+    const models = registry.fetchModels(provider_name, api_key) catch |err| {
+        stdout_print("Error fetching models: {}\n", .{err});
+        return;
+    };
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    if (models.len == 0) {
+        stdout_print("No models found.\n", .{});
+        return;
+    }
+
+    stdout_print("Live Models for {s} ({d} total):\n\n", .{ provider_name, models.len });
+    for (models, 0..) |model, i| {
+        stdout_print("  {d}. {s}\n", .{ i + 1, model });
+    }
+}
+
 pub fn handleProfile(args: args_mod.Args) !void {
     try profile_mod.handleProfile(args.remaining);
 }
