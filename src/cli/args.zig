@@ -8,6 +8,7 @@ pub const Args = struct {
     config_file: ?[]const u8,
     interactive: bool = false,
     tui: bool = false,
+    json: bool = false,
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -71,6 +72,8 @@ pub const Args = struct {
                     result.interactive = true;
                 } else if (std.mem.eql(u8, arg, "--tui") or std.mem.eql(u8, arg, "-t")) {
                     result.tui = true;
+                } else if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "-j")) {
+                    result.json = true;
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -92,6 +95,7 @@ pub const Args = struct {
             .config_file = if (result.config_file) |c| try allocator.dupe(u8, c) else null,
             .interactive = result.interactive,
             .tui = result.tui,
+            .json = result.json,
             .remaining = remaining,
             .has_command = has_command,
         };

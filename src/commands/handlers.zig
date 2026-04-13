@@ -439,6 +439,9 @@ pub fn printHelp() !void {
         \\  --model <id>       Use specific model
         \\  --profile <name>   Use specific profile
         \\  --config <path>    Use custom config file
+        \\  --json, -j         Output JSON Lines (machine-readable)
+        \\  --interactive, -i  Start interactive chat
+        \\  --tui, -t          Launch terminal UI
         \\
         \\Examples:
         \\  crushcode chat

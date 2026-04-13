@@ -21,6 +21,9 @@ fn cleanupParsedArgs(allocator: std.mem.Allocator, parsed_args: args_mod.Args) v
     if (parsed_args.config_file) |config_file| {
         allocator.free(config_file);
     }
+    if (parsed_args.profile) |profile| {
+        allocator.free(profile);
+    }
 
     // Cleanup remaining arguments safely
     for (parsed_args.remaining) |arg| {
@@ -66,6 +69,22 @@ pub fn main() !void {
     // For CLI tools that run once and exit, use page_allocator directly.
     // The GPA tracking adds overhead and the memory is released on process exit anyway.
     const allocator = std.heap.page_allocator;
+
+    // Graceful shutdown: install SIGINT/SIGTERM handlers so we exit cleanly.
+    // Zig's std.os.sigaction wraps the POSIX call. On Windows these are no-ops.
+    const Posix = struct {
+        fn sigintHandler(sig: c_int) callconv(.c) void {
+            _ = sig;
+            // Exit with code 130 (128 + SIGINT=2) — standard convention.
+            std.posix.exit(130);
+        }
+    };
+    const empty_mask = std.os.linux.sigemptyset();
+    _ = std.posix.sigaction(std.posix.SIG.INT, &.{
+        .handler = .{ .handler = Posix.sigintHandler },
+        .mask = empty_mask,
+        .flags = 0,
+    }, null);
 
     // Early Exit: Handle argument iterator initialization failure
     var args_iter = std.process.argsWithAllocator(allocator) catch |err| switch (err) {
@@ -133,62 +152,72 @@ pub fn main() !void {
         return error.UnknownCommand;
     }
 
-    // Main command dispatch - all edge cases handled above, execution can proceed safely
-    if (std.mem.eql(u8, parsed_args.command, "chat")) {
-        try commands.handleChat(parsed_args, &config);
-    } else if (std.mem.eql(u8, parsed_args.command, "read")) {
-        try commands.handleRead(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "shell")) {
-        try commands.handleShell(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "write")) {
-        try commands.handleWrite(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "edit")) {
-        try commands.handleEdit(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "git")) {
-        try commands.handleGit(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "skill")) {
-        try commands.handleSkill(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
-        try commands.handleSkillsLoad(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
-        try commands.handleParallel(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
-        try commands.handleTools(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
-        try commands.handleTUI(parsed_args, &config);
-    } else if (std.mem.eql(u8, parsed_args.command, "install")) {
-        try commands.handleInstall(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
-        try commands.handleJobs(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "worktree")) {
-        try commands.handleWorktree(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "graph")) {
-        try commands.handleGraph(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "agent-loop")) {
-        try commands.handleAgentLoop(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "workflow")) {
-        try commands.handleWorkflow(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "compact")) {
-        try commands.handleCompact(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "scaffold")) {
-        try commands.handleScaffold(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "list")) {
-        try commands.handleList(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "usage")) {
-        try commands.handleUsage(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "connect")) {
-        try commands.handleConnect(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "profile")) {
-        try commands.handleProfile(parsed_args);
-    } else if (std.mem.eql(u8, parsed_args.command, "help") or
-        std.mem.eql(u8, parsed_args.command, "--help") or
-        std.mem.eql(u8, parsed_args.command, "-h"))
-    {
-        try commands.printHelp();
-    } else if (std.mem.eql(u8, parsed_args.command, "version") or
-        std.mem.eql(u8, parsed_args.command, "--version") or
-        std.mem.eql(u8, parsed_args.command, "-v"))
-    {
-        try commands.printVersion();
-    }
+    // Main command dispatch - all edge cases handled above, execution can proceed safely.
+    // Wrap in a catch for BrokenPipe — if stdout is piped to `head` or similar,
+    // writes will fail with BrokenPipe. That's expected, exit cleanly with code 0.
+    const main_result: anyerror!void = blk: {
+        if (std.mem.eql(u8, parsed_args.command, "chat")) {
+            break :blk commands.handleChat(parsed_args, &config);
+        } else if (std.mem.eql(u8, parsed_args.command, "read")) {
+            break :blk commands.handleRead(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "shell")) {
+            break :blk commands.handleShell(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "write")) {
+            break :blk commands.handleWrite(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "edit")) {
+            break :blk commands.handleEdit(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "git")) {
+            break :blk commands.handleGit(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "skill")) {
+            break :blk commands.handleSkill(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
+            break :blk commands.handleSkillsLoad(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
+            break :blk commands.handleParallel(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
+            break :blk commands.handleTools(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
+            break :blk commands.handleTUI(parsed_args, &config);
+        } else if (std.mem.eql(u8, parsed_args.command, "install")) {
+            break :blk commands.handleInstall(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
+            break :blk commands.handleJobs(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "worktree")) {
+            break :blk commands.handleWorktree(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "graph")) {
+            break :blk commands.handleGraph(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "agent-loop")) {
+            break :blk commands.handleAgentLoop(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "workflow")) {
+            break :blk commands.handleWorkflow(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "compact")) {
+            break :blk commands.handleCompact(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "scaffold")) {
+            break :blk commands.handleScaffold(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "list")) {
+            break :blk commands.handleList(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "usage")) {
+            break :blk commands.handleUsage(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "connect")) {
+            break :blk commands.handleConnect(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "profile")) {
+            break :blk commands.handleProfile(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "help") or
+            std.mem.eql(u8, parsed_args.command, "--help") or
+            std.mem.eql(u8, parsed_args.command, "-h"))
+        {
+            break :blk commands.printHelp();
+        } else if (std.mem.eql(u8, parsed_args.command, "version") or
+            std.mem.eql(u8, parsed_args.command, "--version") or
+            std.mem.eql(u8, parsed_args.command, "-v"))
+        {
+            break :blk commands.printVersion();
+        }
+        break :blk;
+    };
+
+    main_result catch |err| switch (err) {
+        error.BrokenPipe => return, // Consumer closed the pipe — exit cleanly
+        else => return err,
+    };
 }

@@ -316,6 +316,14 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("streaming", streaming_session_mod);
     chat_mod.addImport("core_api", core_api_mod);
 
+    // JSON Lines output module (ripgrep-inspired --json flag)
+    const json_output_mod = b.createModule(.{
+        .root_source_file = b.path("src/streaming/json_output.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    chat_mod.addImport("json_output", json_output_mod);
+
     // Usage tracking modules (Phase 15)
     const usage_tracker_mod = b.createModule(.{
         .root_source_file = b.path("src/usage/tracker.zig"),
@@ -397,6 +405,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("core_api", core_api_mod);
     handlers_mod.addImport("connect", connect_mod);
     handlers_mod.addImport("profile", profile_mod);
+    handlers_mod.addImport("json_output", json_output_mod);
 
     // Main module
     const main_mod = b.createModule(.{
@@ -419,6 +428,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("usage_report", usage_report_mod);
     main_mod.addImport("validated_edit", validated_edit_mod);
     main_mod.addImport("profile", profile_mod);
+    main_mod.addImport("json_output", json_output_mod);
 
     // Phase 17-22 modules
     const fallback_mod = b.createModule(.{
@@ -638,6 +648,7 @@ pub fn build(b: *std.Build) !void {
         auth_mod,
         profile_mod,
         connect_mod,
+        json_output_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

@@ -17,6 +17,7 @@ const agent_loop_mod = @import("agent_loop");
 const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
 const skills_loader_mod = @import("skills_loader");
+const json_output_mod = @import("json_output");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
@@ -147,6 +148,7 @@ const InteractiveBridgeContext = struct {
     /// Eliminates per-token/per-JSON-parse individual allocations.
     /// Tokens accumulate in the arena; whole arena freed on reset.
     request_arena: std.heap.ArenaAllocator,
+    json_out: json_output_mod.JsonOutput,
 };
 
 const BuiltinToolDefinition = struct {
@@ -155,6 +157,7 @@ const BuiltinToolDefinition = struct {
 };
 
 threadlocal var active_bridge_context: ?*InteractiveBridgeContext = null;
+threadlocal var active_json_output: json_output_mod.JsonOutput = .{ .enabled = false };
 
 fn buildToolFailure(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall, err: anyerror) !ToolExecution {
     return .{
@@ -185,6 +188,9 @@ fn adaptToolExecution(
         .arguments = arguments,
     };
 
+    // JSON: emit tool_call event
+    active_json_output.emitToolCall(tool_name, call_id, arguments);
+
     var success = true;
     const execution = implementation(allocator, tool_call) catch |err| blk: {
         success = false;
@@ -194,6 +200,9 @@ fn adaptToolExecution(
     defer allocator.free(execution.result);
 
     std.debug.print("\n{s}", .{execution.display});
+
+    // JSON: emit tool_result event
+    active_json_output.emitToolResult(call_id, execution.result, success);
 
     var result = try ToolResult.init(allocator, call_id, execution.result, success);
     result.duration_ms = elapsedMillis(start_ms);
@@ -366,6 +375,13 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
             usage.completion_tokens,
             ctx.total_input_tokens.* + ctx.total_output_tokens.*,
         });
+
+        // JSON: emit assistant response and usage
+        ctx.json_out.emitAssistant(content);
+        ctx.json_out.emitUsage(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+    } else {
+        // JSON: emit assistant response without usage
+        ctx.json_out.emitAssistant(content);
     }
     std.debug.print("\n", .{});
 
@@ -712,10 +728,11 @@ fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCa
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     const allocator = std.heap.page_allocator;
+    const json_out = json_output_mod.JsonOutput.init(args.json);
 
     // Check for interactive mode
     if (args.interactive) {
-        try handleInteractiveChat(args, config, allocator);
+        try handleInteractiveChat(args, config, allocator, json_out);
         return;
     }
 
@@ -838,8 +855,12 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     std.debug.print("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
+    // JSON: emit session start
+    json_out.emitSessionStart(provider_name, model_name);
+
     const response = ai_client.sendChat(message) catch |err| {
         std.debug.print("\nError sending request: {}\n", .{err});
+        json_out.emitError(@errorName(err));
         return err;
     };
 
@@ -868,11 +889,20 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         // Show extended usage info
         const ext = ai_client.extractExtendedUsage(&response);
         std.debug.print("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
+
+        // JSON: emit assistant response and usage
+        json_out.emitAssistant(content_slice);
+        json_out.emitUsage(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
+    } else {
+        // JSON: emit assistant response without usage
+        json_out.emitAssistant(content_slice);
     }
+    // JSON: emit session end
+    json_out.emitSessionEnd();
 }
 
 /// Interactive chat mode with streaming support and conversation history
-fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.mem.Allocator) !void {
+fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.mem.Allocator, json_out: json_output_mod.JsonOutput) !void {
     // Load profile - use --profile flag if provided, otherwise load current
     var profile_opt: ?Profile = null;
     if (args.profile) |profile_name| {
@@ -1095,6 +1125,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     std.debug.print("Commands: /usage | /clear | /hooks | /compact | /graph | /exit\n", .{});
     std.debug.print("--------------------------------------------\n\n", .{});
 
+    // JSON: emit session start
+    json_out.emitSessionStart(provider_name, model_name);
+
     const stdin = file_compat.File.stdin();
     const stdin_reader = stdin.reader();
 
@@ -1236,10 +1269,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             .total_output_tokens = &total_output_tokens,
             .request_count = &request_count,
             .request_arena = std.heap.ArenaAllocator.init(allocator),
+            .json_out = json_out,
         };
         defer bridge_ctx.request_arena.deinit();
 
         active_bridge_context = &bridge_ctx;
+        active_json_output = json_out;
         var loop_result = try agent_loop.run(sendInteractiveLoopMessages, user_message);
         active_bridge_context = null;
         defer loop_result.deinit();
