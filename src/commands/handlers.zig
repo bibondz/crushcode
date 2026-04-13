@@ -417,11 +417,13 @@ pub fn printHelp() !void {
         \\Options:
         \\  --provider <id>    Use specific AI provider
         \\  --model <id>       Use specific model
+        \\  --profile <name>   Use specific profile
         \\  --config <path>    Use custom config file
         \\
         \\Examples:
         \\  crushcode chat
         \\  crushcode chat --provider openai --model gpt-4o
+        \\  crushcode chat --profile work
         \\  crushcode read src/main.zig
         \\  crushcode shell "ls -la"
         \\  crushcode write test.txt "Hello World"

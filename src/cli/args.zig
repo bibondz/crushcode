@@ -4,6 +4,7 @@ pub const Args = struct {
     command: []const u8,
     provider: ?[]const u8,
     model: ?[]const u8,
+    profile: ?[]const u8,
     config_file: ?[]const u8,
     interactive: bool = false,
     tui: bool = false,
@@ -17,6 +18,7 @@ pub const Args = struct {
             .command = "chat",
             .provider = null,
             .model = null,
+            .profile = null,
             .config_file = null,
             .interactive = false,
             .remaining = undefined, // Will be set later
@@ -53,6 +55,12 @@ pub const Args = struct {
                     if (args_iter.next()) |next_arg| {
                         result.model = next_arg;
                     }
+                } else if (std.mem.startsWith(u8, arg, "--profile=")) {
+                    result.profile = arg[10..];
+                } else if (std.mem.eql(u8, arg, "--profile")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.profile = next_arg;
+                    }
                 } else if (std.mem.startsWith(u8, arg, "--config=")) {
                     result.config_file = arg[9..];
                 } else if (std.mem.eql(u8, arg, "--config")) {
@@ -80,6 +88,7 @@ pub const Args = struct {
             .command = try allocator.dupe(u8, result.command),
             .provider = if (result.provider) |p| try allocator.dupe(u8, p) else null,
             .model = if (result.model) |m| try allocator.dupe(u8, m) else null,
+            .profile = if (result.profile) |p| try allocator.dupe(u8, p) else null,
             .config_file = if (result.config_file) |c| try allocator.dupe(u8, c) else null,
             .interactive = result.interactive,
             .tui = result.tui,

@@ -750,8 +750,13 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     const message = args.remaining[0];
 
-    // Try to load current profile for provider/model defaults
-    var profile_opt: ?Profile = profile_mod.loadCurrentProfile(allocator) catch null;
+    // Load profile - use --profile flag if provided, otherwise load current
+    var profile_opt: ?Profile = null;
+    if (args.profile) |profile_name| {
+        profile_opt = profile_mod.loadProfileByName(allocator, profile_name) catch null;
+    } else {
+        profile_opt = profile_mod.loadCurrentProfile(allocator) catch null;
+    }
     defer if (profile_opt) |*p| p.deinit();
 
     const provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;

@@ -289,6 +289,20 @@ pub fn loadCurrentProfile(allocator: std.mem.Allocator) !Profile {
     return profile;
 }
 
+/// Load a specific profile by name (does not change current profile)
+pub fn loadProfileByName(allocator: std.mem.Allocator, name: []const u8) !Profile {
+    const name_copy = try allocator.dupe(u8, name);
+    var profile = Profile.init(allocator, name_copy);
+    profile.load() catch |err| {
+        profile.deinit();
+        if (err == error.ProfileNotFound) {
+            return error.ProfileNotFound;
+        }
+        return err;
+    };
+    return profile;
+}
+
 /// Handle profile command
 pub fn handleProfile(args: []const []const u8) !void {
     const allocator = std.heap.page_allocator;
