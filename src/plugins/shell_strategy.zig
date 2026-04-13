@@ -12,17 +12,17 @@ pub const ShellStrategyPlugin = struct {
         var banned_commands = std.StringHashMap(void).init(allocator);
 
         // Initialize with commonly banned interactive commands
-        banned_commands.put("vim") catch {};
-        banned_commands.put("nano") catch {};
-        banned_commands.put("vi") catch {};
-        banned_commands.put("emacs") catch {};
-        banned_commands.put("less") catch {};
-        banned_commands.put("more") catch {};
-        banned_commands.put("man") catch {};
-        banned_commands.put("top") catch {};
-        banned_commands.put("htop") catch {};
-        banned_commands.put("vim.tiny") catch {};
-        banned_commands.put("neovim") catch {};
+        banned_commands.put("vim", {}) catch {};
+        banned_commands.put("nano", {}) catch {};
+        banned_commands.put("vi", {}) catch {};
+        banned_commands.put("emacs", {}) catch {};
+        banned_commands.put("less", {}) catch {};
+        banned_commands.put("more", {}) catch {};
+        banned_commands.put("man", {}) catch {};
+        banned_commands.put("top", {}) catch {};
+        banned_commands.put("htop", {}) catch {};
+        banned_commands.put("vim.tiny", {}) catch {};
+        banned_commands.put("neovim", {}) catch {};
 
         return ShellStrategyPlugin{
             .allocator = allocator,
@@ -58,8 +58,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     pub fn processArguments(self: *ShellStrategyPlugin, args: []const []const u8) ![][]const u8 {
-        _ = self;
-
         var processed_args = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer processed_args.deinit();
 
@@ -68,12 +66,10 @@ pub const ShellStrategyPlugin = struct {
             try processed_args.append(processed);
         }
 
-        return processed_args.toOwnedSlice();
+        return try processed_args.toOwnedSlice();
     }
 
     fn processSingleArgument(self: *ShellStrategyPlugin, arg: []const u8) ![]const u8 {
-        _ = self;
-
         // Add non-interactive flags to common commands
         if (self.isPackageInstaller(arg)) {
             return try self.addNonInteractiveFlags(arg);
@@ -149,8 +145,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     fn addNonInteractiveFlags(self: *ShellStrategyPlugin, command: []const u8) ![]const u8 {
-        _ = self;
-
         if (std.mem.startsWith(u8, command, "npm")) {
             return try std.fmt.allocPrint(self.allocator, "{s} --yes", .{command});
         }
@@ -183,8 +177,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     fn addGitNonInteractiveFlags(self: *ShellStrategyPlugin, command: []const u8) ![]const u8 {
-        _ = self;
-
         if (std.mem.startsWith(u8, command, "git")) {
             return try std.fmt.allocPrint(self.allocator, "{s} --no-pager", .{command});
         }
@@ -209,8 +201,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     fn addConfigAcceptFlags(self: *ShellStrategyPlugin, command: []const u8) ![]const u8 {
-        _ = self;
-
         if (std.mem.startsWith(u8, command, "docker")) {
             return try std.fmt.allocPrint(self.allocator, "{s} --accept", .{command});
         }
@@ -227,8 +217,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     fn getSuggestion(self: *ShellStrategyPlugin, banned_command: []const u8) ![]const u8 {
-        _ = self;
-
         if (std.mem.eql(u8, banned_command, "vim")) {
             return "Use 'crushcode edit <file>' instead of vim";
         }
@@ -296,8 +284,6 @@ pub const ShellStrategyPlugin = struct {
     }
 
     pub fn getInstructions(self: *ShellStrategyPlugin) ![]const u8 {
-        _ = self;
-
         const instructions =
             \\# Non-Interactive Shell Strategy
             \\
@@ -332,7 +318,7 @@ pub const ShellStrategyPlugin = struct {
         ;
 
         const result = try self.allocator.alloc(u8, instructions.len);
-        std.mem.copy(u8, result, instructions);
+        @memcpy(result, instructions);
         return result;
     }
 };

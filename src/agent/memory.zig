@@ -151,13 +151,13 @@ pub const Memory = struct {
 
     /// Print memory summary
     pub fn printSummary(self: *Memory) void {
-        std.debug.print("Memory: {} messages, ~{} tokens\n", .{ self.count(), self.estimateTokens() });
+        std.log.info("Memory: {} messages, ~{} tokens", .{ self.count(), self.estimateTokens() });
         const recent = self.getRecent(5);
         if (recent.len > 0) {
-            std.debug.print("Recent:\n", .{});
+            std.log.info("Recent:", .{});
             for (recent) |msg| {
                 const preview_len = @min(msg.content.len, 80);
-                std.debug.print("  [{s}] {s}...\n", .{ msg.role, msg.content[0..preview_len] });
+                std.log.info("  [{s}] {s}...", .{ msg.role, msg.content[0..preview_len] });
             }
         }
     }

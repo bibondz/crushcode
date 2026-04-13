@@ -1,7 +1,12 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const default_commands = @import("default_commands");
 const env = @import("env");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 /// A plugin command definition loaded from config.
 pub const PluginCommand = struct {
@@ -152,10 +157,10 @@ pub fn executeCommand(allocator: std.mem.Allocator, command: PluginCommand) !voi
     const term = try child.wait();
 
     if (stdout.items.len > 0) {
-        std.debug.print("{s}", .{stdout.items});
+        out("{s}", .{stdout.items});
     }
     if (stderr.items.len > 0) {
-        std.debug.print("\x1b[31m{s}\x1b[0m", .{stderr.items});
+        out("\x1b[31m{s}\x1b[0m", .{stderr.items});
     }
 
     switch (term) {
@@ -193,8 +198,8 @@ pub fn printCommands(commands: []const PluginCommand) void {
         return;
     }
 
-    std.debug.print("\nPlugin Commands:\n", .{});
+    out("\nPlugin Commands:\n", .{});
     for (commands) |command| {
-        std.debug.print("  {s} — {s}\n", .{ command.name, command.description });
+        out("  {s} — {s}\n", .{ command.name, command.description });
     }
 }

@@ -126,7 +126,7 @@ pub const LifecycleHooks = struct {
             if (hook.phase != phase) continue;
             if (hook.handler) |handler| {
                 handler(ctx) catch |err| {
-                    std.debug.print("Hook '{s}' error: {}\n", .{ hook.name, err });
+                    std.log.warn("Hook '{s}' error: {}", .{ hook.name, err });
                 };
             }
         }

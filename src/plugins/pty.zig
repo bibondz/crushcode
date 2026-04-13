@@ -1,26 +1,29 @@
 const std = @import("std");
-const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
-const c = @cImport(@cInclude("sys/ioctl.h"));
 
 const Allocator = std.mem.Allocator;
+const posix = std.posix;
 
 pub const PTYPlugin = struct {
     allocator: Allocator,
-    sessions: std.json.ObjectMap,
+    sessions: std.StringHashMap(Session),
     max_sessions: usize,
     buffer_lines: usize,
 
     pub fn init(allocator: Allocator) PTYPlugin {
         return PTYPlugin{
             .allocator = allocator,
-            .sessions = std.json.ObjectMap.init(allocator),
+            .sessions = std.StringHashMap(Session).init(allocator),
             .max_sessions = 10,
             .buffer_lines = 50000,
         };
     }
 
     pub fn deinit(self: *PTYPlugin) void {
+        var iter = self.sessions.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.deinit(self.allocator);
+        }
         self.sessions.deinit();
     }
 
@@ -33,135 +36,141 @@ pub const PTYPlugin = struct {
             .kill => return self.killSession(request),
             .resize => return self.resizeTerminal(request),
             .open_dashboard => return self.openDashboard(request),
-            else => return PTYResponse{ .success = false, .err = "Unknown PTY method" },
         }
     }
 
     fn spawnTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        const session_id = try std.fmt.allocPrint(self.allocator, "pty_{}", .{std.time.timestamp()});
-        defer self.allocator.free(session_id);
-
-        const cmd_parts = request.args.command_parts orelse return PTYResponse{ .success = false, .err = "No command parts provided" };
-
-        var cmd_args = try self.allocator.alloc([]const u8, cmd_parts.len);
-        defer self.allocator.free(cmd_args);
-
-        for (cmd_parts, 0..) |part, i| {
-            cmd_args[i] = part;
+        if (self.sessions.count() >= self.max_sessions) {
+            return PTYResponse{ .success = false, .err = "Maximum PTY sessions reached" };
         }
 
-        const pty_result = try self.spawnPTY(session_id, cmd_args, request.args);
-        if (pty_result.success) {
-            var session_info = std.json.ObjectMap.init(self.allocator);
-            defer session_info.deinit();
+        const cmd_parts = request.args.command_parts orelse return PTYResponse{ .success = false, .err = "No command parts provided" };
+        if (cmd_parts.len == 0) {
+            return PTYResponse{ .success = false, .err = "No command parts provided" };
+        }
 
-            try session_info.put("session_id", .{ .string = session_id });
-            try session_info.put("pid", .{ .integer = @intCast(pty_result.pid.?) });
-            try session_info.put("command", .{ .string = request.args.command orelse "" });
-            try session_info.put("cwd", .{ .string = request.args.cwd orelse "." });
-            try session_info.put("created_at", .{ .integer = std.time.timestamp() });
-            try session_info.put("status", .{ .string = "active" });
+        const session_id = try std.fmt.allocPrint(self.allocator, "pty_{d}", .{std.time.timestamp()});
+        const pty_result = try self.spawnPTY(session_id, cmd_parts, request.args);
 
-            try self.sessions.put(session_id, session_info);
-
-            return PTYResponse{
-                .success = true,
-                .data = .{ .object = session_info },
-                .message = try std.fmt.allocPrint(self.allocator, "Terminal session created: {}", .{session_id}),
-            };
-        } else {
+        if (!pty_result.success) {
+            self.allocator.free(session_id);
             return PTYResponse{
                 .success = false,
                 .err = pty_result.error_msg orelse "Failed to spawn PTY",
             };
         }
+
+        const command = try self.allocator.dupe(u8, request.args.command orelse cmd_parts[0]);
+        errdefer self.allocator.free(command);
+
+        const cwd = try self.allocator.dupe(u8, request.args.cwd orelse ".");
+        errdefer self.allocator.free(cwd);
+
+        const session = Session{
+            .session_id = session_id,
+            .pid = pty_result.pid.?,
+            .master_fd = pty_result.master_fd.?,
+            .command = command,
+            .cwd = cwd,
+            .created_at = std.time.timestamp(),
+            .last_read = 0,
+            .status = .active,
+        };
+        errdefer session.deinit(self.allocator);
+
+        try self.sessions.put(session_id, session);
+
+        return PTYResponse{
+            .success = true,
+            .data = try session.toJson(self.allocator),
+            .message = try std.fmt.allocPrint(self.allocator, "Terminal session created: {s}", .{session_id}),
+        };
     }
 
     fn spawnPTY(self: *PTYPlugin, session_id: []const u8, cmd_args: []const []const u8, args: PTYArgs) !PTYResult {
-        _ = self;
         _ = session_id;
 
         if (builtin.target.os.tag == .windows) {
             return self.spawnPTYWindows(cmd_args, args);
-        } else {
-            return self.spawnPTYUnix(cmd_args, args);
         }
+        return self.spawnPTYUnix(cmd_args, args);
     }
 
     fn spawnPTYUnix(self: *PTYPlugin, cmd_args: []const []const u8, args: PTYArgs) !PTYResult {
-        _ = self;
+        const master_fd = posix.open("/dev/ptmx", .{
+            .ACCMODE = .RDWR,
+            .NOCTTY = true,
+            .CLOEXEC = true,
+        }, 0) catch {
+            return PTYResult{ .success = false, .error_msg = "Failed to open /dev/ptmx" };
+        };
+        errdefer posix.close(master_fd);
 
-        var master_fd: c_int = undefined;
-        var slave_fd: c_int = undefined;
+        var unlock: i32 = 0;
+        if (posix.errno(posix.system.ioctl(master_fd, posix.T.IOCSPTLCK, @intFromPtr(&unlock))) != .SUCCESS) {
+            return PTYResult{ .success = false, .error_msg = "Failed to unlock PTY" };
+        }
 
-        const winsize = c.winsize{
-            .ws_row = args.rows orelse 24,
-            .ws_col = args.cols orelse 80,
-            .ws_xpixel = 0,
-            .ws_ypixel = 0,
+        var pty_number: u32 = 0;
+        if (posix.errno(posix.system.ioctl(master_fd, posix.T.IOCGPTN, @intFromPtr(&pty_number))) != .SUCCESS) {
+            return PTYResult{ .success = false, .error_msg = "Failed to resolve PTY slave path" };
+        }
+
+        const slave_path = try std.fmt.allocPrint(self.allocator, "/dev/pts/{d}", .{pty_number});
+        defer self.allocator.free(slave_path);
+
+        const slave_fd = posix.open(slave_path, .{
+            .ACCMODE = .RDWR,
+            .NOCTTY = true,
+        }, 0) catch {
+            return PTYResult{ .success = false, .error_msg = "Failed to open PTY slave" };
+        };
+        errdefer posix.close(slave_fd);
+
+        var winsize = posix.winsize{
+            .row = @intCast(args.rows orelse 24),
+            .col = @intCast(args.cols orelse 80),
+            .xpixel = 0,
+            .ypixel = 0,
+        };
+        if (posix.errno(posix.system.ioctl(slave_fd, posix.T.IOCSWINSZ, @intFromPtr(&winsize))) != .SUCCESS) {
+            return PTYResult{ .success = false, .error_msg = "Failed to configure PTY size" };
+        }
+
+        const argv = try buildCStringVector(self.allocator, cmd_args);
+        defer argv.deinit(self.allocator);
+
+        const env_items = args.env orelse &.{};
+        const envp = try buildCStringVector(self.allocator, env_items);
+        defer envp.deinit(self.allocator);
+
+        const pid = posix.fork() catch {
+            return PTYResult{ .success = false, .error_msg = "Failed to fork process" };
         };
 
-        if (c.openpty(&master_fd, &slave_fd, null, &winsize) != 0) {
-            return PTYResult{
-                .success = false,
-                .error_msg = "Failed to open PTY",
-            };
-        }
-
-        const pid = c.fork();
-        if (pid < 0) {
-            return PTYResult{
-                .success = false,
-                .error_msg = "Failed to fork process",
-            };
-        }
-
         if (pid == 0) {
-            c.close(master_fd);
-
-            c.setsid();
-            c.ioctl(slave_fd, c.TIOCSCTTY, null);
-
-            c.dup2(slave_fd, c.STDIN_FILENO);
-            c.dup2(slave_fd, c.STDOUT_FILENO);
-            c.dup2(slave_fd, c.STDERR_FILENO);
-            c.close(slave_fd);
+            posix.close(master_fd);
+            _ = posix.setsid() catch {};
+            _ = posix.system.ioctl(slave_fd, std.os.linux.T.IOCSCTTY, 0);
+            posix.dup2(slave_fd, posix.STDIN_FILENO) catch {};
+            posix.dup2(slave_fd, posix.STDOUT_FILENO) catch {};
+            posix.dup2(slave_fd, posix.STDERR_FILENO) catch {};
+            if (slave_fd > posix.STDERR_FILENO) posix.close(slave_fd);
 
             if (args.cwd) |cwd| {
-                c.chdir(cwd);
+                posix.chdir(cwd) catch {};
             }
 
-            if (args.env) |env| {
-                for (env) |env_var| {
-                    const equals = std.mem.indexOf(u8, env_var, '=');
-                    if (equals) |idx| {
-                        var key = env_var[0..idx];
-                        var value = env_var[idx + 1 ..];
-                        c.setenv(&key, &value);
-                    }
-                }
-            }
-
-            const argv = try self.allocator.alloc(?[*:0]const u8, cmd_args.len + 1);
-            defer self.allocator.free(argv);
-
-            for (cmd_args, 0..) |arg, i| {
-                argv[i] = arg.ptr;
-            }
-            argv[cmd_args.len] = null;
-
-            c.execvp(argv[0], argv.ptr);
-            c.exit(1);
+            posix.execvpeZ(argv.ptr[0].?, argv.ptr, envp.ptr) catch {};
+            std.process.exit(1);
         }
 
-        c.close(slave_fd);
-
-        var flags = c.fcntl(master_fd, c.F_GETFL, 0);
-        c.fcntl(master_fd, c.F_SETFL, flags | c.O_NONBLOCK);
+        posix.close(slave_fd);
+        try setNonBlocking(master_fd);
 
         return PTYResult{
             .success = true,
-            .pid = pid,
+            .pid = @intCast(pid),
             .master_fd = master_fd,
         };
     }
@@ -174,145 +183,116 @@ pub const PTYPlugin = struct {
     }
 
     fn writeToTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .err = "Session not found" };
-        };
+        const session_id = request.args.session_id orelse return PTYResponse{ .success = false, .err = "Session ID is required" };
+        const data = request.args.data orelse return PTYResponse{ .success = false, .err = "Terminal input data is required" };
+        const session = self.sessions.getPtr(session_id) orelse return PTYResponse{ .success = false, .err = "Session not found" };
 
-        const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
-
-        const pid = @intCast(pid_val.integer);
-        _ = self;
-        _ = request.args.data.?;
-        _ = pid;
-        return PTYResponse{ .success = false, .err = "Windows PTY write not implemented" };
-    }
-
-    fn readFromTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .err = "Session not found" };
-        };
-
-        const session_obj = session_value.object;
-        const last_read_val = session_obj.get("last_read") orelse .{ .integer = 0 };
-        const last_read = @intCast(last_read_val.integer);
-
-        var buffer = array_list_compat.ArrayList(u8).init(self.allocator);
-        defer buffer.deinit();
-
-        try buffer.appendSlice("Terminal output from session ");
-        try buffer.appendSlice(request.args.session_id.?);
-        try buffer.appendSlice("\n$ ");
-        if (request.args.cwd) |cwd| {
-            try buffer.appendSlice(cwd);
+        if (builtin.target.os.tag == .windows) {
+            return PTYResponse{ .success = false, .err = "Windows PTY write not implemented" };
         }
-        try buffer.appendSlice("> ");
 
-        var updated_session = session_obj.clone();
-        defer updated_session.deinit();
-        try updated_session.put("last_read", .{ .integer = std.time.timestamp() });
+        const bytes_written = posix.write(session.master_fd, data) catch {
+            return PTYResponse{ .success = false, .err = "Failed to write to PTY" };
+        };
 
         return PTYResponse{
             .success = true,
-            .data = .{ .string = buffer.items },
+            .message = try std.fmt.allocPrint(self.allocator, "Wrote {d} bytes to session {s}", .{ bytes_written, session_id }),
+        };
+    }
+
+    fn readFromTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
+        const session_id = request.args.session_id orelse return PTYResponse{ .success = false, .err = "Session ID is required" };
+        const session = self.sessions.getPtr(session_id) orelse return PTYResponse{ .success = false, .err = "Session not found" };
+
+        if (builtin.target.os.tag == .windows) {
+            return PTYResponse{ .success = false, .err = "Windows PTY read not implemented" };
+        }
+
+        var buffer: [4096]u8 = undefined;
+        const bytes_read = posix.read(session.master_fd, &buffer) catch |err| switch (err) {
+            error.WouldBlock => 0,
+            else => return PTYResponse{ .success = false, .err = "Failed to read from PTY" },
+        };
+        session.last_read = std.time.timestamp();
+
+        const output = try self.allocator.dupe(u8, buffer[0..bytes_read]);
+        return PTYResponse{
+            .success = true,
+            .data = .{ .string = output },
         };
     }
 
     fn listSessions(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
         _ = request;
 
-        var sessions_list = std.json.ObjectMap.init(self.allocator);
-        defer sessions_list.deinit();
-
+        var sessions_map = std.json.ObjectMap.init(self.allocator);
         var iter = self.sessions.iterator();
         while (iter.next()) |entry| {
-            try sessions_list.put(entry.key_ptr.*, entry.value_ptr.*);
+            try sessions_map.put(entry.key_ptr.*, try entry.value_ptr.toJson(self.allocator));
         }
 
         return PTYResponse{
             .success = true,
-            .data = .{ .object = sessions_list },
+            .data = .{ .object = sessions_map },
         };
     }
 
     fn killSession(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .err = "Session not found" };
-        };
-
-        const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
-
-        const pid = @intCast(pid_val.integer);
+        const session_id = request.args.session_id orelse return PTYResponse{ .success = false, .err = "Session ID is required" };
+        const removed = self.sessions.fetchRemove(session_id) orelse return PTYResponse{ .success = false, .err = "Session not found" };
+        defer removed.value.deinit(self.allocator);
 
         if (builtin.target.os.tag == .windows) {
-            _ = pid;
             return PTYResponse{ .success = false, .err = "Windows PTY kill not implemented" };
-        } else {
-            _ = c.kill(pid, 9);
         }
 
-        _ = self.sessions.remove(request.args.session_id.?);
+        posix.kill(@intCast(removed.value.pid), posix.SIG.KILL) catch {};
+        posix.close(removed.value.master_fd);
 
         return PTYResponse{
             .success = true,
-            .message = try std.fmt.allocPrint(self.allocator, "Session {} terminated", .{request.args.session_id.?}),
+            .message = try std.fmt.allocPrint(self.allocator, "Session {s} terminated", .{session_id}),
         };
     }
 
     fn resizeTerminal(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        const session_value = self.sessions.get(request.args.session_id.?) orelse {
-            return PTYResponse{ .success = false, .err = "Session not found" };
-        };
-
-        const session_obj = session_value.object;
-        const pid_val = session_obj.get("pid") orelse return PTYResponse{ .success = false, .err = "Session PID not found" };
-
-        const pid = @intCast(pid_val.integer);
+        const session_id = request.args.session_id orelse return PTYResponse{ .success = false, .err = "Session ID is required" };
+        const session = self.sessions.getPtr(session_id) orelse return PTYResponse{ .success = false, .err = "Session not found" };
         const rows = request.args.rows orelse 24;
         const cols = request.args.cols orelse 80;
 
         if (builtin.target.os.tag == .windows) {
-            _ = self;
-            _ = pid;
-            _ = rows;
-            _ = cols;
             return PTYResponse{ .success = false, .err = "Windows PTY resize not implemented" };
-        } else {
-            const winsize = c.winsize{
-                .ws_row = rows,
-                .ws_col = cols,
-                .ws_xpixel = 0,
-                .ws_ypixel = 0,
-            };
+        }
 
-            if (c.ioctl(pid, c.TIOCSWINSZ, &winsize) != 0) {
-                return PTYResponse{
-                    .success = false,
-                    .err = "Failed to resize terminal",
-                };
-            }
+        var winsize = posix.winsize{
+            .row = @intCast(rows),
+            .col = @intCast(cols),
+            .xpixel = 0,
+            .ypixel = 0,
+        };
+
+        if (posix.errno(posix.system.ioctl(session.master_fd, posix.T.IOCSWINSZ, @intFromPtr(&winsize))) != .SUCCESS) {
+            return PTYResponse{ .success = false, .err = "Failed to resize terminal" };
         }
 
         return PTYResponse{
             .success = true,
-            .message = try std.fmt.allocPrint(self.allocator, "Terminal resized to {}x{}", .{ cols, rows }),
+            .message = try std.fmt.allocPrint(self.allocator, "Terminal resized to {d}x{d}", .{ cols, rows }),
         };
     }
 
     fn openDashboard(self: *PTYPlugin, request: PTYRequest) !PTYResponse {
-        _ = self;
         _ = request;
 
         const port = 8080 + @rem(@as(u32, @intCast(std.time.timestamp())), 1000);
-
-        const dashboard_url = try std.fmt.allocPrint(self.allocator, "http://localhost:{}/pty", .{port});
-        defer self.allocator.free(dashboard_url);
+        const dashboard_url = try std.fmt.allocPrint(self.allocator, "http://localhost:{d}/pty", .{port});
 
         return PTYResponse{
             .success = true,
             .data = .{ .string = dashboard_url },
-            .message = try std.fmt.allocPrint(self.allocator, "PTY Dashboard opened at {}", .{dashboard_url}),
+            .message = try std.fmt.allocPrint(self.allocator, "PTY dashboard available at {s}", .{dashboard_url}),
         };
     }
 };
@@ -354,6 +334,80 @@ pub const PTYArgs = struct {
 pub const PTYResult = struct {
     success: bool,
     pid: ?u32 = null,
-    master_fd: ?c_int = null,
+    master_fd: ?posix.fd_t = null,
     error_msg: ?[]const u8 = null,
 };
+
+const Session = struct {
+    session_id: []const u8,
+    pid: u32,
+    master_fd: posix.fd_t,
+    command: []const u8,
+    cwd: []const u8,
+    created_at: i64,
+    last_read: i64,
+    status: Status,
+
+    fn deinit(self: Session, allocator: Allocator) void {
+        allocator.free(self.session_id);
+        allocator.free(self.command);
+        allocator.free(self.cwd);
+    }
+
+    fn toJson(self: Session, allocator: Allocator) !std.json.Value {
+        var obj = std.json.ObjectMap.init(allocator);
+        try obj.put("session_id", .{ .string = self.session_id });
+        try obj.put("pid", .{ .integer = @as(i64, @intCast(self.pid)) });
+        try obj.put("master_fd", .{ .integer = @as(i64, @intCast(self.master_fd)) });
+        try obj.put("command", .{ .string = self.command });
+        try obj.put("cwd", .{ .string = self.cwd });
+        try obj.put("created_at", .{ .integer = self.created_at });
+        try obj.put("last_read", .{ .integer = self.last_read });
+        try obj.put("status", .{ .string = @tagName(self.status) });
+        return .{ .object = obj };
+    }
+};
+
+const Status = enum {
+    active,
+};
+
+const CStringVector = struct {
+    owned: []const [:0]u8,
+    ptr: [:null]?[*:0]const u8,
+
+    fn deinit(self: CStringVector, allocator: Allocator) void {
+        for (self.owned) |item| {
+            allocator.free(item);
+        }
+        allocator.free(self.owned);
+        allocator.free(self.ptr);
+    }
+};
+
+fn buildCStringVector(allocator: Allocator, items: []const []const u8) !CStringVector {
+    const owned = try allocator.alloc([:0]u8, items.len);
+    errdefer allocator.free(owned);
+
+    var filled: usize = 0;
+    errdefer {
+        for (owned[0..filled]) |item| allocator.free(item);
+    }
+
+    const ptr = try allocator.allocSentinel(?[*:0]const u8, items.len, null);
+    errdefer allocator.free(ptr);
+
+    for (items, 0..) |item, index| {
+        owned[index] = try allocator.dupeZ(u8, item);
+        filled += 1;
+        ptr[index] = owned[index].ptr;
+    }
+
+    return CStringVector{ .owned = owned, .ptr = ptr };
+}
+
+fn setNonBlocking(fd: posix.fd_t) !void {
+    var flags = try posix.fcntl(fd, posix.F.GETFL, 0);
+    flags |= 1 << @bitOffsetOf(posix.O, "NONBLOCK");
+    _ = try posix.fcntl(fd, posix.F.SETFL, flags);
+}

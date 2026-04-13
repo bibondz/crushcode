@@ -29,8 +29,13 @@ const lsp_mod = @import("lsp");
 const mcp_bridge_mod = @import("mcp_bridge");
 const mcp_client_mod = @import("mcp_client");
 const mcp_discovery_mod = @import("mcp_discovery");
+const plugin_manager_mod = @import("plugin_manager");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+
+inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 const Config = config_mod.Config;
 
@@ -48,7 +53,7 @@ pub fn tryHandlePluginCommand(command: []const u8) !bool {
     // Check default commands first
     if (plugin_command.findCommand(plugin_cmds, command)) |cmd| {
         plugin_command.executeCommand(allocator, cmd) catch |err| {
-            std.debug.print("Error executing plugin command '{s}': {}\n", .{ command, err });
+            stdout_print("Error executing plugin command '{s}': {}\n", .{ command, err });
         };
         return true;
     }
@@ -56,7 +61,7 @@ pub fn tryHandlePluginCommand(command: []const u8) !bool {
     // Then check user commands (can override defaults)
     if (plugin_command.findCommand(user_cmds, command)) |cmd| {
         plugin_command.executeCommand(allocator, cmd) catch |err| {
-            std.debug.print("Error executing plugin command '{s}': {}\n", .{ command, err });
+            stdout_print("Error executing plugin command '{s}': {}\n", .{ command, err });
         };
         return true;
     }
@@ -118,7 +123,7 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
     try registry.registerAllProviders();
 
     const provider = registry.getProvider(provider_name) orelse {
-        std.debug.print("Error: Provider '{s}' not found\n", .{provider_name});
+        stdout_print("Error: Provider '{s}' not found\n", .{provider_name});
         return error.ProviderNotFound;
     };
 
@@ -132,7 +137,7 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
     }
 
     if (api_key.len == 0) {
-        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
+        stdout_print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
         return error.MissingApiKey;
     }
 
@@ -161,6 +166,76 @@ pub fn handleJobs(args: args_mod.Args) !void {
     try jobs_mod.handleJobs(args.remaining);
 }
 
+pub fn handlePlugin(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    var manager = plugin_manager_mod.PluginManager.init(allocator);
+    defer manager.deinit();
+
+    try manager.initializeBuiltIns();
+
+    const stdout = file_compat.File.stdout().writer();
+
+    if (args.remaining.len == 0) {
+        try stdout.print("Usage: crushcode plugin <list|enable|disable|status> [name]\n", .{});
+        return;
+    }
+
+    const subcmd = args.remaining[0];
+
+    if (std.mem.eql(u8, subcmd, "list")) {
+        const plugins = try manager.listPlugins();
+        defer allocator.free(plugins);
+
+        if (plugins.len == 0) {
+            try stdout.writeAll("No plugins registered\n");
+            return;
+        }
+
+        for (plugins) |plugin| {
+            try stdout.print("{s} - {s} ({s})\n", .{ plugin.name, plugin.description, @tagName(plugin.type) });
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "enable") or std.mem.eql(u8, subcmd, "disable")) {
+        if (args.remaining.len < 2) {
+            try stdout.print("Usage: crushcode plugin {s} <name>\n", .{subcmd});
+            return;
+        }
+
+        const enabled = std.mem.eql(u8, subcmd, "enable");
+        const plugin_name = args.remaining[1];
+        try manager.setPluginEnabled(plugin_name, enabled);
+        try stdout.print("{s} plugin: {s}\n", .{ if (enabled) "Enabled" else "Disabled", plugin_name });
+        return;
+    }
+
+    if (std.mem.eql(u8, subcmd, "status")) {
+        if (args.remaining.len > 1) {
+            const plugin_name = args.remaining[1];
+            const status = try manager.getPluginStatus(plugin_name);
+            try stdout.print("{s}: {s} ({s}) - {s}\n", .{
+                status.name,
+                if (status.enabled) "enabled" else "disabled",
+                @tagName(status.type),
+                status.description,
+            });
+            return;
+        }
+
+        const plugins = try manager.listPlugins();
+        defer allocator.free(plugins);
+        for (plugins) |plugin| {
+            const status = try manager.getPluginStatus(plugin.name);
+            try stdout.print("{s}: {s}\n", .{ status.name, if (status.enabled) "enabled" else "disabled" });
+        }
+        return;
+    }
+
+    try stdout.print("Unknown plugin subcommand: {s}\n", .{subcmd});
+}
+
 fn isRemoteSkillSource(source: []const u8) bool {
     return std.mem.startsWith(u8, source, "clawhub:") or
         std.mem.startsWith(u8, source, "skills.sh:") or
@@ -182,10 +257,10 @@ pub fn handleFallback(_: args_mod.Args) !void {
     defer registry.deinit();
     try registry.registerAllProviders();
 
-    std.debug.print("\nConnectivity check:\n", .{});
+    stdout_print("\nConnectivity check:\n", .{});
     for (chain.getEntries(), 1..) |entry, index| {
         const status = if (registry.getProvider(entry.provider) != null) "available" else "missing";
-        std.debug.print("  {d}. {s}/{s}: {s}\n", .{ index, entry.provider, entry.model, status });
+        stdout_print("  {d}. {s}/{s}: {s}\n", .{ index, entry.provider, entry.model, status });
     }
 }
 
@@ -212,8 +287,8 @@ pub fn handleParallel(_: args_mod.Args) !void {
     _ = executor.cancel(task_two);
 
     executor.printStatus();
-    std.debug.print("\nCan accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
-    std.debug.print("Recorded results: {d}\n", .{executor.getResults().len});
+    stdout_print("\nCan accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
+    stdout_print("Recorded results: {d}\n", .{executor.getResults().len});
 }
 
 /// Handle multi-agent spawning with category delegation
@@ -222,9 +297,9 @@ pub fn handleAgents(args: args_mod.Args) !void {
 
     // Parse agent categories from --agents flag
     const agents_str = args.agents orelse {
-        std.debug.print("Usage: crushcode agents --agents <categories>\n", .{});
-        std.debug.print("Categories: visual-engineering, ultrabrain, deep, quick, review, research, general\n", .{});
-        std.debug.print("Example: crushcode agents --agents visual,deep,quick\n", .{});
+        stdout_print("Usage: crushcode agents --agents <categories>\n", .{});
+        stdout_print("Categories: visual-engineering, ultrabrain, deep, quick, review, research, general\n", .{});
+        stdout_print("Example: crushcode agents --agents visual,deep,quick\n", .{});
         return;
     };
 
@@ -250,7 +325,7 @@ pub fn handleAgents(args: args_mod.Args) !void {
         if (parallel_mod.parseCategory(cat_str)) |cat| {
             try categories.append(cat);
         } else {
-            std.debug.print("Warning: Unknown category '{s}' - skipping\n", .{cat_str});
+            stdout_print("Warning: Unknown category '{s}' - skipping\n", .{cat_str});
         }
 
         if (end < agents_str.len and agents_str[end] == ',') {
@@ -261,7 +336,7 @@ pub fn handleAgents(args: args_mod.Args) !void {
     }
 
     if (categories.items.len == 0) {
-        std.debug.print("Error: No valid categories provided\n", .{});
+        stdout_print("Error: No valid categories provided\n", .{});
         return;
     }
 
@@ -281,15 +356,15 @@ pub fn handleAgents(args: args_mod.Args) !void {
         };
 
         const task_id = try executor.submit(task_desc, default_provider, default_model, cat);
-        std.debug.print("Spawned agent: {s} ({s}/{s})\n", .{
+        stdout_print("Spawned agent: {s} ({s}/{s})\n", .{
             @tagName(cat), default_provider, default_model,
         });
         allocator.free(task_id);
     }
 
-    std.debug.print("\nTotal agents spawned: {d}\n", .{categories.items.len});
-    std.debug.print("Max concurrent: {d}\n", .{max_concurrent});
-    std.debug.print("\nUse 'crushcode parallel' to see status\n", .{});
+    stdout_print("\nTotal agents spawned: {d}\n", .{categories.items.len});
+    stdout_print("Max concurrent: {d}\n", .{max_concurrent});
+    stdout_print("\nUse 'crushcode parallel' to see status\n", .{});
 }
 
 pub fn handleWorktree(_: args_mod.Args) !void {
@@ -298,7 +373,7 @@ pub fn handleWorktree(_: args_mod.Args) !void {
     var manager = worktree_mod.WorktreeManager.init(allocator, ".crushcode-worktrees");
     defer manager.deinit();
 
-    std.debug.print("Worktree base directory: {s}\n", .{manager.base_dir});
+    stdout_print("Worktree base directory: {s}\n", .{manager.base_dir});
     manager.printActive();
 }
 
@@ -331,54 +406,54 @@ pub fn handleSkillsLoad(args: args_mod.Args) !void {
     defer loader.deinit();
 
     loader.loadFromDirectory(skills_dir) catch |err| {
-        std.debug.print("Error loading skills from '{s}': {}\n", .{ skills_dir, err });
+        stdout_print("Error loading skills from '{s}': {}\n", .{ skills_dir, err });
         return;
     };
 
     const skills = loader.getSkills();
 
     if (skills.len == 0) {
-        std.debug.print("No skills found in '{s}'\n", .{skills_dir});
-        std.debug.print("Create SKILL.md files in subdirectories.\n", .{});
+        stdout_print("No skills found in '{s}'\n", .{skills_dir});
+        stdout_print("Create SKILL.md files in subdirectories.\n", .{});
         return;
     }
 
-    std.debug.print("Loaded {} skills from '{s}':\n\n", .{ skills.len, skills_dir });
+    stdout_print("Loaded {} skills from '{s}':\n\n", .{ skills.len, skills_dir });
 
     for (skills) |skill| {
-        std.debug.print("  {s}", .{skill.name});
+        stdout_print("  {s}", .{skill.name});
         if (skill.description.len > 0) {
-            std.debug.print(" - {s}", .{skill.description});
+            stdout_print(" - {s}", .{skill.description});
         }
-        std.debug.print("\n", .{});
+        stdout_print("\n", .{});
 
         if (skill.triggers.len > 0) {
-            std.debug.print("    Triggers: ", .{});
+            stdout_print("    Triggers: ", .{});
             for (skill.triggers, 0..) |trigger, i| {
-                if (i > 0) std.debug.print(", ", .{});
-                std.debug.print("{s}", .{trigger});
+                if (i > 0) stdout_print(", ", .{});
+                stdout_print("{s}", .{trigger});
             }
-            std.debug.print("\n", .{});
+            stdout_print("\n", .{});
         }
 
         if (skill.tools.len > 0) {
-            std.debug.print("    Tools: ", .{});
+            stdout_print("    Tools: ", .{});
             for (skill.tools, 0..) |tool, i| {
-                if (i > 0) std.debug.print(", ", .{});
-                std.debug.print("{s}", .{tool});
+                if (i > 0) stdout_print(", ", .{});
+                stdout_print("{s}", .{tool});
             }
-            std.debug.print("\n", .{});
+            stdout_print("\n", .{});
         }
     }
 
     // Show XML preview
-    std.debug.print("\n--- AI Prompt XML Preview ---\n", .{});
+    stdout_print("\n--- AI Prompt XML Preview ---\n", .{});
     const xml = loader.toPromptXml(allocator) catch |err| {
-        std.debug.print("Error generating XML: {}\n", .{err});
+        stdout_print("Error generating XML: {}\n", .{err});
         return;
     };
     defer allocator.free(xml);
-    std.debug.print("{s}\n", .{xml});
+    stdout_print("{s}\n", .{xml});
 }
 
 pub fn handleTools(args: args_mod.Args) !void {
@@ -395,34 +470,34 @@ pub fn handleTools(args: args_mod.Args) !void {
 
         if (std.mem.eql(u8, subcmd, "enable") and args.remaining.len > 1) {
             registry.enable(args.remaining[1]);
-            std.debug.print("Enabled tool: {s}\n", .{args.remaining[1]});
+            stdout_print("Enabled tool: {s}\n", .{args.remaining[1]});
             return;
         } else if (std.mem.eql(u8, subcmd, "disable") and args.remaining.len > 1) {
             registry.disable(args.remaining[1]);
-            std.debug.print("Disabled tool: {s}\n", .{args.remaining[1]});
+            stdout_print("Disabled tool: {s}\n", .{args.remaining[1]});
             return;
         } else if (std.mem.eql(u8, subcmd, "check") and args.remaining.len > 1) {
             const tool_name = args.remaining[1];
             if (registry.isAvailable(tool_name)) {
-                std.debug.print("Tool '{s}' is available ✓\n", .{tool_name});
+                stdout_print("Tool '{s}' is available ✓\n", .{tool_name});
             } else if (registry.get(tool_name) != null) {
-                std.debug.print("Tool '{s}' is registered but disabled ✗\n", .{tool_name});
+                stdout_print("Tool '{s}' is registered but disabled ✗\n", .{tool_name});
             } else {
-                std.debug.print("Tool '{s}' not found\n", .{tool_name});
+                stdout_print("Tool '{s}' not found\n", .{tool_name});
             }
             return;
         } else if (std.mem.eql(u8, subcmd, "category") and args.remaining.len > 1) {
             const cat_name = args.remaining[1];
             const category = parseCategory(cat_name) orelse {
-                std.debug.print("Unknown category: {s}\n", .{cat_name});
-                std.debug.print("Categories: file_ops, shell, git, network, ai, mcp, system, custom\n", .{});
+                stdout_print("Unknown category: {s}\n", .{cat_name});
+                stdout_print("Categories: file_ops, shell, git, network, ai, mcp, system, custom\n", .{});
                 return;
             };
             const tools_in_cat = registry.getByCategory(allocator, category) catch return;
             defer allocator.free(tools_in_cat);
-            std.debug.print("Tools in {s}:\n", .{cat_name});
+            stdout_print("Tools in {s}:\n", .{cat_name});
             for (tools_in_cat) |t| {
-                std.debug.print("  - {s}\n", .{t});
+                stdout_print("  - {s}\n", .{t});
             }
             return;
         }
@@ -449,11 +524,11 @@ pub fn handleGrep(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
     if (args.remaining.len < 2) {
-        std.debug.print("Usage: crushcode grep <pattern> <file-or-dir> [--lang <language>]\n", .{});
-        std.debug.print("\nAST-grep pattern examples:\n", .{});
-        std.debug.print("  crushcode grep 'console.log($MSG)' src/\n", .{});
-        std.debug.print("  crushcode grep 'function $NAME(...) {{ ... }}' --lang javascript\n", .{});
-        std.debug.print("  crushcode grep 'await $FETCH(...)' --lang ts\n", .{});
+        stdout_print("Usage: crushcode grep <pattern> <file-or-dir> [--lang <language>]\n", .{});
+        stdout_print("\nAST-grep pattern examples:\n", .{});
+        stdout_print("  crushcode grep 'console.log($MSG)' src/\n", .{});
+        stdout_print("  crushcode grep 'function $NAME(...) {{ ... }}' --lang javascript\n", .{});
+        stdout_print("  crushcode grep 'await $FETCH(...)' --lang ts\n", .{});
         return;
     }
 
@@ -478,7 +553,7 @@ pub fn handleGrep(args: args_mod.Args) !void {
     if (file_exists != null) {
         // It's a file - search directly
         const matches = grep.search(target) catch |err| {
-            std.debug.print("Error searching '{s}': {}\n", .{ target, err });
+            stdout_print("Error searching '{s}': {}\n", .{ target, err });
             return;
         };
         defer {
@@ -492,9 +567,9 @@ pub fn handleGrep(args: args_mod.Args) !void {
         ast_grep_mod.AstGrep.printMatches(matches);
     } else {
         // It's a directory - search all matching files
-        std.debug.print("Searching in directory: {s}\n", .{target});
+        stdout_print("Searching in directory: {s}\n", .{target});
         const matches = grep.searchGlob(target, pattern) catch |err| {
-            std.debug.print("Error searching directory '{s}': {}\n", .{ target, err });
+            stdout_print("Error searching directory '{s}': {}\n", .{ target, err });
             return;
         };
         defer {
@@ -527,7 +602,7 @@ pub fn handleLSP(args: args_mod.Args) !void {
         const arg = args.remaining[index];
         if (std.mem.eql(u8, arg, "--lang") or std.mem.eql(u8, arg, "-l")) {
             if (index + 1 >= args.remaining.len) {
-                std.debug.print("Missing value for --lang\n", .{});
+                stdout_print("Missing value for --lang\n", .{});
                 return;
             }
             language = args.remaining[index + 1];
@@ -563,17 +638,17 @@ pub fn handleLSP(args: args_mod.Args) !void {
 
     const file_path = positional.items[1];
     const resolved_language = language orelse detectLSPLanguage(file_path) orelse {
-        std.debug.print("Could not detect language for '{s}'. Use --lang.\n", .{file_path});
+        stdout_print("Could not detect language for '{s}'. Use --lang.\n", .{file_path});
         return;
     };
 
     const server = lsp_mod.getLSPServer(resolved_language) catch {
-        std.debug.print("No LSP server configured for language '{s}'.\n", .{resolved_language});
+        stdout_print("No LSP server configured for language '{s}'.\n", .{resolved_language});
         return;
     };
 
     const file_contents = std.fs.cwd().readFileAlloc(allocator, file_path, 10 * 1024 * 1024) catch |err| {
-        std.debug.print("Error reading '{s}': {}\n", .{ file_path, err });
+        stdout_print("Error reading '{s}': {}\n", .{ file_path, err });
         return;
     };
     defer allocator.free(file_contents);
@@ -694,11 +769,11 @@ pub fn handleLSP(args: args_mod.Args) !void {
 }
 
 fn printLSPHelp() void {
-    std.debug.print("Usage: crushcode lsp goto <file> <line> <char> [--lang <language>]\n", .{});
-    std.debug.print("       crushcode lsp refs <file> <line> <char> [--lang <language>]\n", .{});
-    std.debug.print("       crushcode lsp hover <file> <line> <char> [--lang <language>]\n", .{});
-    std.debug.print("       crushcode lsp complete <file> <line> <char> [--lang <language>]\n", .{});
-    std.debug.print("       crushcode lsp diagnostics <file> [--lang <language>]\n", .{});
+    stdout_print("Usage: crushcode lsp goto <file> <line> <char> [--lang <language>]\n", .{});
+    stdout_print("       crushcode lsp refs <file> <line> <char> [--lang <language>]\n", .{});
+    stdout_print("       crushcode lsp hover <file> <line> <char> [--lang <language>]\n", .{});
+    stdout_print("       crushcode lsp complete <file> <line> <char> [--lang <language>]\n", .{});
+    stdout_print("       crushcode lsp diagnostics <file> [--lang <language>]\n", .{});
 }
 
 fn parseLSPIndex(value: []const u8) !u32 {
@@ -779,15 +854,15 @@ pub fn handleMCP(args: args_mod.Args) !void {
     const subcommand = if (args.remaining.len > 0) args.remaining[0] else "";
 
     if (subcommand.len == 0 or std.mem.eql(u8, subcommand, "help")) {
-        std.debug.print("MCP Tools — Model Context Protocol integration\n\n", .{});
-        std.debug.print("Usage:\n", .{});
-        std.debug.print("  crushcode mcp list                    List connected servers\n", .{});
-        std.debug.print("  crushcode mcp tools <server>          List tools on a server\n", .{});
-        std.debug.print("  crushcode mcp execute <server> <tool> [json]  Execute a tool\n", .{});
-        std.debug.print("  crushcode mcp connect <name> <command> [--args ...]  Connect via stdio\n", .{});
-        std.debug.print("  crushcode mcp discover [search]       Search for MCP servers\n", .{});
-        std.debug.print("\nOptions:\n", .{});
-        std.debug.print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
+        stdout_print("MCP Tools — Model Context Protocol integration\n\n", .{});
+        stdout_print("Usage:\n", .{});
+        stdout_print("  crushcode mcp list                    List connected servers\n", .{});
+        stdout_print("  crushcode mcp tools <server>          List tools on a server\n", .{});
+        stdout_print("  crushcode mcp execute <server> <tool> [json]  Execute a tool\n", .{});
+        stdout_print("  crushcode mcp connect <name> <command> [--args ...]  Connect via stdio\n", .{});
+        stdout_print("  crushcode mcp discover [search]       Search for MCP servers\n", .{});
+        stdout_print("\nOptions:\n", .{});
+        stdout_print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
         return;
     }
 
@@ -797,13 +872,13 @@ pub fn handleMCP(args: args_mod.Args) !void {
     if (std.mem.eql(u8, subcommand, "list")) {
         // List all known servers from config
         if (client.servers.count() == 0) {
-            std.debug.print("No MCP servers configured.\n", .{});
-            std.debug.print("Use 'crushcode mcp connect <name> <command>' to connect.\n", .{});
+            stdout_print("No MCP servers configured.\n", .{});
+            stdout_print("Use 'crushcode mcp connect <name> <command>' to connect.\n", .{});
             return;
         }
 
-        std.debug.print("Connected MCP Servers:\n", .{});
-        std.debug.print("----------------------\n", .{});
+        stdout_print("Connected MCP Servers:\n", .{});
+        stdout_print("----------------------\n", .{});
         var iter = client.servers.iterator();
         while (iter.next()) |entry| {
             const name = entry.key_ptr.*;
@@ -815,47 +890,47 @@ pub fn handleMCP(args: args_mod.Args) !void {
                 break :blk false;
             } else false;
             const status = if (connected) "✓ connected" else "✗ disconnected";
-            std.debug.print("  {s} — {s}\n", .{ name, status });
+            stdout_print("  {s} — {s}\n", .{ name, status });
         }
     } else if (std.mem.eql(u8, subcommand, "tools")) {
         // List tools from a specific server
         if (args.remaining.len < 2) {
-            std.debug.print("Usage: crushcode mcp tools <server>\n", .{});
+            stdout_print("Usage: crushcode mcp tools <server>\n", .{});
             return;
         }
         const server_name = args.remaining[1];
 
         if (!client.connections.contains(server_name)) {
-            std.debug.print("Server '{s}' is not connected. Connect first.\n", .{server_name});
+            stdout_print("Server '{s}' is not connected. Connect first.\n", .{server_name});
             return;
         }
 
         const tools = client.discoverTools(server_name) catch |err| {
-            std.debug.print("Error discovering tools from '{s}': {}\n", .{ server_name, err });
+            stdout_print("Error discovering tools from '{s}': {}\n", .{ server_name, err });
             return;
         };
 
-        std.debug.print("Tools on '{s}' ({d} found):\n", .{ server_name, tools.len });
-        std.debug.print("----------------------\n", .{});
+        stdout_print("Tools on '{s}' ({d} found):\n", .{ server_name, tools.len });
+        stdout_print("----------------------\n", .{});
         for (tools) |tool| {
-            std.debug.print("  {s}", .{tool.name});
+            stdout_print("  {s}", .{tool.name});
             if (tool.description.len > 0) {
-                std.debug.print(" — {s}", .{tool.description});
+                stdout_print(" — {s}", .{tool.description});
             }
-            std.debug.print("\n", .{});
+            stdout_print("\n", .{});
         }
     } else if (std.mem.eql(u8, subcommand, "execute")) {
         // Execute a tool on a server
         if (args.remaining.len < 3) {
-            std.debug.print("Usage: crushcode mcp execute <server> <tool> [json-args]\n", .{});
-            std.debug.print("Example: crushcode mcp execute filesystem read_file '{{\"path\":\"/tmp/test.txt\"}}'\n", .{});
+            stdout_print("Usage: crushcode mcp execute <server> <tool> [json-args]\n", .{});
+            stdout_print("Example: crushcode mcp execute filesystem read_file '{{\"path\":\"/tmp/test.txt\"}}'\n", .{});
             return;
         }
         const server_name = args.remaining[1];
         const tool_name = args.remaining[2];
 
         if (!client.connections.contains(server_name)) {
-            std.debug.print("Server '{s}' is not connected. Connect first.\n", .{server_name});
+            stdout_print("Server '{s}' is not connected. Connect first.\n", .{server_name});
             return;
         }
 
@@ -864,8 +939,8 @@ pub fn handleMCP(args: args_mod.Args) !void {
         if (args.remaining.len >= 4) {
             const json_str = args.remaining[3];
             const parsed = std.json.parseFromSlice(std.json.Value, allocator, json_str, .{}) catch |err| {
-                std.debug.print("Error parsing JSON arguments: {}\n", .{err});
-                std.debug.print("Expected valid JSON object, got: {s}\n", .{json_str});
+                stdout_print("Error parsing JSON arguments: {}\n", .{err});
+                stdout_print("Expected valid JSON object, got: {s}\n", .{json_str});
                 return;
             };
             defer parsed.deinit();
@@ -875,25 +950,25 @@ pub fn handleMCP(args: args_mod.Args) !void {
         }
 
         const result = client.executeTool(server_name, tool_name, args_obj) catch |err| {
-            std.debug.print("Error executing tool '{s}' on '{s}': {}\n", .{ tool_name, server_name, err });
+            stdout_print("Error executing tool '{s}' on '{s}': {}\n", .{ tool_name, server_name, err });
             return;
         };
 
         if (result.success) {
-            std.debug.print("✓ Tool executed successfully\n", .{});
+            stdout_print("✓ Tool executed successfully\n", .{});
             if (result.result) |res| {
                 const out = file_compat.File.stdout().writer();
                 out.print("{}\n", .{res}) catch {};
-                std.debug.print("\n", .{});
+                stdout_print("\n", .{});
             }
         } else {
-            std.debug.print("✗ Tool execution failed: {s}\n", .{result.error_message orelse "unknown error"});
+            stdout_print("✗ Tool execution failed: {s}\n", .{result.error_message orelse "unknown error"});
         }
     } else if (std.mem.eql(u8, subcommand, "connect")) {
         // Connect to an MCP server via stdio
         if (args.remaining.len < 3) {
-            std.debug.print("Usage: crushcode mcp connect <name> <command> [--args ...]\n", .{});
-            std.debug.print("Example: crushcode mcp connect filesystem mcp-server-filesystem /tmp\n", .{});
+            stdout_print("Usage: crushcode mcp connect <name> <command> [--args ...]\n", .{});
+            stdout_print("Example: crushcode mcp connect filesystem mcp-server-filesystem /tmp\n", .{});
             return;
         }
         const name = args.remaining[1];
@@ -912,21 +987,21 @@ pub fn handleMCP(args: args_mod.Args) !void {
             .args = if (server_args.items.len > 0) server_args.items else null,
         };
 
-        std.debug.print("Connecting to MCP server '{s}' via stdio...\n", .{name});
+        stdout_print("Connecting to MCP server '{s}' via stdio...\n", .{name});
         const conn = client.connectToServer(name, config) catch |err| {
-            std.debug.print("Error connecting to '{s}': {}\n", .{ name, err });
+            stdout_print("Error connecting to '{s}': {}\n", .{ name, err });
             return;
         };
-        std.debug.print("✓ Connected to '{s}' (transport: {s})\n", .{ name, @tagName(conn.transport) });
+        stdout_print("✓ Connected to '{s}' (transport: {s})\n", .{ name, @tagName(conn.transport) });
 
         // Auto-discover tools
         const tools = client.discoverTools(name) catch |err| {
-            std.debug.print("Connected but tool discovery failed: {}\n", .{err});
+            stdout_print("Connected but tool discovery failed: {}\n", .{err});
             return;
         };
-        std.debug.print("  Found {d} tools:\n", .{tools.len});
+        stdout_print("  Found {d} tools:\n", .{tools.len});
         for (tools) |tool| {
-            std.debug.print("    • {s}\n", .{tool.name});
+            stdout_print("    • {s}\n", .{tool.name});
         }
     } else if (std.mem.eql(u8, subcommand, "discover")) {
         // Search for MCP servers
@@ -935,30 +1010,30 @@ pub fn handleMCP(args: args_mod.Args) !void {
         const discovery_mod = @import("mcp_discovery");
         var discovery = discovery_mod.MCPDiscovery.init(allocator, &client);
         const results = discovery.discoverServers(search_term) catch |err| {
-            std.debug.print("Error discovering servers: {}\n", .{err});
+            stdout_print("Error discovering servers: {}\n", .{err});
             return;
         };
         defer allocator.free(results);
 
-        std.debug.print("MCP Server Discovery (searching for '{s}'):\n", .{search_term});
-        std.debug.print("Found {d} results:\n\n", .{results.len});
+        stdout_print("MCP Server Discovery (searching for '{s}'):\n", .{search_term});
+        stdout_print("Found {d} results:\n\n", .{results.len});
         for (results) |result| {
-            std.debug.print("  {s}", .{result.name});
+            stdout_print("  {s}", .{result.name});
             if (result.description.len > 0) {
-                std.debug.print(" — {s}", .{result.description});
+                stdout_print(" — {s}", .{result.description});
             }
-            std.debug.print("\n", .{});
+            stdout_print("\n", .{});
             if (result.install_command) |cmd| {
-                std.debug.print("    Install: {s}\n", .{cmd});
+                stdout_print("    Install: {s}\n", .{cmd});
             }
             if (result.url) |url| {
-                std.debug.print("    URL: {s}\n", .{url});
+                stdout_print("    URL: {s}\n", .{url});
             }
-            std.debug.print("\n", .{});
+            stdout_print("\n", .{});
         }
     } else {
-        std.debug.print("Unknown MCP subcommand: '{s}'\n", .{subcommand});
-        std.debug.print("Run 'crushcode mcp help' for usage.\n", .{});
+        stdout_print("Unknown MCP subcommand: '{s}'\n", .{subcommand});
+        stdout_print("Run 'crushcode mcp help' for usage.\n", .{});
     }
 }
 
@@ -967,10 +1042,10 @@ pub fn handleDiff(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
     if (args.remaining.len < 2) {
-        std.debug.print("Usage: crushcode diff <old> <new>\n", .{});
-        std.debug.print("       crushcode diff --unified <old> <new>\n", .{});
-        std.debug.print("\nOptions:\n", .{});
-        std.debug.print("  --inline      Show inline diff format (default)\n", .{});
+        stdout_print("Usage: crushcode diff <old> <new>\n", .{});
+        stdout_print("       crushcode diff --unified <old> <new>\n", .{});
+        stdout_print("\nOptions:\n", .{});
+        stdout_print("  --inline      Show inline diff format (default)\n", .{});
         return;
     }
 
@@ -1002,7 +1077,7 @@ pub fn handleList(args: args_mod.Args) !void {
             try registry.printOpenRouterModelsLive();
         } else if (std.mem.eql(u8, provider_name, "--models") or std.mem.eql(u8, provider_name, "-m")) {
             if (args.remaining.len < 2) {
-                std.debug.print("Error: Provider name required for --models\n\n", .{});
+                stdout_print("Error: Provider name required for --models\n\n", .{});
                 try printHelp();
                 return;
             }
@@ -1013,11 +1088,11 @@ pub fn handleList(args: args_mod.Args) !void {
         }
     } else {
         try registry.printProviders();
-        std.debug.print("\nTo see models for a provider:\n", .{});
-        std.debug.print("  crushcode list <provider-name>\n", .{});
-        std.debug.print("  crushcode list --models <provider-name>\n", .{});
-        std.debug.print("\nTo fetch live models from OpenRouter:\n", .{});
-        std.debug.print("  crushcode list --refresh\n", .{});
+        stdout_print("\nTo see models for a provider:\n", .{});
+        stdout_print("  crushcode list <provider-name>\n", .{});
+        stdout_print("  crushcode list --models <provider-name>\n", .{});
+        stdout_print("\nTo fetch live models from OpenRouter:\n", .{});
+        stdout_print("  crushcode list --refresh\n", .{});
     }
 }
 
@@ -1038,18 +1113,18 @@ pub fn handleCheckpoint(args: args_mod.Args) !void {
         }
 
         if (checkpoints.len == 0) {
-            std.debug.print("No checkpoints found.\n", .{});
-            std.debug.print("Run with --checkpoint during chat to save snapshots.\n", .{});
+            stdout_print("No checkpoints found.\n", .{});
+            stdout_print("Run with --checkpoint during chat to save snapshots.\n", .{});
             return;
         }
 
-        std.debug.print("Available checkpoints:\n", .{});
+        stdout_print("Available checkpoints:\n", .{});
         for (checkpoints) |cp| {
             // Try to load checkpoint for timestamp info
             var cp_data = mgr.load(cp) catch continue;
             defer cp_data.deinit();
 
-            std.debug.print("  {s}  (timestamp: {d}, {d} messages)\n", .{
+            stdout_print("  {s}  (timestamp: {d}, {d} messages)\n", .{
                 cp,
                 cp_data.timestamp,
                 cp_data.messages.len,
@@ -1060,49 +1135,49 @@ pub fn handleCheckpoint(args: args_mod.Args) !void {
 
         if (std.mem.eql(u8, action, "save")) {
             // Manual save (not typically used - auto-save happens)
-            std.debug.print("Checkpoints are saved automatically.\n", .{});
-            std.debug.print("Use --checkpoint flag during chat to enable.\n", .{});
+            stdout_print("Checkpoints are saved automatically.\n", .{});
+            stdout_print("Use --checkpoint flag during chat to enable.\n", .{});
         } else if (std.mem.eql(u8, action, "restore") or std.mem.eql(u8, action, "load")) {
             if (args.remaining.len < 2) {
-                std.debug.print("Error:checkpoint ID required\n", .{});
-                std.debug.print("Usage: crushcode checkpoint restore <id>\n", .{});
+                stdout_print("Error:checkpoint ID required\n", .{});
+                stdout_print("Usage: crushcode checkpoint restore <id>\n", .{});
                 return;
             }
             const cp_id = args.remaining[1];
             var cp = mgr.load(cp_id) catch |err| {
-                std.debug.print("Error loading checkpoint '{s}': {}\n", .{ cp_id, err });
+                stdout_print("Error loading checkpoint '{s}': {}\n", .{ cp_id, err });
                 return;
             };
             defer cp.deinit();
 
-            std.debug.print("Restored checkpoint '{s}'\n", .{cp_id});
-            std.debug.print("  Messages: {d}\n", .{cp.messages.len});
-            std.debug.print("  Tool calls: {d}\n", .{cp.tool_calls});
-            std.debug.print("  Tokens used: {d}\n", .{cp.tokens_used});
+            stdout_print("Restored checkpoint '{s}'\n", .{cp_id});
+            stdout_print("  Messages: {d}\n", .{cp.messages.len});
+            stdout_print("  Tool calls: {d}\n", .{cp.tool_calls});
+            stdout_print("  Tokens used: {d}\n", .{cp.tokens_used});
         } else if (std.mem.eql(u8, action, "delete")) {
             if (args.remaining.len < 2) {
-                std.debug.print("Error: checkpoint ID required\n", .{});
-                std.debug.print("Usage: crushcode checkpoint delete <id>\n", .{});
+                stdout_print("Error: checkpoint ID required\n", .{});
+                stdout_print("Usage: crushcode checkpoint delete <id>\n", .{});
                 return;
             }
             const cp_id = args.remaining[1];
             mgr.delete(cp_id) catch |err| {
-                std.debug.print("Error deleting checkpoint '{s}': {}\n", .{ cp_id, err });
+                stdout_print("Error deleting checkpoint '{s}': {}\n", .{ cp_id, err });
                 return;
             };
-            std.debug.print("Deleted checkpoint '{s}'\n", .{cp_id});
+            stdout_print("Deleted checkpoint '{s}'\n", .{cp_id});
         } else {
-            std.debug.print("Unknown checkpoint action: {s}\n", .{action});
-            std.debug.print("\nUsage:\n", .{});
-            std.debug.print("  crushcode checkpoint           List all checkpoints\n", .{});
-            std.debug.print("  crushcode checkpoint restore <id>  Restore a checkpoint\n", .{});
-            std.debug.print("  crushcode checkpoint delete <id>   Delete a checkpoint\n", .{});
+            stdout_print("Unknown checkpoint action: {s}\n", .{action});
+            stdout_print("\nUsage:\n", .{});
+            stdout_print("  crushcode checkpoint           List all checkpoints\n", .{});
+            stdout_print("  crushcode checkpoint restore <id>  Restore a checkpoint\n", .{});
+            stdout_print("  crushcode checkpoint delete <id>   Delete a checkpoint\n", .{});
         }
     }
 }
 
 pub fn printHelp() !void {
-    std.debug.print(
+    stdout_print(
         \\Crushcode - AI Coding Assistant
         \\
         \\Usage:
@@ -1187,6 +1262,7 @@ pub fn printHelp() !void {
         \\  crushcode usage
         \\  crushcode worktree
         \\  crushcode list --provider openai
+        \\  crushcode plugin list
         \\
     , .{});
 }
@@ -1199,32 +1275,32 @@ pub fn handleUsage(_: args_mod.Args) !void {
     defer tracker.deinit();
 
     var pricing = @import("usage_pricing").PricingTable.init(allocator) catch {
-        std.debug.print("Error initializing pricing table\n", .{});
+        stdout_print("Error initializing pricing table\n", .{});
         return;
     };
     defer pricing.deinit();
 
     const session = tracker.getSessionUsage();
 
-    std.debug.print("\n=== Crushcode Usage Report ===\n", .{});
-    std.debug.print("\nSession (current):\n", .{});
-    std.debug.print("  Requests: {d}\n", .{session.request_count});
-    std.debug.print("  Tokens: {d} in / {d} out", .{ session.input_tokens, session.output_tokens });
+    stdout_print("\n=== Crushcode Usage Report ===\n", .{});
+    stdout_print("\nSession (current):\n", .{});
+    stdout_print("  Requests: {d}\n", .{session.request_count});
+    stdout_print("  Tokens: {d} in / {d} out", .{ session.input_tokens, session.output_tokens });
     if (session.cache_read_tokens > 0) {
-        std.debug.print(" / {d} cache read", .{session.cache_read_tokens});
+        stdout_print(" / {d} cache read", .{session.cache_read_tokens});
     }
-    std.debug.print("\n", .{});
+    stdout_print("\n", .{});
 
     if (session.estimated_cost_usd > 0) {
-        std.debug.print("  Cost: ${d:.4}\n", .{session.estimated_cost_usd});
+        stdout_print("  Cost: ${d:.4}\n", .{session.estimated_cost_usd});
     }
 
     if (session.by_provider.count() > 0) {
-        std.debug.print("\n  By provider:\n", .{});
+        stdout_print("\n  By provider:\n", .{});
         var iter = session.by_provider.iterator();
         while (iter.next()) |entry| {
             const pu = entry.value_ptr;
-            std.debug.print("    {s} ({s}): {d} req | ${d:.4}\n", .{
+            stdout_print("    {s} ({s}): {d} req | ${d:.4}\n", .{
                 pu.provider,
                 pu.model,
                 pu.request_count,
@@ -1233,10 +1309,10 @@ pub fn handleUsage(_: args_mod.Args) !void {
         }
     }
 
-    std.debug.print("\nTip: Set budget limits in ~/.crushcode/config.toml:\n", .{});
-    std.debug.print("  [budget]\n", .{});
-    std.debug.print("  daily_limit_usd = 1.0\n", .{});
-    std.debug.print("  monthly_limit_usd = 50.0\n", .{});
+    stdout_print("\nTip: Set budget limits in ~/.crushcode/config.toml:\n", .{});
+    stdout_print("  [budget]\n", .{});
+    stdout_print("  daily_limit_usd = 1.0\n", .{});
+    stdout_print("  monthly_limit_usd = 50.0\n", .{});
 }
 
 pub fn handleConnect(args: args_mod.Args) !void {
@@ -1248,7 +1324,7 @@ pub fn handleProfile(args: args_mod.Args) !void {
 }
 
 pub fn printVersion() !void {
-    std.debug.print("Crushcode v0.1.0\n", .{});
+    stdout_print("Crushcode v0.1.0\n", .{});
 }
 
 /// Phase 23: Codebase Knowledge Graph (Graphify-inspired)
@@ -1262,9 +1338,9 @@ pub fn handleGraph(args: args_mod.Args) !void {
     if (args.remaining.len > 0) {
         // Index specific files
         for (args.remaining) |file_path| {
-            std.debug.print("Indexing: {s}\n", .{file_path});
+            stdout_print("Indexing: {s}\n", .{file_path});
             kg.indexFile(file_path) catch |err| {
-                std.debug.print("  Error indexing {s}: {}\n", .{ file_path, err });
+                stdout_print("  Error indexing {s}: {}\n", .{ file_path, err });
             };
         }
     } else {
@@ -1278,7 +1354,7 @@ pub fn handleGraph(args: args_mod.Args) !void {
             "src/config/config.zig",
             "src/cli/args.zig",
         };
-        std.debug.print("Indexing default source files...\n\n", .{});
+        stdout_print("Indexing default source files...\n\n", .{});
         for (&default_files) |file_path| {
             kg.indexFile(file_path) catch continue;
         }
@@ -1294,8 +1370,8 @@ pub fn handleGraph(args: args_mod.Args) !void {
     if (kg.nodes.count() > 0) {
         const ctx = kg.toCompressedContext(allocator) catch return;
         defer allocator.free(ctx);
-        std.debug.print("\n--- Compressed Context Preview ---\n", .{});
-        std.debug.print("{s}\n", .{ctx});
+        stdout_print("\n--- Compressed Context Preview ---\n", .{});
+        stdout_print("{s}\n", .{ctx});
     }
 }
 
@@ -1320,31 +1396,31 @@ pub fn handleAgentLoop(_: args_mod.Args) !void {
     agent.printStatus();
 
     // Run a demo loop with a mock AI callback
-    std.debug.print("\n--- Running demo agent loop ---\n", .{});
+    stdout_print("\n--- Running demo agent loop ---\n", .{});
     var result = agent.run(demoAISend, "Find information about Zig programming language") catch {
-        std.debug.print("Error: agent loop failed\n", .{});
+        stdout_print("Error: agent loop failed\n", .{});
         return;
     };
     defer result.deinit();
 
-    std.debug.print("\n--- Agent Loop Result ---\n", .{});
-    std.debug.print("  Final response: {s}\n", .{result.final_response});
-    std.debug.print("  Iterations: {d}\n", .{result.total_iterations});
-    std.debug.print("  Tool calls: {d}\n", .{result.total_tool_calls});
-    std.debug.print("  Retries: {d}\n", .{result.total_retries});
-    std.debug.print("  Steps: {d}\n", .{result.steps.items.len});
+    stdout_print("\n--- Agent Loop Result ---\n", .{});
+    stdout_print("  Final response: {s}\n", .{result.final_response});
+    stdout_print("  Iterations: {d}\n", .{result.total_iterations});
+    stdout_print("  Tool calls: {d}\n", .{result.total_tool_calls});
+    stdout_print("  Retries: {d}\n", .{result.total_retries});
+    stdout_print("  Steps: {d}\n", .{result.steps.items.len});
 
     for (result.steps.items, 0..) |step, i| {
-        std.debug.print("\n  Step {d}:\n", .{i + 1});
-        std.debug.print("    AI: {s}\n", .{step.ai_response});
-        std.debug.print("    Finish: {s}\n", .{step.finish_reason});
+        stdout_print("\n  Step {d}:\n", .{i + 1});
+        stdout_print("    AI: {s}\n", .{step.ai_response});
+        stdout_print("    Finish: {s}\n", .{step.finish_reason});
         if (step.has_tool_calls) {
             for (step.tool_calls.items) |tc| {
-                std.debug.print("    Tool call: {s}({s})\n", .{ tc.name, tc.arguments });
+                stdout_print("    Tool call: {s}({s})\n", .{ tc.name, tc.arguments });
             }
             for (step.tool_results.items) |tr| {
                 const status = if (tr.success) "OK" else "FAIL";
-                std.debug.print("    Tool result [{s}]: {s}\n", .{ status, tr.output });
+                stdout_print("    Tool result [{s}]: {s}\n", .{ status, tr.output });
             }
         }
     }
@@ -1423,7 +1499,7 @@ pub fn handleWorkflow(args: args_mod.Args) !void {
     if (args.remaining.len > 0 and std.mem.eql(u8, args.remaining[0], "--xml")) {
         const xml = workflow.toXml(allocator) catch return;
         defer allocator.free(xml);
-        std.debug.print("{s}\n", .{xml});
+        stdout_print("{s}\n", .{xml});
     } else {
         workflow.printProgress();
     }
@@ -1466,12 +1542,12 @@ pub fn handleCompact(_: args_mod.Args) !void {
     // Run compaction demo
     var result = compactor.compact(&sample_messages) catch return;
     defer result.deinit();
-    std.debug.print("\nCompaction Result:\n", .{});
-    std.debug.print("  Messages summarized: {d}\n", .{result.messages_summarized});
-    std.debug.print("  Tokens saved: {d}\n", .{result.tokens_saved});
-    std.debug.print("  Recent messages preserved: {d}\n", .{result.messages.len});
+    stdout_print("\nCompaction Result:\n", .{});
+    stdout_print("  Messages summarized: {d}\n", .{result.messages_summarized});
+    stdout_print("  Tokens saved: {d}\n", .{result.tokens_saved});
+    stdout_print("  Recent messages preserved: {d}\n", .{result.messages.len});
     if (result.summary.len > 0) {
-        std.debug.print("\n--- Generated Summary ---\n{s}\n", .{result.summary});
+        stdout_print("\n--- Generated Summary ---\n{s}\n", .{result.summary});
     }
 }
 
@@ -1528,18 +1604,18 @@ pub fn handleScaffold(args: args_mod.Args) !void {
     scaffolder.printSummary();
 
     // Generate artifacts
-    std.debug.print("\n--- Generated PROJECT.md ---\n", .{});
+    stdout_print("\n--- Generated PROJECT.md ---\n", .{});
     const project_md = scaffolder.generateProjectMd() catch return;
     defer allocator.free(project_md);
-    std.debug.print("{s}\n", .{project_md});
+    stdout_print("{s}\n", .{project_md});
 
-    std.debug.print("\n--- Generated REQUIREMENTS.md ---\n", .{});
+    stdout_print("\n--- Generated REQUIREMENTS.md ---\n", .{});
     const reqs_md = scaffolder.generateRequirementsMd() catch return;
     defer allocator.free(reqs_md);
-    std.debug.print("{s}\n", .{reqs_md});
+    stdout_print("{s}\n", .{reqs_md});
 
-    std.debug.print("\n--- Generated ROADMAP.md ---\n", .{});
+    stdout_print("\n--- Generated ROADMAP.md ---\n", .{});
     const roadmap_md = scaffolder.generateRoadmapMd() catch return;
     defer allocator.free(roadmap_md);
-    std.debug.print("{s}\n", .{roadmap_md});
+    stdout_print("{s}\n", .{roadmap_md});
 }

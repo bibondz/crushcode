@@ -672,7 +672,7 @@ pub const LSPClient = struct {
         if (value != .object) return;
         if (value.object.get("message")) |message_value| {
             if (message_value == .string) {
-                std.debug.print("LSP error: {s}\n", .{message_value.string});
+                std.log.err("LSP error: {s}", .{message_value.string});
             }
         }
     }

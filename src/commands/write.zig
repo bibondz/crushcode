@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const fs = std.fs;
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 pub const FileOperationResult = struct {
     success: bool,
@@ -66,9 +71,9 @@ pub fn fileExists(path: []const u8) bool {
 /// Handle write command from CLI
 pub fn handleWrite(args: [][]const u8) !void {
     if (args.len < 2) {
-        std.debug.print("Usage: crushcode write <path> <content>\n", .{});
-        std.debug.print("       crushcode write <path> --content <content>\n", .{});
-        std.debug.print("       crushcode write \"*.txt\" --content <content>\n", .{});
+        out("Usage: crushcode write <path> <content>\n", .{});
+        out("       crushcode write <path> --content <content>\n", .{});
+        out("       crushcode write \"*.txt\" --content <content>\n", .{});
         return;
     }
 
@@ -109,22 +114,22 @@ pub fn handleWrite(args: [][]const u8) !void {
 
         // Need content for both single file and glob
         if (content == null) {
-            std.debug.print("Error: No content specified\n", .{});
+            out("Error: No content specified\n", .{});
             return;
         }
 
         if (is_glob) {
-            std.debug.print("Glob pattern: {s}\n", .{p});
+            out("Glob pattern: {s}\n", .{p});
             // Basic glob implementation - write to all files matching extension
             const wildcard_pos = std.mem.lastIndexOfScalar(u8, p, '*') orelse {
-                std.debug.print("Error: Pattern must contain wildcard (*)\n", .{});
+                out("Error: Pattern must contain wildcard (*)\n", .{});
                 return;
             };
             const extension = p[wildcard_pos + 1 ..];
 
             var files_written: usize = 0;
             var dir = fs.cwd().openDir(".", .{}) catch |err| {
-                std.debug.print("Error opening directory: {}\n", .{err});
+                out("Error opening directory: {}\n", .{err});
                 return;
             };
             defer dir.close();
@@ -138,14 +143,14 @@ pub fn handleWrite(args: [][]const u8) !void {
             }
 
             if (files_written > 0) {
-                std.debug.print("Written to {d} file(s) matching {s}\n", .{ files_written, extension });
+                out("Written to {d} file(s) matching {s}\n", .{ files_written, extension });
             } else {
-                std.debug.print("No files found matching {s}\n", .{extension});
+                out("No files found matching {s}\n", .{extension});
             }
         } else {
             // Single file
             try writeFile(p, content.?);
-            std.debug.print("Written to: {s}\n", .{p});
+            out("Written to: {s}\n", .{p});
         }
     }
 }
@@ -153,7 +158,7 @@ pub fn handleWrite(args: [][]const u8) !void {
 /// Handle edit command - read file, let user edit, write back
 pub fn handleEdit(args: [][]const u8) !void {
     if (args.len < 1) {
-        std.debug.print("Usage: crushcode edit <file> [--create]\n", .{});
+        out("Usage: crushcode edit <file> [--create]\n", .{});
         return;
     }
 
@@ -161,12 +166,12 @@ pub fn handleEdit(args: [][]const u8) !void {
     const create = if (args.len > 1 and std.mem.eql(u8, args[1], "--create")) true else false;
 
     if (!create and !fileExists(path)) {
-        std.debug.print("Error: File does not exist: {s}\n", .{path});
-        std.debug.print("Use --create to create a new file\n", .{});
+        out("Error: File does not exist: {s}\n", .{path});
+        out("Use --create to create a new file\n", .{});
         return;
     }
 
     // For now, just print the file path - full edit would need editor integration
-    std.debug.print("Edit file: {s}\n", .{path});
-    std.debug.print("(Full editor integration coming soon)\n", .{});
+    out("Edit file: {s}\n", .{path});
+    out("(Full editor integration coming soon)\n", .{});
 }

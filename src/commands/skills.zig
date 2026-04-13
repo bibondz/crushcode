@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const shell = @import("shell");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 /// Skill definition - a callable command with description
 pub const Skill = struct {
@@ -82,14 +87,14 @@ fn skillPwd(args: []const []const u8) !shell.ShellResult {
 pub fn handleSkill(args: [][]const u8) !void {
     if (args.len == 0) {
         // List all skills
-        std.debug.print("Available Skills:\n\n", .{});
+        out("Available Skills:\n\n", .{});
 
         const skills = getAllSkills();
         for (skills) |skill| {
-            std.debug.print("  {s:20} - {s}\n", .{ skill.name, skill.description });
+            out("  {s:20} - {s}\n", .{ skill.name, skill.description });
         }
 
-        std.debug.print("\nUsage: crushcode skill <name> [args]\n", .{});
+        out("\nUsage: crushcode skill <name> [args]\n", .{});
         return;
     }
 
@@ -100,22 +105,22 @@ pub fn handleSkill(args: [][]const u8) !void {
         const result = try execute(skill_args);
 
         if (result.stdout.len > 0) {
-            std.debug.print("{s}", .{result.stdout});
+            out("{s}", .{result.stdout});
         }
         if (result.stderr.len > 0) {
-            std.debug.print("[Stderr: {s}]\n", .{result.stderr});
+            out("[Stderr: {s}]\n", .{result.stderr});
         }
 
-        std.debug.print("[Exit code: {d}]\n", .{result.exit_code});
+        out("[Exit code: {d}]\n", .{result.exit_code});
     } else {
-        std.debug.print("Error: Unknown skill '{s}'\n", .{skill_name});
+        out("Error: Unknown skill '{s}'\n", .{skill_name});
 
         const skills = getAllSkills();
-        std.debug.print("Available skills: ", .{});
+        out("Available skills: ", .{});
         for (skills, 0..) |skill, i| {
-            if (i > 0) std.debug.print(", ", .{});
-            std.debug.print("{s}", .{skill.name});
+            if (i > 0) out(", ", .{});
+            out("{s}", .{skill.name});
         }
-        std.debug.print("\n", .{});
+        out("\n", .{});
     }
 }

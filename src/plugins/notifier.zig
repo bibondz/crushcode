@@ -39,7 +39,7 @@ pub const NotifierPlugin = struct {
     fn notifySessionStarted(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Crushcode session started: {}", .{event.session_id.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Crushcode session started: {s}", .{event.session_id.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Session Started", message);
@@ -49,7 +49,7 @@ pub const NotifierPlugin = struct {
     fn notifySessionCompleted(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Crushcode session completed: {}", .{event.session_id.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Crushcode session completed: {s}", .{event.session_id.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Session Completed", message);
@@ -59,7 +59,7 @@ pub const NotifierPlugin = struct {
     fn notifyPermissionRequested(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Permission requested for: {}", .{event.permission.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Permission requested for: {s}", .{event.permission.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Permission Request", message);
@@ -69,7 +69,7 @@ pub const NotifierPlugin = struct {
     fn notifyPermissionUpdated(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Permission updated: {} = {}", .{ event.permission.?, event.permission_granted.? });
+        const message = try std.fmt.allocPrint(self.allocator, "Permission updated: {s} = {}", .{ event.permission.?, event.permission_granted.? });
         defer self.allocator.free(message);
 
         try self.showNotification("Permission Updated", message);
@@ -79,7 +79,7 @@ pub const NotifierPlugin = struct {
     fn notifyTaskStarted(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Task started: {}", .{event.task_name.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Task started: {s}", .{event.task_name.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Task Started", message);
@@ -89,7 +89,7 @@ pub const NotifierPlugin = struct {
     fn notifyTaskCompleted(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Task completed: {}", .{event.task_name.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Task completed: {s}", .{event.task_name.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Task Completed", message);
@@ -99,7 +99,7 @@ pub const NotifierPlugin = struct {
     fn notifyErrorOccurred(self: *NotifierPlugin, event: NotifierEvent) !void {
         if (!self.enabled) return;
 
-        const message = try std.fmt.allocPrint(self.allocator, "Error occurred: {}", .{event.error_message.?});
+        const message = try std.fmt.allocPrint(self.allocator, "Error occurred: {s}", .{event.error_message.?});
         defer self.allocator.free(message);
 
         try self.showNotification("Error", message);
@@ -120,7 +120,7 @@ pub const NotifierPlugin = struct {
         _ = self;
         // In a real implementation, this would use Windows API
         // For now, just print to console
-        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {}: {}", .{ title, message });
+        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {s}: {s}", .{ title, message });
         defer std.heap.page_allocator.free(full_message);
         std.log.info("{s}", .{full_message});
     }
@@ -128,18 +128,17 @@ pub const NotifierPlugin = struct {
     fn showUnixNotification(self: *NotifierPlugin, title: []const u8, message: []const u8) !void {
         _ = self;
         // Use notify-send or similar on Unix systems
-        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {}: {}", .{ title, message });
+        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {s}: {s}", .{ title, message });
         defer std.heap.page_allocator.free(full_message);
         std.log.info("{s}", .{full_message});
     }
 
     fn playSound(self: *NotifierPlugin, sound_type: []const u8) !void {
         if (!self.sound_enabled) return;
-        _ = sound_type;
 
         // In a real implementation, this would play sound files
         // For now, just log the sound event
-        const sound_message = try std.fmt.allocPrint(std.heap.page_allocator, "[SOUND] Playing: {}", .{sound_type});
+        const sound_message = try std.fmt.allocPrint(std.heap.page_allocator, "[SOUND] Playing: {s}", .{sound_type});
         defer std.heap.page_allocator.free(sound_message);
         std.log.info("{s}", .{sound_message});
     }

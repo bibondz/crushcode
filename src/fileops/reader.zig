@@ -19,8 +19,8 @@ pub const FileContent = struct {
     }
 
     pub fn print(self: *const FileContent) void {
-        std.debug.print("=== {s} ({d} bytes) ===\n\n", .{ self.path, self.size });
-        std.debug.print("{s}\n", .{self.content});
+        std.log.info("=== {s} ({d} bytes) ===", .{ self.path, self.size });
+        std.log.info("{s}", .{self.content});
     }
 };
 

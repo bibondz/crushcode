@@ -1,5 +1,10 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 const Allocator = std.mem.Allocator;
 
@@ -205,29 +210,29 @@ pub const ToolRegistry = struct {
 
     /// Print all registered tools
     pub fn printTools(self: *ToolRegistry) void {
-        std.debug.print("Registered Tools:\n", .{});
-        std.debug.print("-----------------\n", .{});
+        out("Registered Tools:\n", .{});
+        out("-----------------\n", .{});
 
         var iter = self.tools.iterator();
         while (iter.next()) |entry| {
             const tool = entry.value_ptr;
             const status: []const u8 = if (tool.enabled) "✓" else "✗";
-            std.debug.print("  {s} {s} - {s}", .{ status, tool.name, tool.description });
+            out("  {s} {s} - {s}", .{ status, tool.name, tool.description });
 
             if (tool.aliases.len > 0) {
-                std.debug.print(" (aliases: ", .{});
+                out(" (aliases: ", .{});
                 for (tool.aliases, 0..) |alias, i| {
-                    if (i > 0) std.debug.print(", ", .{});
-                    std.debug.print("{s}", .{alias});
+                    if (i > 0) out(", ", .{});
+                    out("{s}", .{alias});
                 }
-                std.debug.print(")", .{});
+                out(")", .{});
             }
 
             if (tool.feature_flag) |flag| {
-                std.debug.print(" [flag: {s}]", .{flag});
+                out(" [flag: {s}]", .{flag});
             }
 
-            std.debug.print("\n", .{});
+            out("\n", .{});
         }
     }
 

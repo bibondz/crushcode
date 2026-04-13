@@ -134,6 +134,12 @@ pub fn build(b: *std.Build) !void {
         .{ .name = "protocol", .module = b.createModule(.{ .root_source_file = b.path("src/plugin/protocol.zig"), .imports = &.{} }) },
     } });
 
+    const plugin_manager_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugin_manager.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Read module
     const read_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/read.zig"),
@@ -217,6 +223,14 @@ pub fn build(b: *std.Build) !void {
     });
     install_mod.addImport("env", env_mod);
     install_mod.addImport("http_client", http_client_mod);
+
+    // JSON extraction utility
+    const json_extract_mod = b.createModule(.{
+        .root_source_file = b.path("src/json/extract.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    install_mod.addImport("json_extract", json_extract_mod);
 
     // Jobs module
     const jobs_mod = b.createModule(.{
@@ -336,6 +350,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    usage_tracker_mod.addImport("streaming_types", streaming_types_mod);
 
     const usage_pricing_mod = b.createModule(.{
         .root_source_file = b.path("src/usage/pricing.zig"),
@@ -419,6 +434,7 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("connect", connect_mod);
     handlers_mod.addImport("profile", profile_mod);
     handlers_mod.addImport("json_output", json_output_mod);
+    handlers_mod.addImport("plugin_manager", plugin_manager_mod);
 
     // Diff visualizer module
     const diff_mod = b.createModule(.{
@@ -599,6 +615,7 @@ pub fn build(b: *std.Build) !void {
     });
     mcp_client_mod.addImport("env", env_mod);
     mcp_client_mod.addImport("http_client", http_client_mod);
+    mcp_client_mod.addImport("json_extract", json_extract_mod);
     const mcp_discovery_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/discovery.zig"),
         .target = target,
@@ -607,6 +624,7 @@ pub fn build(b: *std.Build) !void {
     mcp_discovery_mod.addImport("mcp_client", mcp_client_mod);
     mcp_discovery_mod.addImport("env", env_mod);
     mcp_discovery_mod.addImport("http_client", http_client_mod);
+    mcp_discovery_mod.addImport("json_extract", json_extract_mod);
 
     const mcp_bridge_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/bridge.zig"),
@@ -660,6 +678,7 @@ pub fn build(b: *std.Build) !void {
         toml_mod,
         fileops_mod,
         plugin_mod,
+        plugin_manager_mod,
         read_mod,
         chat_mod,
         plugin_command_mod,
@@ -718,6 +737,7 @@ pub fn build(b: *std.Build) !void {
         checkpoint_mod,
         memory_mod,
         lsp_mod,
+        json_extract_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -728,6 +748,12 @@ pub fn build(b: *std.Build) !void {
         .name = "crushcode",
         .root_module = main_mod,
     });
+
+    const plugin_manager_obj = b.addObject(.{
+        .name = "plugin_manager_check",
+        .root_module = plugin_manager_mod,
+    });
+    b.default_step.dependOn(&plugin_manager_obj.step);
 
     b.installArtifact(exe);
 

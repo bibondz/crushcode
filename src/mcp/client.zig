@@ -4,6 +4,7 @@ const file_compat = @import("file_compat");
 const builtin = @import("builtin");
 const env_config = @import("env");
 const http_client = @import("http_client");
+const json_extract = @import("json_extract");
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
@@ -223,7 +224,7 @@ pub const MCPClient = struct {
 
         var client_info = json.ObjectMap.init(self.allocator);
         try client_info.put("name", .{ .string = "crushcode" });
-        try client_info.put("version", .{ .string = "0.1.0" });
+        try client_info.put("version", .{ .string = "0.2.1" });
         try params.put("clientInfo", .{ .object = client_info });
 
         var capabilities = json.ObjectMap.init(self.allocator);
@@ -1261,84 +1262,30 @@ fn exchangeCodeForTokens(
 
 /// Parse token endpoint JSON response into OAuthTokens
 fn parseTokenResponse(data: []const u8, allocator: Allocator) !OAuthTokens {
-    var access_token: ?[]const u8 = null;
-    var refresh_token: ?[]const u8 = null;
-    var token_type: []const u8 = "Bearer";
-    var expires_in: ?u64 = null;
-    var scope: ?[]const u8 = null;
+    const access_token = json_extract.extractString(data, "access_token") orelse return error.OAuthTokenExchangeFailed;
+    const refresh_token = json_extract.extractString(data, "refresh_token");
+    const token_type = json_extract.extractString(data, "token_type") orelse "Bearer";
+    const expires_in = json_extract.extractInteger(data, "expires_in");
+    const scope = json_extract.extractString(data, "scope");
 
-    // Simple JSON field extraction (avoid full parse for robustness with varied server responses)
-    var i: usize = 0;
-    // Skip to first {
-    while (i < data.len and data[i] != '{') : (i += 1) {}
-    if (i >= data.len) return error.OAuthTokenExchangeFailed;
-    i += 1; // skip {
-
-    while (i < data.len) {
-        // Skip whitespace
-        while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
-        if (i >= data.len or data[i] == '}') break;
-        if (data[i] != '"') break;
-
-        // Parse field name
-        i += 1;
-        const fname_start = i;
-        while (i < data.len and data[i] != '"') : (i += 1) {}
-        const fname = data[fname_start..i];
-        i += 1;
-
-        // Skip to value
-        while (i < data.len and data[i] != ':') : (i += 1) {}
-        i += 1;
-        while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
-
-        if (data[i] == '"') {
-            // String value
-            i += 1;
-            const vs = i;
-            while (i < data.len and data[i] != '"') : (i += 1) {}
-            const val = data[vs..i];
-            i += 1;
-
-            if (std.mem.eql(u8, fname, "access_token")) {
-                access_token = try allocator.dupe(u8, val);
-            } else if (std.mem.eql(u8, fname, "refresh_token")) {
-                refresh_token = try allocator.dupe(u8, val);
-            } else if (std.mem.eql(u8, fname, "token_type")) {
-                token_type = try allocator.dupe(u8, val);
-            } else if (std.mem.eql(u8, fname, "scope")) {
-                scope = try allocator.dupe(u8, val);
-            }
-        } else {
-            // Number value
-            const ns = i;
-            while (i < data.len and data[i] != ',' and data[i] != '}') : (i += 1) {}
-            const num_str = std.mem.trim(u8, data[ns..i], " \t\n\r");
-
-            if (std.mem.eql(u8, fname, "expires_in")) {
-                expires_in = std.fmt.parseInt(u64, num_str, 10) catch null;
-            }
-        }
-
-        // Skip comma
-        while (i < data.len and (data[i] == ',' or data[i] == ' ')) : (i += 1) {}
-    }
-
-    const at = access_token orelse return error.OAuthTokenExchangeFailed;
+    const at = try allocator.dupe(u8, access_token);
+    const rt = if (refresh_token) |value| try allocator.dupe(u8, value) else null;
+    const tt = try allocator.dupe(u8, token_type);
+    const sc = if (scope) |value| try allocator.dupe(u8, value) else null;
 
     // Calculate expires_at from expires_in
     const expires_at: ?i64 = if (expires_in) |ei|
-        std.time.timestamp() + @as(i64, @intCast(ei))
+        std.time.timestamp() + ei
     else
         null;
 
     return OAuthTokens{
         .access_token = at,
-        .refresh_token = refresh_token,
-        .token_type = token_type,
-        .expires_in = expires_in,
+        .refresh_token = rt,
+        .token_type = tt,
+        .expires_in = if (expires_in) |ei| @as(u64, @intCast(ei)) else null,
         .expires_at = expires_at,
-        .scope = scope,
+        .scope = sc,
     };
 }
 
@@ -1715,9 +1662,9 @@ test "MCPClient - connectToServer stdio with mcp-server-filesystem" {
     defer testing.allocator.free(tools);
 
     try testing.expect(tools.len > 0);
-    std.debug.print("Discovered {d} tools from MCP filesystem server\n", .{tools.len});
+    std.log.info("Discovered {d} tools from MCP filesystem server", .{tools.len});
     for (tools[0..@min(3, tools.len)]) |tool| {
-        std.debug.print("  - {s}\n", .{tool.name});
+        std.log.info("  - {s}", .{tool.name});
     }
 
     // Verify expected tools exist

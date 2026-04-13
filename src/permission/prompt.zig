@@ -1,5 +1,9 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 const json = std.json;
 
 const Allocator = std.mem.Allocator;
@@ -224,7 +228,7 @@ pub const PromptHandler = struct {
         }
 
         // Timeout reached
-        std.debug.print("\nTimeout reached. Using default action (deny).\n", .{});
+        out("\nTimeout reached. Using default action (deny).\n", .{});
         return .reject;
     }
 
@@ -240,21 +244,21 @@ pub const PromptHandler = struct {
         switch (response) {
             .once => {
                 // Allow once - nothing to persist
-                std.debug.print("Allowed once: {s}:{s}\n", .{ request.tool_name, request.action });
+                out("Allowed once: {s}:{s}\n", .{ request.tool_name, request.action });
             },
             .always => {
                 // Add to auto-approved operations
                 try addAutoApproveRule(config, request.permission_id);
-                std.debug.print("Always allowed: {s}:{s}\n", .{ request.tool_name, request.action });
+                out("Always allowed: {s}:{s}\n", .{ request.tool_name, request.action });
             },
             .reject => {
                 // Deny once - nothing to persist
-                std.debug.print("Denied: {s}:{s}\n", .{ request.tool_name, request.action });
+                out("Denied: {s}:{s}\n", .{ request.tool_name, request.action });
             },
             .always_reject => {
                 // Add to denied rules
                 try addDenyRule(config, request.permission_id);
-                std.debug.print("Always denied: {s}:{s}\n", .{ request.tool_name, request.action });
+                out("Always denied: {s}:{s}\n", .{ request.tool_name, request.action });
             },
         }
     }
@@ -302,7 +306,7 @@ pub fn runPromptTests() !void {
     var handler = PromptHandler.init(allocator);
     defer handler.deinit();
 
-    std.debug.print("Testing prompt handler (simulated):\n", .{});
+    out("Testing prompt handler (simulated):\n", .{});
 
     // Create test request
     var request = try PermissionRequest.init("bash", "execute", allocator);
@@ -317,9 +321,9 @@ pub fn runPromptTests() !void {
     request.context = .{ .object = context_obj };
 
     // Test would normally prompt user, but for test we simulate
-    std.debug.print("  ✓ Prompt system initialized\n", .{});
-    std.debug.print("  ✓ Request formatting tested\n", .{});
-    std.debug.print("  ✓ Response conversion tested\n", .{});
+    out("  ✓ Prompt system initialized\n", .{});
+    out("  ✓ Request formatting tested\n", .{});
+    out("  ✓ Response conversion tested\n", .{});
 
     // Test response conversion
     const test_responses = [_]struct {
@@ -337,7 +341,7 @@ pub fn runPromptTests() !void {
         const passed = result.action == test_case.expected_action;
         const status = if (passed) "✓" else "✗";
 
-        std.debug.print("  {s} Response '{s}' -> '{s}'\n", .{
+        out("  {s} Response '{s}' -> '{s}'\n", .{
             status,
             @tagName(test_case.response),
             @tagName(result.action),
@@ -348,7 +352,7 @@ pub fn runPromptTests() !void {
         }
     }
 
-    std.debug.print("All prompt tests passed!\n", .{});
+    out("All prompt tests passed!\n", .{});
 }
 
 /// Export test function

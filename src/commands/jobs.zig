@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const shell = @import("shell");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 /// Job control - background jobs management
 pub const Job = struct {
@@ -93,7 +98,7 @@ pub fn runBackground(command: []const u8, allocator: std.mem.Allocator) !u32 {
 /// Handle jobs command from CLI
 pub fn handleJobs(_: [][]const u8) !void {
     // For now, just list available job control syntax
-    std.debug.print(
+    out(
         \\Job Control
         \\
         \\Usage: 

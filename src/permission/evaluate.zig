@@ -324,7 +324,7 @@ pub fn runTests() !void {
         .{ .tool = "git", .action = "push", .expected = .ask }, // Matches git:*
     };
 
-    std.debug.print("Testing permission evaluator:\n", .{});
+    std.log.info("Testing permission evaluator:", .{});
     for (test_cases) |test_case| {
         var request = try PermissionRequest.init(test_case.tool, test_case.action, allocator);
         defer request.deinit(allocator);
@@ -334,7 +334,7 @@ pub fn runTests() !void {
         const passed = result.action == test_case.expected;
         const status = if (passed) "✓" else "✗";
 
-        std.debug.print("  {s} {s}:{s} -> {s} (expected: {s})\n", .{
+        std.log.info("  {s} {s}:{s} -> {s} (expected: {s})", .{
             status,
             test_case.tool,
             test_case.action,
@@ -347,7 +347,7 @@ pub fn runTests() !void {
         }
     }
 
-    std.debug.print("All tests passed!\n", .{});
+    std.log.info("All tests passed!", .{});
 }
 
 /// Export test function for build system

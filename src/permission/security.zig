@@ -312,7 +312,7 @@ pub fn runSecurityTests() !void {
     var checker = SecurityChecker.init(allocator);
     defer checker.deinit();
 
-    std.debug.print("Testing security checker:\n", .{});
+    std.log.info("Testing security checker:", .{});
 
     // Test command injection
     const dangerous_commands = [_][]const u8{
@@ -328,7 +328,7 @@ pub fn runSecurityTests() !void {
         const passed = result.action == .denry;
         const status = if (passed) "✓" else "✗";
 
-        std.debug.print("  {s} Dangerous command: {s}\n", .{ status, cmd });
+        std.log.info("  {s} Dangerous command: {s}", .{ status, cmd });
 
         if (!passed) {
             return error.SecurityTestFailed;
@@ -348,7 +348,7 @@ pub fn runSecurityTests() !void {
         const is_sensitive = checker.checkSensitivePath(path);
         const status = if (is_sensitive) "✓" else "✗";
 
-        std.debug.print("  {s} Sensitive path: {s}\n", .{ status, path });
+        std.log.info("  {s} Sensitive path: {s}", .{ status, path });
 
         if (!is_sensitive) {
             return error.SecurityTestFailed;
@@ -368,14 +368,14 @@ pub fn runSecurityTests() !void {
         const passed = result.action == .allow;
         const status = if (passed) "✓" else "✗";
 
-        std.debug.print("  {s} Safe command: {s}\n", .{ status, cmd });
+        std.log.info("  {s} Safe command: {s}", .{ status, cmd });
 
         if (!passed) {
             return error.SecurityTestFailed;
         }
     }
 
-    std.debug.print("All security tests passed!\n", .{});
+    std.log.info("All security tests passed!", .{});
 }
 
 /// Export test function

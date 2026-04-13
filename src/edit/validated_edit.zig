@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const hashline_mod = @import("hashline");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 const hash_index_mod = @import("hash_index");
 const conflict_mod = @import("conflict");
 
@@ -201,7 +206,7 @@ pub const ValidatedEdit = struct {
         for (ops) |op| {
             self.applyEdit(op) catch |err| {
                 // Log but continue — best effort
-                std.debug.print("Warning: edit failed for {s}: {}\n", .{ op.file_path, err });
+                out("Warning: edit failed for {s}: {}\n", .{ op.file_path, err });
             };
         }
 

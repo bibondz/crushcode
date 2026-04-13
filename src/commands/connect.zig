@@ -1,6 +1,10 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 const Auth = @import("auth").Auth;
 const config_mod = @import("config");
 
@@ -30,11 +34,11 @@ const PROVIDERS = &[_]ProviderInfo{
 
 /// Print provider list for selection
 fn printProviders() void {
-    std.debug.print("\nAvailable Providers:\n\n", .{});
+    out("\nAvailable Providers:\n\n", .{});
     for (PROVIDERS, 0..) |p, i| {
-        std.debug.print("  {d}. {s} - {s}\n", .{ i + 1, p.name, p.description });
+        out("  {d}. {s} - {s}\n", .{ i + 1, p.name, p.description });
     }
-    std.debug.print("\n", .{});
+    out("\n", .{});
 }
 
 /// Get provider by index
@@ -65,7 +69,7 @@ fn promptSelection() !usize {
     const stdin = file_compat.File.stdin();
     const reader = stdin.reader();
 
-    std.debug.print("Enter provider number (1-{}): ", .{PROVIDERS.len});
+    out("Enter provider number (1-{}): ", .{PROVIDERS.len});
 
     var num_str = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     defer num_str.deinit();
@@ -86,7 +90,7 @@ fn promptApiKey() ![]const u8 {
     const stdin = file_compat.File.stdin();
     const reader = stdin.reader();
 
-    std.debug.print("Enter API key: ", .{});
+    out("Enter API key: ", .{});
 
     var key = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     errdefer key.deinit();
@@ -107,7 +111,7 @@ fn promptSetDefault() !bool {
     const stdin = file_compat.File.stdin();
     const reader = stdin.reader();
 
-    std.debug.print("Set as default provider? (y/N): ", .{});
+    out("Set as default provider? (y/N): ", .{});
 
     var response = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     defer response.deinit();
@@ -129,8 +133,8 @@ pub fn handleConnect(args: []const []const u8) !void {
 
     const allocator = std.heap.page_allocator;
 
-    std.debug.print("\n=== Crushcode Connect ===\n", .{});
-    std.debug.print("Add API credentials for AI providers\n\n", .{});
+    out("\n=== Crushcode Connect ===\n", .{});
+    out("Add API credentials for AI providers\n\n", .{});
 
     // Load existing auth if any
     var auth = Auth.init(allocator);
@@ -140,11 +144,11 @@ pub fn handleConnect(args: []const []const u8) !void {
     // Show existing credentials
     const existing = auth.listProviders();
     if (existing.len > 0) {
-        std.debug.print("Existing credentials:\n", .{});
+        out("Existing credentials:\n", .{});
         for (existing) |p| {
-            std.debug.print("  - {s}\n", .{p});
+            out("  - {s}\n", .{p});
         }
-        std.debug.print("\n", .{});
+        out("\n", .{});
     }
 
     // Show provider list
@@ -152,21 +156,21 @@ pub fn handleConnect(args: []const []const u8) !void {
 
     // Get selection
     const idx = promptSelection() catch {
-        std.debug.print("Invalid input\n", .{});
+        out("Invalid input\n", .{});
         return;
     };
 
     const provider = getProviderByIndex(idx) orelse {
-        std.debug.print("Invalid selection\n", .{});
+        out("Invalid selection\n", .{});
         return;
     };
 
-    std.debug.print("\nSelected: {s}\n", .{provider.name});
+    out("\nSelected: {s}\n", .{provider.name});
 
     // Check if already has credential
     if (auth.getKey(provider.id)) |existing_key| {
-        std.debug.print("Provider '{s}' already has credentials\n", .{provider.name});
-        std.debug.print("Replace with new key? (y/N): ", .{});
+        out("Provider '{s}' already has credentials\n", .{provider.name});
+        out("Replace with new key? (y/N): ", .{});
 
         const stdin = file_compat.File.stdin();
         const reader = stdin.reader();
@@ -181,7 +185,7 @@ pub fn handleConnect(args: []const []const u8) !void {
 
         const trimmed = std.mem.trim(u8, response.items, " \t");
         if (!std.mem.eql(u8, trimmed, "y") and !std.mem.eql(u8, trimmed, "Y")) {
-            std.debug.print("Cancelled\n", .{});
+            out("Cancelled\n", .{});
             return;
         }
         _ = existing_key;
@@ -189,7 +193,7 @@ pub fn handleConnect(args: []const []const u8) !void {
 
     // Prompt for API key
     const api_key = promptApiKey() catch {
-        std.debug.print("Error reading API key\n", .{});
+        out("Error reading API key\n", .{});
         return;
     };
 
@@ -197,16 +201,16 @@ pub fn handleConnect(args: []const []const u8) !void {
     try auth.setKey(provider.id, api_key);
     try auth.save();
 
-    std.debug.print("\nCredential saved for {s}\n", .{provider.name});
+    out("\nCredential saved for {s}\n", .{provider.name});
 
     // Optionally set as default
     const set_default = promptSetDefault() catch false;
     if (set_default) {
         try setDefaultProvider(provider.id);
-        std.debug.print("Set '{s}' as default provider\n", .{provider.name});
+        out("Set '{s}' as default provider\n", .{provider.name});
     }
 
-    std.debug.print("\nDone! Run 'crushcode list --models {s}' to see available models\n", .{provider.id});
+    out("\nDone! Run 'crushcode list --models {s}' to see available models\n", .{provider.id});
 }
 
 /// Set default provider in config
@@ -310,7 +314,7 @@ fn updateConfigDefault(content: []const u8, provider_id: []const u8) !void {
 
 /// Print help message
 pub fn printConnectHelp() void {
-    std.debug.print(
+    out(
         \\
         \\Usage: crushcode connect
         \\

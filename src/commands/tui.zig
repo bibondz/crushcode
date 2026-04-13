@@ -3,6 +3,12 @@ const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
 
+/// Write to stdout via file_compat (std.debug.print writes to stderr,
+/// which is wrong for ANSI escape codes and interactive TUI output).
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
+
 /// Terminal UI utilities for interactive sessions
 /// ANSI color codes
 pub const Color = enum(u8) {
@@ -19,12 +25,12 @@ pub const Color = enum(u8) {
 
 /// Print ANSI color code
 pub fn color(comptime c: Color) void {
-    std.debug.print("\x1b[{d}m", .{@intFromEnum(c)});
+    out("\x1b[{d}m", .{@intFromEnum(c)});
 }
 
 /// Print bold color
 pub fn boldColor(comptime c: Color) void {
-    std.debug.print("\x1b[1;{d}m", .{@intFromEnum(c)});
+    out("\x1b[1;{d}m", .{@intFromEnum(c)});
 }
 
 /// Reset terminal formatting
@@ -34,32 +40,32 @@ pub fn reset() void {
 
 /// Clear screen
 pub fn clearScreen() void {
-    std.debug.print("\x1b[2J", .{});
+    out("\x1b[2J", .{});
 }
 
 /// Move cursor to home position
 pub fn cursorHome() void {
-    std.debug.print("\x1b[H", .{});
+    out("\x1b[H", .{});
 }
 
 /// Move cursor up n lines
 pub fn cursorUp(n: u32) void {
-    std.debug.print("\x1b[{d}A", .{n});
+    out("\x1b[{d}A", .{n});
 }
 
 /// Move cursor down n lines
 pub fn cursorDown(n: u32) void {
-    std.debug.print("\x1b[{d}B", .{n});
+    out("\x1b[{d}B", .{n});
 }
 
 /// Save cursor position
 pub fn saveCursor() void {
-    std.debug.print("\x1b[s", .{});
+    out("\x1b[s", .{});
 }
 
 /// Restore cursor position
 pub fn restoreCursor() void {
-    std.debug.print("\x1b[u", .{});
+    out("\x1b[u", .{});
 }
 
 /// Get terminal size
@@ -134,35 +140,35 @@ pub const LineEditor = struct {
 /// Print a prompt with color
 pub fn printPrompt(prompt: []const u8) void {
     color(.cyan);
-    std.debug.print("{s}", .{prompt});
+    out("{s}", .{prompt});
     reset();
 }
 
 /// Print success message
 pub fn printSuccess(msg: []const u8) void {
     color(.green);
-    std.debug.print("{s}", .{msg});
+    out("{s}", .{msg});
     reset();
 }
 
 /// Print error message
 pub fn printError(msg: []const u8) void {
     color(.red);
-    std.debug.print("{s}", .{msg});
+    out("{s}", .{msg});
     reset();
 }
 
 /// Print warning message
 pub fn printWarning(msg: []const u8) void {
     color(.yellow);
-    std.debug.print("{s}", .{msg});
+    out("{s}", .{msg});
     reset();
 }
 
 /// Print info message
 pub fn printInfo(msg: []const u8) void {
     color(.blue);
-    std.debug.print("{s}", .{msg});
+    out("{s}", .{msg});
     reset();
 }
 
@@ -170,20 +176,20 @@ pub fn printInfo(msg: []const u8) void {
 pub fn drawSeparator() void {
     const size = getTerminalSize();
     const width = if (size) |s| s.cols else 80;
-    std.debug.print("\x1b[90m", .{});
-    for (0..width) |_| std.debug.print("-", .{});
-    std.debug.print("\x1b[0m\n", .{});
+    out("\x1b[90m", .{});
+    for (0..width) |_| out("-", .{});
+    out("\x1b[0m\n", .{});
 }
 
 /// Draw a box with title
 pub fn drawBox(title: []const u8, content: []const u8) void {
     drawSeparator();
     color(.magenta);
-    std.debug.print(" {s} ", .{title});
+    out(" {s} ", .{title});
     reset();
-    std.debug.print("\n");
+    out("\n");
     drawSeparator();
-    std.debug.print("{s}\n", .{content});
+    out("{s}\n", .{content});
     drawSeparator();
 }
 
@@ -194,29 +200,29 @@ pub fn runInteractive() !void {
 
     // Print welcome header
     boldColor(.cyan);
-    std.debug.print("╔══════════════════════════════════════╗\n", .{});
-    std.debug.print("║       Crushcode Interactive Mode     ║\n", .{});
-    std.debug.print("╚══════════════════════════════════════╝\n", .{});
+    out("╔══════════════════════════════════════╗\n", .{});
+    out("║       Crushcode Interactive Mode     ║\n", .{});
+    out("╚══════════════════════════════════════╝\n", .{});
     reset();
 
     drawSeparator();
 
     color(.green);
-    std.debug.print("Commands available:\n", .{});
+    out("Commands available:\n", .{});
     reset();
-    std.debug.print("  chat     - Start AI chat session\n", .{});
-    std.debug.print("  shell    - Execute shell command\n", .{});
-    std.debug.print("  read     - Read file content\n", .{});
-    std.debug.print("  write    - Write to file\n", .{});
-    std.debug.print("  git      - Git operations\n", .{});
-    std.debug.print("  skill    - Run built-in skills\n", .{});
-    std.debug.print("  help     - Show this help\n", .{});
-    std.debug.print("  exit     - Exit TUI\n", .{});
+    out("  chat     - Start AI chat session\n", .{});
+    out("  shell    - Execute shell command\n", .{});
+    out("  read     - Read file content\n", .{});
+    out("  write    - Write to file\n", .{});
+    out("  git      - Git operations\n", .{});
+    out("  skill    - Run built-in skills\n", .{});
+    out("  help     - Show this help\n", .{});
+    out("  exit     - Exit TUI\n", .{});
 
     drawSeparator();
 
     color(.yellow);
-    std.debug.print("Type 'exit' to leave interactive mode.\n", .{});
+    out("Type 'exit' to leave interactive mode.\n", .{});
     reset();
 
     // Simple input loop
@@ -225,7 +231,7 @@ pub fn runInteractive() !void {
     defer editor.deinit();
 
     while (true) {
-        std.debug.print("\n", .{});
+        out("\n", .{});
         printPrompt("crushcode> ");
 
         // For now, just read a line (would need raw mode for full editor)
@@ -248,21 +254,21 @@ pub fn runInteractive() !void {
 
             if (std.mem.eql(u8, std.mem.trim(u8, l, " "), "exit")) {
                 color(.cyan);
-                std.debug.print("Goodbye!\n", .{});
+                out("Goodbye!\n", .{});
                 reset();
                 break;
             }
 
             if (std.mem.eql(u8, std.mem.trim(u8, l, " "), "help")) {
                 color(.green);
-                std.debug.print("Available: chat, shell, read, write, git, skill, exit\n", .{});
+                out("Available: chat, shell, read, write, git, skill, exit\n", .{});
                 reset();
                 continue;
             }
 
             if (l.len > 0) {
                 color(.yellow);
-                std.debug.print("Use 'crushcode {s}' from command line\n", .{std.mem.trim(u8, l, " ")});
+                out("Use 'crushcode {s}' from command line\n", .{std.mem.trim(u8, l, " ")});
                 reset();
             }
         }
@@ -287,7 +293,7 @@ pub const Progress = struct {
         self.current = current;
         const percent = if (self.total > 0) @divExact(self.current * 100, self.total) else 0;
         color(.cyan);
-        std.debug.print("\r{s}: [{s}] {d}%", .{
+        out("\r{s}: [{s}] {d}%", .{
             self.label,
             "##########",
             percent,
@@ -297,7 +303,7 @@ pub const Progress = struct {
 
     pub fn finish(self: *Progress) void {
         self.update(self.total);
-        std.debug.print("\n", .{});
+        out("\n", .{});
     }
 };
 
@@ -321,12 +327,12 @@ pub const Spinner = struct {
         self.frame = (self.frame + 1) % frames.len;
 
         // Clear and rewrite line
-        std.debug.print("\r{s} {c}", .{ self.label, frames[self.frame] });
+        out("\r{s} {c}", .{ self.label, frames[self.frame] });
     }
 
     /// Stop the spinner
     pub fn stop(self: *Spinner) void {
-        std.debug.print("\r{s} Done!\n", .{self.label});
+        out("\r{s} Done!\n", .{self.label});
     }
 };
 
@@ -347,14 +353,14 @@ pub const Selection = struct {
         for (self.items, 0..) |item, i| {
             if (i == self.selected) {
                 color(.green);
-                std.debug.print("> {s}\n", .{item});
+                out("> {s}\n", .{item});
                 reset();
             } else {
-                std.debug.print("  {s}\n", .{item});
+                out("  {s}\n", .{item});
             }
         }
         color(.cyan);
-        std.debug.print("\nUse arrow keys (↑↓) to select, Enter to confirm\n", .{});
+        out("\nUse arrow keys (↑↓) to select, Enter to confirm\n", .{});
         reset();
     }
 

@@ -1,18 +1,33 @@
 const std = @import("std");
-const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
+
+const PTYPlugin = @import("plugins/pty.zig").PTYPlugin;
+const TableFormatterPlugin = @import("plugins/table_formatter.zig").TableFormatterPlugin;
+const NotifierPlugin = @import("plugins/notifier.zig").NotifierPlugin;
+const ShellStrategyPlugin = @import("plugins/shell_strategy.zig").ShellStrategyPlugin;
+const PluginRegistry = @import("plugins/registry.zig").PluginRegistry;
+
+const Plugin = @import("plugins/registry.zig").Plugin;
+const PluginInfo = @import("plugins/registry.zig").PluginInfo;
+const PluginConfig = @import("plugins/registry.zig").PluginConfig;
+const PluginType = @import("plugins/registry.zig").PluginType;
+
+const PTYRequest = @import("plugins/pty.zig").PTYRequest;
+const PTYMethod = @import("plugins/pty.zig").PTYMethod;
+const PTYArgs = @import("plugins/pty.zig").PTYArgs;
+const EventType = @import("plugins/notifier.zig").EventType;
+const NotifierEvent = @import("plugins/notifier.zig").NotifierEvent;
 
 pub const PluginManager = struct {
     allocator: Allocator,
     registry: PluginRegistry,
-    
-    // Built-in plugin instances
+
     pty_plugin: ?PTYPlugin,
     table_formatter: ?TableFormatterPlugin,
     notifier: ?NotifierPlugin,
     shell_strategy: ?ShellStrategyPlugin,
-    
+
     pub fn init(allocator: Allocator) PluginManager {
         return PluginManager{
             .allocator = allocator,
@@ -23,282 +38,185 @@ pub const PluginManager = struct {
             .shell_strategy = null,
         };
     }
-    
+
     pub fn deinit(self: *PluginManager) void {
         self.registry.deinit();
-        
-        if (self.pty_plugin) |plugin| {
-            plugin.deinit();
-        }
-        if (self.table_formatter) |plugin| {
-            plugin.deinit();
-        }
-        if (self.notifier) |plugin| {
-            plugin.deinit();
-        }
-        if (self.shell_strategy) |plugin| {
-            plugin.deinit();
-        }
+
+        if (self.pty_plugin) |*plugin| plugin.deinit();
+        if (self.table_formatter) |_| {}
+        if (self.notifier) |*plugin| plugin.deinit();
+        if (self.shell_strategy) |*plugin| plugin.deinit();
     }
-    
-    // Initialize all built-in plugins
+
     pub fn initializeBuiltIns(self: *PluginManager) !void {
-        // Guard clause: allocator must be valid
-        if (self.allocator == undefined) {
-            return error.InvalidAllocator;
-        }
-        
-        // Initialize PTY Plugin with explicit error handling
-        self.pty_plugin = PTYPlugin.init(self.allocator) catch |err| {
-            std.log.err("Failed to initialize PTY plugin: {}", .{err});
-            return error.PluginInitializationFailed;
-        };
-        if (self.pty_plugin == null) {
-            return error.PTYPluginInitializationFailed;
-        }
-        try self.registry.registerBuiltIn("pty", Plugin{
+        self.pty_plugin = PTYPlugin.init(self.allocator);
+        self.registry.registerBuiltIn("pty", Plugin{
             .name = "pty",
             .version = "1.0.0",
             .description = "Terminal management with PTY sessions",
-            .type = .built_in,
+            .type = .builtin,
             .built_in = .{ .pty = {} },
             .external = null,
         }) catch |err| {
-            std.log.err("Failed to register PTY plugin in registry: {}", .{err});
+            std.log.err("Failed to register PTY plugin: {}", .{err});
             return error.PluginRegistrationFailed;
         };
-        
-        // Initialize Table Formatter Plugin with explicit error handling
-        self.table_formatter = TableFormatterPlugin.init(self.allocator) catch |err| {
-            std.log.err("Failed to initialize Table Formatter plugin: {}", .{err});
-            return error.PluginInitializationFailed;
-        };
-        if (self.table_formatter == null) {
-            return error.TableFormatterPluginInitializationFailed;
-        }
-        try self.registry.registerBuiltIn("table_formatter", Plugin{
+
+        self.table_formatter = TableFormatterPlugin.init(self.allocator);
+        self.registry.registerBuiltIn("table_formatter", Plugin{
             .name = "table_formatter",
             .version = "1.0.0",
             .description = "Auto-format markdown tables",
-            .type = .built_in,
+            .type = .builtin,
             .built_in = .{ .table_formatter = {} },
             .external = null,
         }) catch |err| {
-            std.log.err("Failed to register Table Formatter plugin in registry: {}", .{err});
+            std.log.err("Failed to register Table Formatter plugin: {}", .{err});
             return error.PluginRegistrationFailed;
         };
-        
-        // Initialize Notifier Plugin with explicit error handling
-        self.notifier = NotifierPlugin.init(self.allocator) catch |err| {
-            std.log.err("Failed to initialize Notifier plugin: {}", .{err});
-            return error.PluginInitializationFailed;
-        };
-        if (self.notifier == null) {
-            return error.NotifierPluginInitializationFailed;
-        }
-        try self.registry.registerBuiltIn("notifier", Plugin{
+
+        self.notifier = NotifierPlugin.init(self.allocator);
+        self.registry.registerBuiltIn("notifier", Plugin{
             .name = "notifier",
             .version = "1.0.0",
             .description = "Desktop notifications and sound",
-            .type = .built_in,
+            .type = .builtin,
             .built_in = .{ .notifier = {} },
             .external = null,
         }) catch |err| {
-            std.log.err("Failed to register Notifier plugin in registry: {}", .{err});
+            std.log.err("Failed to register Notifier plugin: {}", .{err});
             return error.PluginRegistrationFailed;
         };
-        
-        // Initialize Shell Strategy Plugin with explicit error handling
-        self.shell_strategy = ShellStrategyPlugin.init(self.allocator) catch |err| {
-            std.log.err("Failed to initialize Shell Strategy plugin: {}", .{err});
-            return error.PluginInitializationFailed;
-        };
-        if (self.shell_strategy == null) {
-            return error.ShellStrategyPluginInitializationFailed;
-        }
-        try self.registry.registerBuiltIn("shell_strategy", Plugin{
+
+        self.shell_strategy = ShellStrategyPlugin.init(self.allocator);
+        self.registry.registerBuiltIn("shell_strategy", Plugin{
             .name = "shell_strategy",
             .version = "1.0.0",
             .description = "Non-interactive shell patterns",
-            .type = .built_in,
+            .type = .builtin,
             .built_in = .{ .shell_strategy = {} },
             .external = null,
         }) catch |err| {
-            std.log.err("Failed to register Shell Strategy plugin in registry: {}", .{err});
+            std.log.err("Failed to register Shell Strategy plugin: {}", .{err});
             return error.PluginRegistrationFailed;
         };
     }
-    
-    // Route request to appropriate plugin
+
     pub fn handleRequest(self: *PluginManager, request_type: []const u8, method: []const u8, args: anytype) !PluginResponse {
-        // Guard clauses for invalid inputs
-        if (request_type.len == 0) {
-            return error.EmptyRequestType;
-        }
-        if (method.len == 0) {
-            return error.EmptyMethod;
-        }
-        
-        // Find plugin that can handle this request
+        if (request_type.len == 0) return error.EmptyRequestType;
+        if (method.len == 0) return error.EmptyMethod;
+
         const plugin = self.registry.findPluginForRequest(request_type) orelse {
-            return PluginResponse{
-                .success = false,
-                .err = "No plugin registered to handle this request type",
-            };
+            return PluginResponse{ .success = false, .err = "No plugin registered to handle this request type" };
         };
-        
-        // Handle request with explicit plugin instance validation
-        switch (plugin.built_in) {
+
+        const built_in = plugin.built_in orelse {
+            return PluginResponse{ .success = false, .err = "Request matched a plugin without a built-in implementation" };
+        };
+
+        switch (built_in) {
             .pty => {
-                const pty = self.pty_plugin orelse {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "PTY plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "PTY plugin instance not available",
-                    };
+                const pty = self.pty_plugin orelse return PluginResponse{ .success = false, .err = "PTY plugin is not initialized" };
+                const pty_method = std.meta.stringToEnum(PTYMethod, method) orelse {
+                    return PluginResponse{ .success = false, .err = "Invalid PTY method" };
                 };
-                
-                const pty_method = @enumFromString(PTYMethod, method) orelse {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Invalid PTY method '{s}' for request type '{s}'. Valid methods are: spawn, resize, kill", .{ method, request_type }) catch "Invalid PTY method",
-                    };
-                };
-                
-                const pty_request = PTYRequest{
+
+                var pty_copy = pty;
+                const pty_response = pty_copy.handleRequest(.{
                     .method = pty_method,
-                    .args = args,
-                };
-                
-                return pty.spawnPTY(pty_request) catch |err| {
+                    .args = buildPTYArgs(args),
+                }) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "PTY plugin failed to spawn PTY session for request type '{s}' method '{s}': {}", .{ request_type, method, err }) catch "PTY spawn failed",
+                        .err = try std.fmt.allocPrint(self.allocator, "PTY plugin request failed: {}", .{err}),
                     };
                 };
-            
+                return PluginResponse.fromPTY(pty_response);
+            },
             .table_formatter => {
-                const formatter = self.table_formatter orelse {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Table Formatter plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Table Formatter plugin instance not available",
-                    };
-                };
-                
+                const formatter = self.table_formatter orelse return PluginResponse{ .success = false, .err = "Table Formatter plugin is not initialized" };
                 if (!std.mem.eql(u8, method, "format_tables")) {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Invalid method '{s}' for Table Formatter plugin. Only 'format_tables' method is supported", .{method}) catch "Invalid Table Formatter method",
-                    };
+                    return PluginResponse{ .success = false, .err = "Invalid method for Table Formatter plugin" };
                 }
-                
-                const text = args.text;
-                if (text.len == 0) {
+
+                var formatter_copy = formatter;
+                const formatted = formatter_copy.formatMarkdownTables(args.text) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .err = "Empty text provided to Table Formatter plugin",
-                    };
-                }
-                
-                return formatter.formatMarkdownTables(text) catch |err| {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Table Formatter plugin failed to format text: {}", .{err}) catch "Table formatting failed",
+                        .err = try std.fmt.allocPrint(self.allocator, "Table formatting failed: {}", .{err}),
                     };
                 };
+                return PluginResponse{
+                    .success = true,
+                    .text = formatted,
+                    .message = "Markdown tables formatted",
+                };
             },
-            
             .notifier => {
-                const notifier = self.notifier orelse {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Notifier plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Notifier plugin instance not available",
-                    };
+                const notifier = self.notifier orelse return PluginResponse{ .success = false, .err = "Notifier plugin is not initialized" };
+                const event_type = std.meta.stringToEnum(EventType, method) orelse {
+                    return PluginResponse{ .success = false, .err = "Invalid notifier event type" };
                 };
-                
-                const event_type = @enumFromString(EventType, method) orelse {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Invalid Notifier event type '{s}' for request type '{s}'", .{ method, request_type }) catch "Invalid Notifier event type",
-                    };
-                };
-                
-                const event = NotifierEvent{
+
+                var notifier_copy = notifier;
+                notifier_copy.handleEvent(.{
                     .type = event_type,
-                    .session_id = args.session_id,
-                    .task_name = args.task_name,
-                    .permission = args.permission,
-                    .permission_granted = args.permission_granted,
-                    .error_message = args.error_message,
+                    .session_id = if (@hasField(@TypeOf(args), "session_id")) args.session_id else null,
+                    .task_name = if (@hasField(@TypeOf(args), "task_name")) args.task_name else null,
+                    .permission = if (@hasField(@TypeOf(args), "permission")) args.permission else null,
+                    .permission_granted = if (@hasField(@TypeOf(args), "permission_granted")) args.permission_granted else null,
+                    .error_message = if (@hasField(@TypeOf(args), "error_message")) args.error_message else null,
                     .timestamp = std.time.timestamp(),
-                };
-                
-                return notifier.handleEvent(event) catch |err| {
+                }) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Notifier plugin failed to handle event: {}", .{err}) catch "Notifier event handling failed",
+                        .err = try std.fmt.allocPrint(self.allocator, "Notifier event handling failed: {}", .{err}),
                     };
                 };
+
+                return PluginResponse{ .success = true, .message = "Notifier event handled" };
             },
-            
             .shell_strategy => {
-                const shell = self.shell_strategy orelse {
+                const shell = self.shell_strategy orelse return PluginResponse{ .success = false, .err = "Shell Strategy plugin is not initialized" };
+                var shell_copy = shell;
+                const processed = shell_copy.processCommand(args.command, args.args) catch |err| {
                     return PluginResponse{
                         .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin registered but instance not available for request type '{s}' method '{s}'", .{ request_type, method }) catch "Shell Strategy plugin instance not available",
+                        .err = try std.fmt.allocPrint(self.allocator, "Shell command processing failed: {}", .{err}),
                     };
                 };
-                
-                const command = args.command;
-                const cmd_args = args.args;
-                
-                if (command.len == 0) {
-                    return PluginResponse{
-                        .success = false,
-                        .err = "Empty command provided to Shell Strategy plugin",
-                    };
-                }
-                
-                return shell.processCommand(command, cmd_args) catch |err| {
-                    return PluginResponse{
-                        .success = false,
-                        .err = std.fmt.allocPrint(self.allocator, "Shell Strategy plugin failed to process command: {}", .{err}) catch "Shell command processing failed",
-                    };
+
+                return PluginResponse{
+                    .success = processed.allowed,
+                    .message = if (processed.allowed) "Shell command processed" else processed.reason,
+                    .err = if (processed.allowed) null else processed.reason,
                 };
             },
         }
     }
-    
-    // Get plugin status and info
+
     pub fn getPluginStatus(self: *PluginManager, plugin_name: []const u8) !PluginStatus {
         if (self.registry.getPlugin(plugin_name)) |plugin| {
-            const enabled = self.registry.isPluginEnabled(plugin_name);
-            const config = self.registry.plugin_configs.get(plugin_name) orelse PluginConfig.default;
-            
             return PluginStatus{
                 .name = plugin.name,
                 .version = plugin.version,
                 .description = plugin.description,
-                .enabled = enabled,
+                .enabled = self.registry.isPluginEnabled(plugin_name),
                 .type = plugin.type,
-                .config = config,
+                .config = self.registry.plugin_configs.get(plugin_name) orelse PluginConfig.default(self.allocator),
             };
         }
-        
         return error.PluginNotFound;
     }
-    
-    // Enable/disable plugins
+
     pub fn setPluginEnabled(self: *PluginManager, plugin_name: []const u8, enabled: bool) !void {
         try self.registry.setPluginEnabled(plugin_name, enabled);
     }
-    
-    // List all plugins
+
     pub fn listPlugins(self: *PluginManager) ![]PluginInfo {
-        return self.registry.listPlugins();
+        return try self.registry.listPlugins();
     }
-    
-    // Load plugin configuration from a JSON file
-    // Format: {"plugin_name":{"enabled":true,"priority":50}, ...}
+
     pub fn loadPluginConfig(self: *PluginManager, config_path: []const u8) !void {
         const file = std.fs.cwd().openFile(config_path, .{}) catch |err| {
             if (err == error.FileNotFound) {
@@ -311,44 +229,43 @@ pub const PluginManager = struct {
 
         const file_size = try file.getEndPos();
         if (file_size == 0 or file_size > 1024 * 1024) return;
+
         const buf = try self.allocator.alloc(u8, file_size);
         defer self.allocator.free(buf);
 
         const bytes_read = try file.readAll(buf);
         const data = buf[0..bytes_read];
 
-        // Simple JSON parsing: find each "plugin_name":{...}
         var i: usize = 0;
         while (i < data.len and data[i] != '{') : (i += 1) {}
         if (i >= data.len) return;
-        i += 1; // skip {
+        i += 1;
 
         while (i < data.len) {
-            // Skip whitespace
             while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
             if (i >= data.len or data[i] == '}') break;
             if (data[i] != '"') break;
 
-            // Parse plugin name
             i += 1;
             const name_start = i;
             while (i < data.len and data[i] != '"') : (i += 1) {}
             const plugin_name = data[name_start..i];
             i += 1;
 
-            // Skip to value
             while (i < data.len and data[i] != ':') : (i += 1) {}
             i += 1;
             while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
             if (i >= data.len or data[i] != '{') break;
 
-            // Parse config object
-            i += 1; // skip {
+            i += 1;
             var enabled = true;
 
             while (i < data.len) {
                 while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
-                if (i >= data.len or data[i] == '}') { i += 1; break; }
+                if (i >= data.len or data[i] == '}') {
+                    i += 1;
+                    break;
+                }
                 if (data[i] != '"') break;
 
                 i += 1;
@@ -370,38 +287,29 @@ pub const PluginManager = struct {
                         i += 5;
                     }
                 } else if (std.mem.eql(u8, field_name, "priority")) {
-                    // Skip number
                     while (i < data.len and std.mem.indexOfScalar(u8, "0123456789", data[i]) != null) : (i += 1) {}
+                } else if (data[i] == '"') {
+                    i += 1;
+                    while (i < data.len and data[i] != '"') : (i += 1) {}
+                    i += 1;
                 } else {
-                    // Skip unknown field value
-                    if (data[i] == '"') {
-                        i += 1;
-                        while (i < data.len and data[i] != '"') : (i += 1) {}
-                        i += 1;
-                    } else {
-                        while (i < data.len and data[i] != ',' and data[i] != '}') : (i += 1) {}
-                    }
+                    while (i < data.len and data[i] != ',' and data[i] != '}') : (i += 1) {}
                 }
 
-                // Skip comma
                 while (i < data.len and (data[i] == ',' or data[i] == ' ')) : (i += 1) {}
             }
 
-            // Apply config — disable plugins that are marked disabled
             if (!enabled) {
                 self.setPluginEnabled(plugin_name, false) catch {};
             }
 
-            // Skip trailing comma
             while (i < data.len and (data[i] == ',' or data[i] == ' ' or data[i] == '\n')) : (i += 1) {}
         }
 
         std.log.info("Loaded plugin configuration from {s}", .{config_path});
     }
-    
-    // Save plugin configuration to a JSON file
+
     pub fn savePluginConfig(self: *PluginManager, config_path: []const u8) !void {
-        // Ensure directory exists
         const dir = std.fs.path.dirname(config_path) orelse return error.InvalidPath;
         std.fs.cwd().makePath(dir) catch {};
 
@@ -411,13 +319,14 @@ pub const PluginManager = struct {
         const writer = file.writer();
         try writer.writeAll("{");
 
-        const plugins = self.listPlugins() catch &[_]PluginInfo{};
+        const plugins = try self.listPlugins();
+        defer self.allocator.free(plugins);
+
         for (plugins, 0..) |info, idx| {
             if (idx > 0) try writer.writeAll(",");
-            const is_enabled = self.registry.isPluginEnabled(info.name);
             try writer.print("\"{s}\":{{\"enabled\":{},\"priority\":50}}", .{
                 info.name,
-                is_enabled,
+                self.registry.isPluginEnabled(info.name),
             });
         }
 
@@ -426,32 +335,41 @@ pub const PluginManager = struct {
     }
 };
 
-// Import plugin types
-const PTYPlugin = @import("pty.zig").PTYPlugin;
-const TableFormatterPlugin = @import("table_formatter.zig").TableFormatterPlugin;
-const NotifierPlugin = @import("notifier.zig").NotifierPlugin;
-const ShellStrategyPlugin = @import("shell_strategy.zig").ShellStrategyPlugin;
-const PluginRegistry = @import("registry.zig").PluginRegistry;
+pub const PluginStatus = struct {
+    name: []const u8,
+    version: []const u8,
+    description: []const u8,
+    enabled: bool,
+    type: PluginType,
+    config: PluginConfig,
+};
 
-// Import shared types
-const Plugin = @import("registry.zig").Plugin;
-const PluginInfo = @import("registry.zig").PluginInfo;
-const PluginConfig = @import("registry.zig").PluginConfig;
-const PluginStatus = @import("registry.zig").PluginStatus;
+pub const PluginResponse = struct {
+    success: bool,
+    data: ?std.json.Value = null,
+    text: ?[]const u8 = null,
+    message: ?[]const u8 = null,
+    err: ?[]const u8 = null,
 
-// Import plugin-specific types
-const PTYRequest = @import("pty.zig").PTYRequest;
-const PTYMethod = @import("pty.zig").PTYMethod;
-const EventType = @import("notifier.zig").EventType;
-const NotifierEvent = @import("notifier.zig").NotifierEvent;
-const PluginResponse = @import("pty.zig").PTYResponse;
-
-// Helper functions
-fn @enumFromString(comptime T: type, str: []const u8) ?T {
-    inline for (@typeInfo(T).Enum.fields) |field| {
-        if (std.mem.eql(u8, str, field.name)) {
-            return @field(T, field.name);
-        }
+    fn fromPTY(response: @import("plugins/pty.zig").PTYResponse) PluginResponse {
+        return PluginResponse{
+            .success = response.success,
+            .data = response.data,
+            .message = response.message,
+            .err = response.err,
+        };
     }
-    return null;
+};
+
+fn buildPTYArgs(args: anytype) PTYArgs {
+    return PTYArgs{
+        .session_id = if (@hasField(@TypeOf(args), "session_id")) args.session_id else null,
+        .command = if (@hasField(@TypeOf(args), "command")) args.command else null,
+        .command_parts = if (@hasField(@TypeOf(args), "command_parts")) args.command_parts else null,
+        .cwd = if (@hasField(@TypeOf(args), "cwd")) args.cwd else null,
+        .data = if (@hasField(@TypeOf(args), "data")) args.data else null,
+        .rows = if (@hasField(@TypeOf(args), "rows")) args.rows else null,
+        .cols = if (@hasField(@TypeOf(args), "cols")) args.cols else null,
+        .env = if (@hasField(@TypeOf(args), "env")) args.env else null,
+    };
 }

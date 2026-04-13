@@ -47,9 +47,8 @@ pub const TableFormatterPlugin = struct {
     }
 
     fn isTableStart(self: *TableFormatterPlugin, slice: []const u8) bool {
-        _ = self;
-        return (std.mem.startsWith(slice, "|") or
-            std.mem.startsWith(slice, "|---") or
+        return (std.mem.startsWith(u8, slice, "|") or
+            std.mem.startsWith(u8, slice, "|---") or
             (self.containsTableRow(slice)));
     }
 
@@ -118,10 +117,10 @@ pub const TableFormatterPlugin = struct {
         const col_count = rows.items[0].cells.len;
         var col_widths = try self.allocator.alloc(usize, col_count);
         defer self.allocator.free(col_widths);
-        std.mem.set(usize, col_widths, 0);
+        @memset(col_widths, 0);
 
         for (rows.items) |row| {
-            for (row.cells, i) |cell, col| {
+            for (row.cells, 0..) |cell, col| {
                 const display_width = if (self.concealment_mode)
                     self.calculateConcealedWidth(cell)
                 else
@@ -135,9 +134,9 @@ pub const TableFormatterPlugin = struct {
         defer result.deinit();
 
         for (rows.items, 0..) |row, row_idx| {
-            try result.append("|");
+            try result.append('|');
 
-            for (row.cells, i) |cell, col| {
+            for (row.cells, 0..) |cell, col| {
                 const padding = col_widths[col] - if (self.concealment_mode)
                     self.calculateConcealedWidth(cell)
                 else
@@ -146,14 +145,18 @@ pub const TableFormatterPlugin = struct {
                 try result.append(' ');
                 try result.appendSlice(cell);
                 try result.append(' ');
+                var pad_idx: usize = 0;
+                while (pad_idx < padding) : (pad_idx += 1) {
+                    try result.append(' ');
+                }
                 try result.append('|');
             }
 
             try result.append('\n');
 
             if (row_idx == 0) {
-                try result.append("|");
-                for (col_widths, i) |width, col| {
+                try result.append('|');
+                for (col_widths) |width| {
                     try result.append('-');
                     var j: usize = 0;
                     while (j < width + 2) : (j += 1) {
@@ -165,12 +168,10 @@ pub const TableFormatterPlugin = struct {
             }
         }
 
-        return result.toOwnedSlice();
+        return try result.toOwnedSlice();
     }
 
     fn parseTableRow(self: *TableFormatterPlugin, line: []const u8) !Table {
-        _ = self;
-
         var cells = array_list_compat.ArrayList([]const u8).init(self.allocator);
         defer cells.deinit();
 
@@ -198,7 +199,7 @@ pub const TableFormatterPlugin = struct {
         }
 
         return Table{
-            .cells = cells.toOwnedSlice(),
+            .cells = try cells.toOwnedSlice(),
         };
     }
 

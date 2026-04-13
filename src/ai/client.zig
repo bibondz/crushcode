@@ -361,24 +361,24 @@ pub const AIClient = struct {
         }
 
         if (debug) {
-            std.debug.print("\n=== Crushcode AI Client ===\n", .{});
-            std.debug.print("Provider: {s}\n", .{self.provider.name});
-            std.debug.print("Model: {s}\n", .{self.model});
-            std.debug.print("API Endpoint: {s}/chat/completions\n", .{self.provider.config.base_url});
+            std.log.debug("\n=== Crushcode AI Client ===", .{});
+            std.log.debug("Provider: {s}", .{self.provider.name});
+            std.log.debug("Model: {s}", .{self.model});
+            std.log.debug("API Endpoint: {s}/chat/completions", .{self.provider.config.base_url});
             if (single_message) |msg| {
-                std.debug.print("User Message: {s}\n", .{msg});
+                std.log.debug("User Message: {s}", .{msg});
             } else if (messages) |msgs| {
-                std.debug.print("Messages: {d}\n", .{msgs.len});
+                std.log.debug("Messages: {d}", .{msgs.len});
             }
         }
 
         while (attempt < retry_config.max_attempts) {
             attempt += 1;
-            if (debug) std.debug.print("\n[Attempt {d}/{d}]\n", .{ attempt, retry_config.max_attempts });
+            if (debug) std.log.debug("\n[Attempt {d}/{d}]", .{ attempt, retry_config.max_attempts });
 
             if (attempt > 1) {
                 const delay_ms = error_handler_mod.calculateDelay(attempt - 1, retry_config);
-                if (debug) std.debug.print("Waiting {d}ms before retry...\n", .{delay_ms});
+                if (debug) std.log.debug("Waiting {d}ms before retry...", .{delay_ms});
                 std.Thread.sleep(@as(u64, delay_ms) * std.time.ns_per_ms);
             }
 
@@ -388,7 +388,7 @@ pub const AIClient = struct {
                 try self.performHttpRequestHistory(messages.?, has_key, is_local, attempt, debug);
 
             if (result.err) |err| {
-                if (debug) std.debug.print("Request failed: {s}\n", .{error_handler_mod.formatError(err)});
+                if (debug) std.log.debug("Request failed: {s}", .{error_handler_mod.formatError(err)});
                 if (!error_handler_mod.isRetryableError(err.error_type)) {
                     return error.RetryExhausted;
                 }
@@ -396,7 +396,7 @@ pub const AIClient = struct {
             }
 
             if (result.response) |response| {
-                if (debug) std.debug.print("✅ Request succeeded\n", .{});
+                if (debug) std.log.debug("✅ Request succeeded", .{});
                 return response;
             }
         }
@@ -418,9 +418,9 @@ pub const AIClient = struct {
         const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else if (std.mem.eql(u8, self.provider.name, "opencode-zen")) "/chat/completions" else if (std.mem.eql(u8, self.provider.name, "opencode-go")) "/chat/completions" else "/chat/completions";
 
         if (debug) {
-            std.debug.print("\n[HTTP Request]\n", .{});
-            std.debug.print("Method: POST\n", .{});
-            std.debug.print("URL: {s}{s}\n", .{ self.provider.config.base_url, chat_path });
+            std.log.debug("\n[HTTP Request]", .{});
+            std.log.debug("Method: POST", .{});
+            std.log.debug("URL: {s}{s}", .{ self.provider.config.base_url, chat_path });
         }
 
         const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, chat_path });
@@ -430,13 +430,13 @@ pub const AIClient = struct {
             \\{{"model":"{s}","messages":[{{"role":"user","content":"{s}"}}],"max_tokens":2048,"temperature":0.7}}
         , .{ self.getApiModelName(), user_message });
         defer allocator.free(json_body);
-        if (debug) std.debug.print("Body: {s}\n", .{json_body});
+        if (debug) std.log.debug("Body: {s}", .{json_body});
 
         const headers = try self.buildHeaders();
         defer freeHeaders(allocator, headers);
 
         const fetch_result = http_client.httpPost(allocator, endpoint, headers, json_body) catch |err| {
-            if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
+            if (debug) std.log.debug("HTTP Error: {s}", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.NetworkError,
@@ -447,11 +447,11 @@ pub const AIClient = struct {
         };
         defer allocator.free(fetch_result.body);
 
-        if (debug) std.debug.print("Response Status: {}\n", .{fetch_result.status});
+        if (debug) std.log.debug("Response Status: {}", .{fetch_result.status});
 
         if (fetch_result.status != .ok) {
             const error_body = fetch_result.body;
-            if (debug) std.debug.print("Error Response: {s}\n", .{error_body});
+            if (debug) std.log.debug("Error Response: {s}", .{error_body});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.ServerError,
@@ -545,9 +545,9 @@ pub const AIClient = struct {
         const chat_path = if (std.mem.eql(u8, self.provider.name, "ollama")) "/chat" else "/chat/completions";
 
         if (debug) {
-            std.debug.print("\n[HTTP Request with History]\n", .{});
-            std.debug.print("Method: POST\n", .{});
-            std.debug.print("URL: {s}{s}\n", .{ self.provider.config.base_url, chat_path });
+            std.log.debug("\n[HTTP Request with History]", .{});
+            std.log.debug("Method: POST", .{});
+            std.log.debug("URL: {s}{s}", .{ self.provider.config.base_url, chat_path });
         }
 
         const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, chat_path });
@@ -605,13 +605,13 @@ pub const AIClient = struct {
         const json_body_slice = try json_body.toOwnedSlice();
         defer allocator.free(json_body_slice);
 
-        if (debug) std.debug.print("Body: {s}\n", .{json_body_slice[0..@min(200, json_body_slice.len)]});
+        if (debug) std.log.debug("Body: {s}", .{json_body_slice[0..@min(200, json_body_slice.len)]});
 
         const headers = try self.buildHeaders();
         defer freeHeaders(allocator, headers);
 
         const fetch_result = http_client.httpPost(allocator, endpoint, headers, json_body_slice) catch |err| {
-            if (debug) std.debug.print("HTTP Error: {s}\n", .{@errorName(err)});
+            if (debug) std.log.debug("HTTP Error: {s}", .{@errorName(err)});
             return HTTPResult{
                 .err = error_handler_mod.ErrorResponse.init(
                     error_handler_mod.AIClientError.NetworkError,
@@ -622,7 +622,7 @@ pub const AIClient = struct {
         };
         defer allocator.free(fetch_result.body);
 
-        if (debug) std.debug.print("Response Status: {}\n", .{fetch_result.status});
+        if (debug) std.log.debug("Response Status: {}", .{fetch_result.status});
 
         if (fetch_result.status != .ok) {
             return HTTPResult{

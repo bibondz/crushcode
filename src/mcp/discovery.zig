@@ -3,6 +3,7 @@ const array_list_compat = @import("array_list_compat");
 const builtin = @import("builtin");
 const env = @import("env");
 const http_client = @import("http_client");
+const json_extract = @import("json_extract");
 const MCPClient = @import("mcp_client").MCPClient;
 const MCPServerConfig = @import("mcp_client").MCPServerConfig;
 
@@ -274,6 +275,7 @@ pub const MCPDiscovery = struct {
         if (data.len == 0) return;
 
         // Parse response: {"objects":[{"package":{"name":"@mcp/server","description":"...","links":{"npm":"..."}}}]}
+        // json_extract only handles flat key/value pairs, so nested package objects stay manual.
         // Find the "objects" array
         const objects_key = "\"objects\"";
         const objects_idx = std.mem.indexOf(u8, data, objects_key) orelse return;
@@ -385,6 +387,7 @@ pub const MCPDiscovery = struct {
         const data = buf[0..bytes_read];
 
         // Parse JSON: {"server_name":{"transport":"stdio","command":"...","url":"...","description":"..."}}
+        // json_extract does not handle nested server config objects, so manual parsing remains here.
         var i: usize = 0;
         while (i < data.len and data[i] != '{') : (i += 1) {}
         if (i >= data.len) return;

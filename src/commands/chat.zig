@@ -2,6 +2,10 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
@@ -49,7 +53,7 @@ const PermissionResult = permission_mod.PermissionResult;
 var active_evaluator: ?PermissionEvaluator = null;
 
 fn preRequestHook(ctx: *HookContext) !void {
-    std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
+    out("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
         @tagName(ctx.phase),
         ctx.provider,
         ctx.model,
@@ -57,7 +61,7 @@ fn preRequestHook(ctx: *HookContext) !void {
 }
 
 fn postRequestHook(ctx: *HookContext) !void {
-    std.debug.print("\x1b[2m[hook: {s} ← {s}/{s} | tokens: {d}]\x1b[0m\n", .{
+    out("\x1b[2m[hook: {s} ← {s}/{s} | tokens: {d}]\x1b[0m\n", .{
         @tagName(ctx.phase),
         ctx.provider,
         ctx.model,
@@ -214,12 +218,12 @@ fn adaptToolExecution(
         switch (perm_result.action) {
             .deny => {
                 const msg = perm_result.error_message orelse "Permission denied";
-                std.debug.print("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
+                out("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
                 return try ToolResult.init(allocator, call_id, msg, false);
             },
             .ask => {
                 // Prompt user for permission
-                std.debug.print("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
+                out("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
                 var buf: [16]u8 = undefined;
                 const stdin = file_compat.File.stdin().reader();
                 const answer = stdin.readUntilDelimiterOrEof(&buf, '\n') catch "n" orelse "n";
@@ -229,7 +233,7 @@ fn adaptToolExecution(
             },
             .allow => {
                 // Proceed
-                std.debug.print("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
+                out("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
             },
         }
     } else {
@@ -237,7 +241,7 @@ fn adaptToolExecution(
         const is_shell = std.mem.eql(u8, tool_name, "shell");
         const is_write = std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit");
         if (is_shell or is_write) {
-            std.debug.print("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
+            out("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
         }
     }
 
@@ -249,7 +253,7 @@ fn adaptToolExecution(
     defer allocator.free(execution.display);
     defer allocator.free(execution.result);
 
-    std.debug.print("\n{s}", .{execution.display});
+    out("\n{s}", .{execution.display});
 
     // JSON: emit tool_result event
     active_json_output.emitToolResult(call_id, execution.result, success);
@@ -393,28 +397,28 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     pre_request_ctx.token_count = clampUsizeToU32(last_content_len);
     try ctx.hooks.execute(.pre_request, &pre_request_ctx);
 
-    std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
+    out("\n\x1b[36mAssistant:\x1b[0m ", .{});
 
     var response: core.ChatResponse = undefined;
     if (active_streaming_enabled) {
         // Streaming mode — print tokens as they arrive
         response = ctx.client.sendChatStreaming(ctx.messages.items, interactiveStreamCallback) catch |err| {
             ctx.turn_failed = true;
-            std.debug.print("\n\nError: {}\n", .{err});
+            out("\n\nError: {}\n", .{err});
             return err;
         };
     } else {
         // Non-streaming mode (default) — more reliable, avoids Zig stdlib HTTP bugs
         response = ctx.client.sendChatWithHistory(ctx.messages.items) catch |err| {
             ctx.turn_failed = true;
-            std.debug.print("\n\nError: {}\n", .{err});
+            out("\n\nError: {}\n", .{err});
             return err;
         };
     }
 
     if (response.choices.len == 0) {
         ctx.turn_failed = true;
-        std.debug.print("\n\nError: Empty response from AI\n", .{});
+        out("\n\nError: Empty response from AI\n", .{});
         return error.EmptyResponse;
     }
 
@@ -428,7 +432,7 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
     if (response.usage) |usage| {
         ctx.total_input_tokens.* += usage.prompt_tokens;
         ctx.total_output_tokens.* += usage.completion_tokens;
-        std.debug.print("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
+        out("\n\x1b[2m({d} tokens in / {d} out | session total: {d})\x1b[0m", .{
             usage.prompt_tokens,
             usage.completion_tokens,
             ctx.total_input_tokens.* + ctx.total_output_tokens.*,
@@ -441,7 +445,7 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
         // JSON: emit assistant response without usage
         ctx.json_out.emitAssistant(content);
     }
-    std.debug.print("\n", .{});
+    out("\n", .{});
 
     var post_request_ctx = HookContext.init(arena);
     defer post_request_ctx.deinit();
@@ -463,7 +467,7 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
 
     if (std.mem.eql(u8, finish_reason_text, "tool_calls") and parsed_tool_calls.len == 0) {
         ctx.turn_failed = true;
-        std.debug.print("\nError: Model requested tool calls but none were parsed\n", .{});
+        out("\nError: Model requested tool calls but none were parsed\n", .{});
         return error.InvalidToolCallResponse;
     }
 
@@ -796,31 +800,31 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     // Single message mode (original behavior)
     if (args.remaining.len == 0) {
-        std.debug.print("Crushcode - AI Coding Assistant\n", .{});
-        std.debug.print("Usage: crushcode chat <message> [--provider <name>] [--model <name>] [--interactive]\n\n", .{});
-        std.debug.print("Available Providers:\n", .{});
-        std.debug.print("  openai - GPT models\n", .{});
-        std.debug.print("  anthropic - Claude models\n", .{});
-        std.debug.print("  gemini - Gemini models\n", .{});
-        std.debug.print("  xai - Grok models\n", .{});
-        std.debug.print("  mistral - Mistral models\n", .{});
-        std.debug.print("  groq - Groq models\n", .{});
-        std.debug.print("  deepseek - DeepSeek models\n", .{});
-        std.debug.print("  together - Together AI\n", .{});
-        std.debug.print("  azure - Azure OpenAI\n", .{});
-        std.debug.print("  vertexai - Google Vertex AI\n", .{});
-        std.debug.print("  bedrock - AWS Bedrock\n", .{});
-        std.debug.print("  ollama - Local LLM\n", .{});
-        std.debug.print("  lm-studio - LM Studio\n", .{});
-        std.debug.print("  llama-cpp - llama.cpp\n", .{});
-        std.debug.print("  openrouter - OpenRouter\n", .{});
-        std.debug.print("  zai - Zhipu AI\n", .{});
-        std.debug.print("  vercel-gateway - Vercel Gateway\n", .{});
-        std.debug.print("\nExamples:\n", .{});
-        std.debug.print("  crushcode chat \"Hello! Can you help me?\"\n", .{});
-        std.debug.print("  crushcode chat --provider openai --model gpt-4o \"Hello\"\n", .{});
-        std.debug.print("  crushcode chat --provider anthropic \"Help me code\"\n", .{});
-        std.debug.print("  crushcode chat --interactive\n", .{});
+        out("Crushcode - AI Coding Assistant\n", .{});
+        out("Usage: crushcode chat <message> [--provider <name>] [--model <name>] [--interactive]\n\n", .{});
+        out("Available Providers:\n", .{});
+        out("  openai - GPT models\n", .{});
+        out("  anthropic - Claude models\n", .{});
+        out("  gemini - Gemini models\n", .{});
+        out("  xai - Grok models\n", .{});
+        out("  mistral - Mistral models\n", .{});
+        out("  groq - Groq models\n", .{});
+        out("  deepseek - DeepSeek models\n", .{});
+        out("  together - Together AI\n", .{});
+        out("  azure - Azure OpenAI\n", .{});
+        out("  vertexai - Google Vertex AI\n", .{});
+        out("  bedrock - AWS Bedrock\n", .{});
+        out("  ollama - Local LLM\n", .{});
+        out("  lm-studio - LM Studio\n", .{});
+        out("  llama-cpp - llama.cpp\n", .{});
+        out("  openrouter - OpenRouter\n", .{});
+        out("  zai - Zhipu AI\n", .{});
+        out("  vercel-gateway - Vercel Gateway\n", .{});
+        out("\nExamples:\n", .{});
+        out("  crushcode chat \"Hello! Can you help me?\"\n", .{});
+        out("  crushcode chat --provider openai --model gpt-4o \"Hello\"\n", .{});
+        out("  crushcode chat --provider anthropic \"Help me code\"\n", .{});
+        out("  crushcode chat --interactive\n", .{});
         return;
     }
 
@@ -844,8 +848,8 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     try registry.registerAllProviders();
 
     const provider = registry.getProvider(provider_name) orelse {
-        std.debug.print("Error: Provider '{s}' not found\n", .{provider_name});
-        std.debug.print("Run 'crushcode list' to see available providers\n", .{});
+        out("Error: Provider '{s}' not found\n", .{provider_name});
+        out("Run 'crushcode list' to see available providers\n", .{});
         return error.ProviderNotFound;
     };
 
@@ -859,9 +863,9 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
 
     if (api_key.len == 0) {
-        std.debug.print("Warning: No API key found for provider '{s}'\n", .{provider_name});
-        std.debug.print("Add your API key to ~/.crushcode/config.toml\n", .{});
-        std.debug.print("Example: {s} = \"your-api-key\"\n\n", .{provider_name});
+        out("Warning: No API key found for provider '{s}'\n", .{provider_name});
+        out("Add your API key to ~/.crushcode/config.toml\n", .{});
+        out("Example: {s} = \"your-api-key\"\n\n", .{provider_name});
 
         if (!std.mem.eql(u8, provider_name, "ollama") and
             !std.mem.eql(u8, provider_name, "lm_studio") and
@@ -911,7 +915,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         ai_client.setSystemPrompt(sp);
     }
 
-    std.debug.print("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
+    out("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
     // JSON: emit session start
     json_out.emitSessionStart(provider_name, model_name);
@@ -937,24 +941,24 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
                 }
             }
         }.callback) catch |err| {
-            std.debug.print("\nError sending streaming request: {}\n", .{err});
+            out("\nError sending streaming request: {}\n", .{err});
             json_out.emitError(@errorName(err));
             return err;
         };
 
-        std.debug.print("\n", .{});
+        out("\n", .{});
         content_slice = "";
     } else {
         // Non-streaming mode (default)
         response = ai_client.sendChat(message) catch |err| {
-            std.debug.print("\nError sending request: {}\n", .{err});
+            out("\nError sending request: {}\n", .{err});
             json_out.emitError(@errorName(err));
             return err;
         };
 
         // Safety check - ensure we have a valid response
         if (response.choices.len == 0) {
-            std.debug.print("\nError: Empty response from AI\n", .{});
+            out("\nError: Empty response from AI\n", .{});
             return error.EmptyResponse;
         }
 
@@ -963,21 +967,21 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         if (choice.message.content) |c| {
             content_slice = c;
         }
-        std.debug.print("{s}\n\n", .{content_slice});
+        out("{s}\n\n", .{content_slice});
     }
-    std.debug.print("\n{s}\n\n", .{content_slice});
-    std.debug.print("---\n", .{});
-    std.debug.print("Provider: {s}\n", .{provider_name});
-    std.debug.print("Model: {s}\n", .{model_name});
+    out("\n{s}\n\n", .{content_slice});
+    out("---\n", .{});
+    out("Provider: {s}\n", .{provider_name});
+    out("Model: {s}\n", .{model_name});
     if (response.usage) |usage| {
-        std.debug.print("Tokens used: {d} prompt + {d} completion = {d} total\n", .{
+        out("Tokens used: {d} prompt + {d} completion = {d} total\n", .{
             usage.prompt_tokens,
             usage.completion_tokens,
             usage.total_tokens,
         });
         // Show extended usage info
         const ext = ai_client.extractExtendedUsage(&response);
-        std.debug.print("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
+        out("\x1b[2m({d} in / {d} out)\x1b[0m\n", .{ ext.input_tokens, ext.output_tokens });
 
         // JSON: emit assistant response and usage
         json_out.emitAssistant(content_slice);
@@ -1010,7 +1014,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     try registry.registerAllProviders();
 
     const provider = registry.getProvider(provider_name) orelse {
-        std.debug.print("Error: Provider '{s}' not found\n", .{provider_name});
+        out("Error: Provider '{s}' not found\n", .{provider_name});
         return error.ProviderNotFound;
     };
 
@@ -1027,7 +1031,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         !std.mem.eql(u8, provider_name, "lm_studio") and
         !std.mem.eql(u8, provider_name, "llama_cpp"))
     {
-        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
+        out("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
         return error.MissingApiKey;
     }
 
@@ -1047,14 +1051,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     // Initialize permission evaluator from --permission flag
     if (args.permission) |perm_str| {
         const mode = PermissionMode.fromString(perm_str) orelse blk: {
-            std.debug.print("Warning: Unknown permission mode '{s}' — using default\n", .{perm_str});
+            out("Warning: Unknown permission mode '{s}' — using default\n", .{perm_str});
             break :blk PermissionMode.default;
         };
         const perm_config = PermissionConfig.init(allocator);
         var eval_config = perm_config;
         eval_config.mode = mode;
         active_evaluator = PermissionEvaluator.init(allocator, eval_config);
-        std.debug.print("\x1b[2m[Permission] mode: {s}\x1b[0m\n", .{mode.toString()});
+        out("\x1b[2m[Permission] mode: {s}\x1b[0m\n", .{mode.toString()});
     }
     defer {
         if (active_evaluator) |*ev| {
@@ -1181,7 +1185,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 \\- edit(file_path: string, old_string: string, new_string: string) — Replace text in a file
             , .{ base_prompt, ctx }) catch base_prompt;
             client.setSystemPrompt(enhanced);
-            std.debug.print("\x1b[2m[graph: {d} files indexed, {d} symbols, {d:.1}x compression]\x1b[0m\n", .{
+            out("\x1b[2m[graph: {d} files indexed, {d} symbols, {d:.1}x compression]\x1b[0m\n", .{
                 indexed_count,
                 kg.nodes.count(),
                 kg.compressionRatio(),
@@ -1227,11 +1231,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer compactor.deinit();
     compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
 
-    std.debug.print("=== Interactive Chat Mode (Streaming) ===\n", .{});
-    std.debug.print("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
-    std.debug.print("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    std.debug.print("Commands: /usage | /clear | /hooks | /compact | /graph | /exit\n", .{});
-    std.debug.print("--------------------------------------------\n\n", .{});
+    out("=== Interactive Chat Mode (Streaming) ===\n", .{});
+    out("Provider: {s} | Model: {s}\n", .{ provider_name, model_name });
+    out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
+    out("Commands: /usage | /clear | /hooks | /compact | /graph | /exit\n", .{});
+    out("--------------------------------------------\n\n", .{});
 
     // JSON: emit session start
     json_out.emitSessionStart(provider_name, model_name);
@@ -1241,11 +1245,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
     while (true) {
         // Print prompt
-        std.debug.print("\n\x1b[32mYou:\x1b[0m ", .{});
+        out("\n\x1b[32mYou:\x1b[0m ", .{});
 
         // Read line
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
-            std.debug.print("\nError reading input\n", .{});
+            out("\nError reading input\n", .{});
             break;
         };
 
@@ -1258,14 +1262,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         // Handle built-in commands
         if (std.mem.eql(u8, user_message, "exit") or std.mem.eql(u8, user_message, "quit") or std.mem.eql(u8, user_message, "/exit")) {
-            std.debug.print("Goodbye!\n", .{});
+            out("Goodbye!\n", .{});
             break;
         }
 
         if (std.mem.eql(u8, user_message, "/usage")) {
-            std.debug.print("\n=== Session Usage ===\n", .{});
-            std.debug.print("  Requests: {d}\n", .{request_count});
-            std.debug.print("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
+            out("\n=== Session Usage ===\n", .{});
+            out("  Requests: {d}\n", .{request_count});
+            out("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
             continue;
         }
 
@@ -1277,7 +1281,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             total_input_tokens = 0;
             total_output_tokens = 0;
             request_count = 0;
-            std.debug.print("History cleared.\n", .{});
+            out("History cleared.\n", .{});
             continue;
         }
 
@@ -1287,11 +1291,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
 
         if (std.mem.eql(u8, user_message, "/compact")) {
-            std.debug.print("\n=== Manual Compaction ===\n", .{});
+            out("\n=== Manual Compaction ===\n", .{});
             compactor.printStatus(total_input_tokens + total_output_tokens);
 
             if (messages.items.len > 12) {
-                std.debug.print("  Compacting now...\n", .{});
+                out("  Compacting now...\n", .{});
                 var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
                 defer compact_msgs.deinit();
                 for (messages.items) |msg| {
@@ -1302,7 +1306,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     });
                 }
                 const result = compactor.compact(compact_msgs.items) catch |err| {
-                    std.debug.print("  Compaction failed: {}\n", .{err});
+                    out("  Compaction failed: {}\n", .{err});
                     continue;
                 };
                 if (result.messages_summarized > 0) {
@@ -1326,7 +1330,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                         }) catch continue;
                     }
                     allocator.free(result.summary);
-                    std.debug.print("  Compacted {d} messages, saved ~{d} tokens.\n", .{
+                    out("  Compacted {d} messages, saved ~{d} tokens.\n", .{
                         result.messages_summarized,
                         result.tokens_saved,
                     });
@@ -1336,15 +1340,15 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
 
         if (std.mem.eql(u8, user_message, "/graph")) {
-            std.debug.print("\n=== Knowledge Graph Status ===\n", .{});
-            std.debug.print("  Files indexed: {d}\n", .{kg.file_count});
-            std.debug.print("  Nodes: {d}\n", .{kg.nodes.count()});
-            std.debug.print("  Edges: {d}\n", .{kg.edges.items.len});
-            std.debug.print("  Communities: {d}\n", .{kg.communities.items.len});
+            out("\n=== Knowledge Graph Status ===\n", .{});
+            out("  Files indexed: {d}\n", .{kg.file_count});
+            out("  Nodes: {d}\n", .{kg.nodes.count()});
+            out("  Edges: {d}\n", .{kg.edges.items.len});
+            out("  Communities: {d}\n", .{kg.communities.items.len});
             if (kg.compressionRatio() > 0) {
-                std.debug.print("  Compression: {d:.1}x\n", .{kg.compressionRatio()});
+                out("  Compression: {d:.1}x\n", .{kg.compressionRatio()});
             }
-            std.debug.print("  [graph context already injected into system prompt]\n", .{});
+            out("  [graph context already injected into system prompt]\n", .{});
             continue;
         }
 
@@ -1355,7 +1359,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         defer intent_gate.deinit();
 
         const intent = intent_gate.classify(user_message);
-        std.debug.print("\x1b[2m[intent: {s} ({d:.2})]\x1b[0m\n", .{
+        out("\x1b[2m[intent: {s} ({d:.2})]\x1b[0m\n", .{
             IntentGate.intentLabel(intent.intent_type),
             intent.confidence,
         });
@@ -1399,7 +1403,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
 
         if (hit_max_iterations) {
-            std.debug.print("\nError: Agent loop hit max iterations ({d})\n", .{loop_config.max_iterations});
+            out("\nError: Agent loop hit max iterations ({d})\n", .{loop_config.max_iterations});
             rollbackMessagesTo(&messages, allocator, turn_start_len);
             continue;
         }
@@ -1407,7 +1411,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         // Auto-compact context when approaching token limits
         const session_tokens = total_input_tokens + total_output_tokens;
         if (compactor.needsCompaction(session_tokens) and messages.items.len > 12) {
-            std.debug.print("\n\x1b[33m⚡ Context approaching limit ({d} tokens). Compacting...\x1b[0m\n", .{session_tokens});
+            out("\n\x1b[33m⚡ Context approaching limit ({d} tokens). Compacting...\x1b[0m\n", .{session_tokens});
 
             // Convert ChatMessages to CompactMessages for compaction
             var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
@@ -1421,7 +1425,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             }
 
             const result = compactor.compact(compact_msgs.items) catch |err| {
-                std.debug.print("Compaction failed: {}\n", .{err});
+                out("Compaction failed: {}\n", .{err});
                 continue;
             };
 
@@ -1455,7 +1459,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 // Free the summary if it was allocated (compactor owns it, but we copied it)
                 allocator.free(result.summary);
 
-                std.debug.print("\x1b[33m  Compacted {d} messages. Saved ~{d} tokens.\x1b[0m\n", .{
+                out("\x1b[33m  Compacted {d} messages. Saved ~{d} tokens.\x1b[0m\n", .{
                     result.messages_summarized,
                     result.tokens_saved,
                 });

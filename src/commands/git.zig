@@ -1,5 +1,10 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const shell = @import("shell");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 pub const GitSkill = struct {
     /// Execute git command - helper
@@ -81,72 +86,72 @@ pub fn handleGit(args: [][]const u8) !void {
 
     if (std.mem.eql(u8, subcommand, "status")) {
         const result = try GitSkill.status();
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "diff")) {
         const result = try GitSkill.diff();
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "push")) {
         const result = try GitSkill.push();
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "pull")) {
         const result = try GitSkill.pull();
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "branch")) {
         const result = try GitSkill.branch();
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "log")) {
         const result = try GitSkill.run("log --oneline -10");
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "add")) {
         const files = if (sub_args.len > 0) sub_args[0] else ".";
         const result = try GitSkill.add(files);
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "commit")) {
         if (sub_args.len == 0) {
-            std.debug.print("Error: commit message required\n", .{});
-            std.debug.print("Usage: crushcode git commit \"your message\"\n", .{});
+            out("Error: commit message required\n", .{});
+            out("Usage: crushcode git commit \"your message\"\n", .{});
             return;
         }
         const result = try GitSkill.commit(sub_args[0]);
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "checkout")) {
         if (sub_args.len == 0) {
-            std.debug.print("Error: branch name required\n", .{});
+            out("Error: branch name required\n", .{});
             return;
         }
         const result = try GitSkill.checkout(sub_args[0]);
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "branch-create")) {
         if (sub_args.len == 0) {
-            std.debug.print("Error: branch name required\n", .{});
+            out("Error: branch name required\n", .{});
             return;
         }
         const result = try GitSkill.createBranch(sub_args[0]);
-        std.debug.print("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
-        std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "is-repo")) {
         if (GitSkill.isGitRepo()) {
-            std.debug.print("Yes, this is a git repository\n", .{});
+            out("Yes, this is a git repository\n", .{});
         } else {
-            std.debug.print("No, not a git repository\n", .{});
+            out("No, not a git repository\n", .{});
         }
     } else {
-        std.debug.print("Unknown git command: {s}\n", .{subcommand});
+        out("Unknown git command: {s}\n", .{subcommand});
         try printGitHelp();
     }
 }
 
 fn printGitHelp() !void {
-    std.debug.print(
+    out(
         \\Crushcode Git Command
         \\
         \\Usage:

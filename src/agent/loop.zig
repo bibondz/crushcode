@@ -148,6 +148,8 @@ pub const LoopResult = struct {
 };
 
 /// Retry configuration with exponential backoff
+/// NOTE: ai/error_handler.zig has its own RetryConfig with u32/f32 fields
+/// and jitter support. Keep in sync or merge if use cases converge.
 /// Reference: OpenHarness exponential backoff retry
 pub const RetryConfig = struct {
     max_retries: u32,
@@ -245,7 +247,7 @@ pub const AgentLoop = struct {
     /// Execute a tool call with retry
     pub fn executeTool(self: *AgentLoop, call: *ToolCall) !?ToolResult {
         const executor = self.registered_tools.get(call.name) orelse {
-            std.debug.print("  Tool '{s}' not registered\n", .{call.name});
+            std.log.warn("Tool '{s}' not registered", .{call.name});
             return null;
         };
 
@@ -254,7 +256,7 @@ pub const AgentLoop = struct {
             if (attempt > 0) {
                 self.total_retries += 1;
                 if (self.config.show_intermediate) {
-                    std.debug.print("  Retry {d}/{d} for tool '{s}'...\n", .{
+                    std.log.info("Retry {d}/{d} for tool '{s}'...", .{
                         attempt,
                         self.config.retry_config.max_retries,
                         call.name,
@@ -265,7 +267,7 @@ pub const AgentLoop = struct {
 
             const result = executor(self.allocator, call.id, call.arguments) catch |err| {
                 if (self.config.show_intermediate) {
-                    std.debug.print("  Tool '{s}' error: {}\n", .{ call.name, err });
+                    std.log.err("Tool '{s}' error: {}", .{ call.name, err });
                 }
                 if (attempt >= self.config.retry_config.max_retries) {
                     return ToolResult.init(self.allocator, call.id, "Tool execution failed after max retries", false) catch null;
@@ -309,13 +311,13 @@ pub const AgentLoop = struct {
             step.iteration = self.iteration;
 
             if (self.config.show_intermediate) {
-                std.debug.print("\n--- Agent Loop Iteration {d}/{d} ---\n", .{ self.iteration, self.config.max_iterations });
+                std.log.info("--- Agent Loop Iteration {d}/{d} ---", .{ self.iteration, self.config.max_iterations });
             }
 
             // Send conversation history to AI
             const ai_response = ai_send(self.allocator, self.history.items) catch |err| {
                 if (self.config.show_intermediate) {
-                    std.debug.print("  AI send error: {}\n", .{err});
+                    std.log.err("AI send error: {}", .{err});
                 }
                 step.ai_response = try self.allocator.dupe(u8, "Error: AI request failed");
                 step.finish_reason = "error";
@@ -349,7 +351,7 @@ pub const AgentLoop = struct {
                     try step.tool_calls.append(tool_call);
 
                     if (self.config.show_intermediate) {
-                        std.debug.print("  Tool call: {s}({s})\n", .{ tc.name, tc.arguments });
+                        std.log.info("Tool call: {s}({s})", .{ tc.name, tc.arguments });
                     }
 
                     // Execute tool
@@ -364,7 +366,7 @@ pub const AgentLoop = struct {
 
                         if (self.config.show_intermediate) {
                             const status = if (tr.success) "OK" else "FAILED";
-                            std.debug.print("  Tool result [{s}]: {s}\n", .{ status, tr.output });
+                            std.log.info("Tool result [{s}]: {s}", .{ status, tr.output });
                         }
                     } else {
                         // Tool not found or failed — report error back to AI

@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const env = @import("env");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 /// Profile - a named configuration set
 /// Profiles allow users to switch between different AI provider configurations
@@ -310,28 +315,28 @@ pub fn handleProfile(args: []const []const u8) !void {
         try showCurrentProfile(allocator);
     } else if (std.mem.eql(u8, subcmd, "create") or std.mem.eql(u8, subcmd, "new")) {
         if (args.len < 2) {
-            std.debug.print("Error: profile name required\n\n", .{});
+            out("Error: profile name required\n\n", .{});
             try printProfileHelp();
             return;
         }
         try createProfileCmd(allocator, args[1]);
     } else if (std.mem.eql(u8, subcmd, "switch") or std.mem.eql(u8, subcmd, "use")) {
         if (args.len < 2) {
-            std.debug.print("Error: profile name required\n\n", .{});
+            out("Error: profile name required\n\n", .{});
             try printProfileHelp();
             return;
         }
         try switchProfileCmd(allocator, args[1]);
     } else if (std.mem.eql(u8, subcmd, "delete") or std.mem.eql(u8, subcmd, "rm")) {
         if (args.len < 2) {
-            std.debug.print("Error: profile name required\n\n", .{});
+            out("Error: profile name required\n\n", .{});
             try printProfileHelp();
             return;
         }
         try deleteProfileCmd(allocator, args[1]);
     } else if (std.mem.eql(u8, subcmd, "set")) {
         if (args.len < 3) {
-            std.debug.print("Error: usage: profile set <key> <value>\n\n", .{});
+            out("Error: usage: profile set <key> <value>\n\n", .{});
             try printProfileHelp();
             return;
         }
@@ -339,7 +344,7 @@ pub fn handleProfile(args: []const []const u8) !void {
     } else if (std.mem.eql(u8, subcmd, "help")) {
         try printProfileHelp();
     } else {
-        std.debug.print("Unknown subcommand: {s}\n\n", .{subcmd});
+        out("Unknown subcommand: {s}\n\n", .{subcmd});
         try printProfileHelp();
     }
 }
@@ -355,42 +360,42 @@ fn listProfilesCmd(allocator: std.mem.Allocator) !void {
         allocator.free(profiles);
     }
 
-    std.debug.print("\nAvailable Profiles:\n\n", .{});
+    out("\nAvailable Profiles:\n\n", .{});
 
     if (profiles.len == 0) {
-        std.debug.print("  (no profiles found, create one with 'crushcode profile create <name>')\n", .{});
+        out("  (no profiles found, create one with 'crushcode profile create <name>')\n", .{});
     }
 
     for (profiles) |name| {
         const marker = if (std.mem.eql(u8, name, current_name)) " (active)" else "";
-        std.debug.print("  {s}{s}\n", .{ name, marker });
+        out("  {s}{s}\n", .{ name, marker });
     }
 
-    std.debug.print("\nCurrent profile: {s}\n", .{current_name});
-    std.debug.print("\nUse 'crushcode profile switch <name>' to change profiles\n", .{});
+    out("\nCurrent profile: {s}\n", .{current_name});
+    out("\nUse 'crushcode profile switch <name>' to change profiles\n", .{});
 }
 
 fn showCurrentProfile(allocator: std.mem.Allocator) !void {
     var profile = try loadCurrentProfile(allocator);
     defer profile.deinit();
 
-    std.debug.print("\nCurrent Profile: {s}\n\n", .{profile.name});
-    std.debug.print("  default_provider = \"{s}\"\n", .{profile.default_provider});
-    std.debug.print("  default_model = \"{s}\"\n", .{profile.default_model});
+    out("\nCurrent Profile: {s}\n\n", .{profile.name});
+    out("  default_provider = \"{s}\"\n", .{profile.default_provider});
+    out("  default_model = \"{s}\"\n", .{profile.default_model});
 
     if (profile.system_prompt.len > 0) {
         const preview = if (profile.system_prompt.len > 50)
             profile.system_prompt[0..50]
         else
             profile.system_prompt;
-        std.debug.print("  system_prompt = \"{s}...\"\n", .{preview});
+        out("  system_prompt = \"{s}...\"\n", .{preview});
     }
 
     if (profile.api_keys.count() > 0) {
-        std.debug.print("\n  API keys configured: {d}\n", .{profile.api_keys.count()});
+        out("\n  API keys configured: {d}\n", .{profile.api_keys.count()});
     }
 
-    std.debug.print("\n", .{});
+    out("\n", .{});
 }
 
 fn createProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
@@ -405,15 +410,15 @@ fn createProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
         profile.deinit(); // Free the init's empty profile
         profile = try Profile.createDefault(name, allocator);
         try profile.save();
-        std.debug.print("Created profile: {s}\n", .{name});
-        std.debug.print("  default_provider = \"{s}\"\n", .{profile.default_provider});
-        std.debug.print("  default_model = \"{s}\"\n", .{profile.default_model});
+        out("Created profile: {s}\n", .{name});
+        out("  default_provider = \"{s}\"\n", .{profile.default_provider});
+        out("  default_model = \"{s}\"\n", .{profile.default_model});
         profile.deinit();
         return;
     };
     profile.deinit();
 
-    std.debug.print("Profile '{s}' already exists\n", .{name});
+    out("Profile '{s}' already exists\n", .{name});
 }
 
 fn switchProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
@@ -424,7 +429,7 @@ fn switchProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
     // Verify profile exists
     var profile = Profile.init(allocator, name_copy);
     profile.load() catch {
-        std.debug.print("Profile '{s}' not found\n", .{name});
+        out("Profile '{s}' not found\n", .{name});
         profile.deinit();
         return;
     };
@@ -432,12 +437,12 @@ fn switchProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
 
     // Set as current
     try Profile.setCurrentProfileName(allocator, name);
-    std.debug.print("Switched to profile: {s}\n", .{name});
+    out("Switched to profile: {s}\n", .{name});
 }
 
 fn deleteProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
     if (std.mem.eql(u8, name, "default")) {
-        std.debug.print("Cannot delete 'default' profile\n", .{});
+        out("Cannot delete 'default' profile\n", .{});
         return;
     }
 
@@ -446,9 +451,9 @@ fn deleteProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
 
     std.fs.cwd().deleteFile(path) catch |err| {
         if (err == error.FileNotFound) {
-            std.debug.print("Profile '{s}' not found\n", .{name});
+            out("Profile '{s}' not found\n", .{name});
         } else {
-            std.debug.print("Error deleting profile: {}\n", .{err});
+            out("Error deleting profile: {}\n", .{err});
         }
         return;
     };
@@ -461,7 +466,7 @@ fn deleteProfileCmd(allocator: std.mem.Allocator, name: []const u8) !void {
         try Profile.setCurrentProfileName(allocator, "default");
     }
 
-    std.debug.print("Deleted profile: {s}\n", .{name});
+    out("Deleted profile: {s}\n", .{name});
 }
 
 fn setProfileValue(allocator: std.mem.Allocator, key: []const u8, value: []const u8) !void {
@@ -483,11 +488,11 @@ fn setProfileValue(allocator: std.mem.Allocator, key: []const u8, value: []const
     }
 
     try profile.save();
-    std.debug.print("Set {s} = \"{s}\" in profile '{s}'\n", .{ key, value, profile.name });
+    out("Set {s} = \"{s}\" in profile '{s}'\n", .{ key, value, profile.name });
 }
 
 fn printProfileHelp() !void {
-    std.debug.print(
+    out(
         \\
         \\Usage: crushcode profile <subcommand>
         \\

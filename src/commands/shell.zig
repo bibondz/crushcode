@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 pub const ShellResult = struct {
     exit_code: u8,
@@ -234,15 +239,15 @@ fn waitWithTimeout(child: *std.process.Child, timeout_seconds: u32) !ShellResult
 pub fn executeInteractiveShell() !void {
     const shell = std.posix.getenv("SHELL") orelse "/bin/sh";
 
-    std.debug.print("Interactive shell mode\n", .{});
-    std.debug.print("Shell: {s}\n", .{shell});
+    out("Interactive shell mode\n", .{});
+    out("Shell: {s}\n", .{shell});
 
     const argv: [2][]const u8 = .{ shell, "-i" };
     var child = std.process.Child.init(&argv, std.heap.page_allocator);
     _ = try child.spawn();
 
     const term = child.wait() catch |err| {
-        std.debug.print("Shell exited with error: {s}\n", .{@errorName(err)});
+        out("Shell exited with error: {s}\n", .{@errorName(err)});
         return;
     };
 
@@ -252,7 +257,7 @@ pub fn executeInteractiveShell() !void {
         else => 1,
     };
 
-    std.debug.print("Shell exited with code: {d}\n", .{exit_code});
+    out("Shell exited with code: {d}\n", .{exit_code});
 }
 
 /// Handle shell command from CLI args
@@ -267,7 +272,7 @@ pub fn handleShell(args: [][]const u8) !void {
         // Check for --timeout
         if (std.mem.eql(u8, arg, "--timeout") and i + 1 < args.len) {
             timeout = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                std.debug.print("Invalid timeout: {s}\n", .{args[i + 1]});
+                out("Invalid timeout: {s}\n", .{args[i + 1]});
                 return;
             };
             i += 2;
@@ -276,7 +281,7 @@ pub fn handleShell(args: [][]const u8) !void {
         // Check for -t
         if (std.mem.eql(u8, arg, "-t") and i + 1 < args.len) {
             timeout = std.fmt.parseInt(u32, args[i + 1], 10) catch {
-                std.debug.print("Invalid timeout: {s}\n", .{args[i + 1]});
+                out("Invalid timeout: {s}\n", .{args[i + 1]});
                 return;
             };
             i += 2;
@@ -318,16 +323,16 @@ pub fn handleShell(args: [][]const u8) !void {
     }
     const cmd_str = try command_buf.toOwnedSlice();
 
-    std.debug.print("Executing: {s}", .{cmd_str});
+    out("Executing: {s}", .{cmd_str});
     if (timeout) |t| {
-        std.debug.print(" (timeout: {d}s)", .{t});
+        out(" (timeout: {d}s)", .{t});
     }
-    std.debug.print("\n", .{});
+    out("\n", .{});
 
     const result = try executeShellCommand(cmd_str, timeout);
 
-    std.debug.print("\n[Exit code: {d}]\n", .{result.exit_code});
+    out("\n[Exit code: {d}]\n", .{result.exit_code});
     if (result.stderr.len > 0) {
-        std.debug.print("[Stderr: {s}]\n", .{result.stderr});
+        out("[Stderr: {s}]\n", .{result.stderr});
     }
 }

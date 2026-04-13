@@ -2,12 +2,13 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const env = @import("env");
 const http_client = @import("http_client");
+const json_extract = @import("json_extract");
 
 const Allocator = std.mem.Allocator;
 
 /// Install command — downloads crushcode binary from GitHub releases or builds from source
 pub const Installer = struct {
-    const version = "0.1.0";
+    const version = "0.2.1";
     const github_repo = "crushcode/crushcode";
     const releases_base = "https://github.com/crushcode/crushcode/releases";
 
@@ -67,13 +68,9 @@ pub const Installer = struct {
         if (data.len == 0) return error.NetworkError;
 
         // Extract "tag_name":"vX.Y.Z" from JSON response
-        const tag_key = "\"tag_name\":\"";
-        const idx = std.mem.indexOf(u8, data, tag_key) orelse return error.ParseError;
-        const val_start = idx + tag_key.len;
-        const val_end = std.mem.indexOfScalar(u8, data[val_start..], '"') orelse return error.ParseError;
+        const tag = json_extract.extractString(data, "tag_name") orelse return error.ParseError;
 
         // Strip the 'v' prefix if present
-        const tag = data[val_start .. val_start + val_end];
         if (tag.len > 0 and tag[0] == 'v') {
             return try allocator.dupe(u8, tag[1..]);
         }
@@ -297,13 +294,15 @@ pub fn handleInstall(args: [][]const u8) !void {
         if (args.len > 1) {
             try Installer.runInstall(allocator, args[1]);
         } else {
-            std.debug.print("Usage: crushcode install --version <version>\n", .{});
+            const stdout = file_compat.File.stdout().writer();
+            stdout.print("Usage: crushcode install --version <version>\n", .{}) catch {};
         }
     } else if (args.len > 0 and std.mem.eql(u8, args[0], "--help")) {
         Installer.printInstallInstructions();
     } else if (args.len > 0 and std.mem.eql(u8, args[0], "--print")) {
         // Print install script for piping
-        std.debug.print(
+        const stdout = file_compat.File.stdout().writer();
+        stdout.print(
             \\#!/bin/sh
             \\set -e
             \\echo "Installing Crushcode..."
@@ -313,7 +312,7 @@ pub fn handleInstall(args: [][]const u8) !void {
             \\echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc 2>/dev/null || true
             \\echo "Done! Run: crushcode --help"
             \\
-        , .{});
+        , .{}) catch {};
     } else {
         // Default: run actual install
         try Installer.runInstall(allocator, null);

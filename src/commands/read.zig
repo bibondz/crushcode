@@ -1,11 +1,16 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const fileops_mod = @import("fileops");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 pub fn handleRead(args: []const []const u8) !void {
     const allocator = std.heap.page_allocator;
 
     if (args.len < 1) {
-        std.debug.print("Error: No file specified\n\n", .{});
+        out("Error: No file specified\n\n", .{});
         try printReadHelp();
         return;
     }
@@ -29,14 +34,14 @@ pub fn handleRead(args: []const []const u8) !void {
 
     for (contents, 0..) |content, i| {
         if (i > 0) {
-            std.debug.print("\n", .{});
+            out("\n", .{});
         }
         content.print();
     }
 }
 
 pub fn printReadHelp() !void {
-    std.debug.print(
+    out(
         \\Crushcode Read Command
         \\
         \\Usage:

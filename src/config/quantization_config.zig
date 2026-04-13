@@ -1,5 +1,10 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const Allocator = std.mem.Allocator;
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 /// TurboQuant KV cache compression configuration
 /// Based on turboquant architecture with rotation + quantization
@@ -201,16 +206,16 @@ pub const QuantizationConfig = struct {
 
     /// Print configuration summary
     pub fn printSummary(self: *const QuantizationConfig) void {
-        std.debug.print("TurboQuant Configuration:\n", .{});
-        std.debug.print("  Enabled: {}\n", .{self.enabled});
+        out("TurboQuant Configuration:\n", .{});
+        out("  Enabled: {}\n", .{self.enabled});
         if (self.enabled) {
-            std.debug.print("  Key bits: {}\n", .{self.key_bits});
-            std.debug.print("  Value bits: {}\n", .{self.value_bits});
-            std.debug.print("  Head dimension: {}\n", .{self.head_dim});
-            std.debug.print("  Group size: {}\n", .{self.group_size});
-            std.debug.print("  QJL enabled: {}\n", .{self.qjl_enabled});
-            std.debug.print("  Estimated compression: {d:.1}x\n", .{self.getCompressionRatio()});
-            std.debug.print("  Memory savings: {d:.1}%\n", .{self.getMemorySavings() * 100});
+            out("  Key bits: {}\n", .{self.key_bits});
+            out("  Value bits: {}\n", .{self.value_bits});
+            out("  Head dimension: {}\n", .{self.head_dim});
+            out("  Group size: {}\n", .{self.group_size});
+            out("  QJL enabled: {}\n", .{self.qjl_enabled});
+            out("  Estimated compression: {d:.1}x\n", .{self.getCompressionRatio()});
+            out("  Memory savings: {d:.1}%\n", .{self.getMemorySavings() * 100});
         }
     }
 };

@@ -1,5 +1,10 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 const Allocator = std.mem.Allocator;
 
@@ -65,7 +70,7 @@ pub const SkillLoader = struct {
             errdefer self.allocator.free(full_path);
 
             const skill = self.parseSkillFile(full_path) catch |err| {
-                std.debug.print("Warning: Failed to parse skill {s}: {}\n", .{ full_path, err });
+                out("Warning: Failed to parse skill {s}: {}\n", .{ full_path, err });
                 self.allocator.free(full_path);
                 continue;
             };
@@ -240,9 +245,9 @@ pub const SkillLoader = struct {
 
     /// Print loaded skills summary
     pub fn printSummary(self: *SkillLoader) void {
-        std.debug.print("Loaded {} skills:\n", .{self.skills.items.len});
+        out("Loaded {} skills:\n", .{self.skills.items.len});
         for (self.skills.items) |skill| {
-            std.debug.print("  - {s}: {s}\n", .{ skill.name, skill.description });
+            out("  - {s}: {s}\n", .{ skill.name, skill.description });
         }
     }
 };

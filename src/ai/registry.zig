@@ -1,6 +1,11 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const http_client = @import("http_client");
+
+inline fn out(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
 
 pub const ProviderType = enum {
     openai,
@@ -417,9 +422,9 @@ pub const ProviderRegistry = struct {
         const provider_names = try self.listProviders();
         defer self.allocator.free(provider_names);
 
-        std.debug.print("Available Providers:\n\n", .{});
+        out("Available Providers:\n\n", .{});
         for (provider_names, 0..) |name, i| {
-            std.debug.print("  {}. {s}\n", .{ i + 1, name });
+            out("  {}. {s}\n", .{ i + 1, name });
         }
     }
 
@@ -427,32 +432,32 @@ pub const ProviderRegistry = struct {
         const models = try self.listModels(provider_name);
         defer self.allocator.free(models);
 
-        std.debug.print("Available Models for {s}:\n\n", .{provider_name});
+        out("Available Models for {s}:\n\n", .{provider_name});
         for (models, 0..) |model, i| {
-            std.debug.print("  {d}. {s}\n", .{ i + 1, model });
+            out("  {d}. {s}\n", .{ i + 1, model });
         }
     }
 
     /// Print models fetched live from OpenRouter API
     pub fn printOpenRouterModelsLive(self: *ProviderRegistry) !void {
-        std.debug.print("Fetching models from OpenRouter API...\n\n", .{});
+        out("Fetching models from OpenRouter API...\n\n", .{});
 
         const models = self.fetchOpenRouterModels() catch |err| {
-            std.debug.print("Error fetching models: {}\n", .{err});
-            std.debug.print("Showing cached models instead:\n\n", .{});
+            out("Error fetching models: {}\n", .{err});
+            out("Showing cached models instead:\n\n", .{});
             try self.printModels("openrouter");
             return;
         };
         defer self.allocator.free(models);
 
         if (models.len == 0) {
-            std.debug.print("No models found\n", .{});
+            out("No models found\n", .{});
             return;
         }
 
-        std.debug.print("Live Models from OpenRouter ({d} total):\n\n", .{models.len});
+        out("Live Models from OpenRouter ({d} total):\n\n", .{models.len});
         for (models, 0..) |model, i| {
-            std.debug.print("  {d}. {s}\n", .{ i + 1, model });
+            out("  {d}. {s}\n", .{ i + 1, model });
         }
     }
 };

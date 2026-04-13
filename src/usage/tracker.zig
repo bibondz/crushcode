@@ -1,28 +1,11 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const streaming_types = @import("streaming_types");
 
 const Allocator = std.mem.Allocator;
 
-/// Token usage data matching streaming types
-pub const TokenUsage = struct {
-    input_tokens: u32 = 0,
-    output_tokens: u32 = 0,
-    cache_read_tokens: u32 = 0,
-    cache_write_tokens: u32 = 0,
-
-    pub fn totalTokens(self: TokenUsage) u32 {
-        return self.input_tokens + self.output_tokens + self.cache_read_tokens + self.cache_write_tokens;
-    }
-
-    pub fn add(self: TokenUsage, other: TokenUsage) TokenUsage {
-        return TokenUsage{
-            .input_tokens = self.input_tokens + other.input_tokens,
-            .output_tokens = self.output_tokens + other.output_tokens,
-            .cache_read_tokens = self.cache_read_tokens + other.cache_read_tokens,
-            .cache_write_tokens = self.cache_write_tokens + other.cache_write_tokens,
-        };
-    }
-};
+/// Token usage data — canonical definition lives in streaming/types.zig
+pub const TokenUsage = streaming_types.TokenUsage;
 
 /// Per-provider usage breakdown
 pub const ProviderUsage = struct {

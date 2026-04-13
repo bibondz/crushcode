@@ -1,7 +1,5 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
-const builtin = @import("builtin");
-
 const Allocator = std.mem.Allocator;
 
 pub const PluginRegistry = struct {
@@ -90,7 +88,7 @@ pub const PluginRegistry = struct {
         var iter = self.plugins.iterator();
         while (iter.next()) |entry| {
             const enabled = self.isPluginEnabled(entry.key_ptr.*);
-            const config = self.plugin_configs.get(entry.key_ptr.*) orelse PluginConfig.default;
+            const config = self.plugin_configs.get(entry.key_ptr.*) orelse PluginConfig.default(self.allocator);
 
             const info = PluginInfo{
                 .name = entry.key_ptr.*,
@@ -104,7 +102,7 @@ pub const PluginRegistry = struct {
             try plugin_infos.append(info);
         }
 
-        return plugin_infos.toOwnedSlice();
+        return try plugin_infos.toOwnedSlice();
     }
 
     // Load all enabled plugins
@@ -123,15 +121,17 @@ pub const PluginRegistry = struct {
     fn loadPlugin(self: *PluginRegistry, plugin: Plugin) !void {
         switch (plugin.type) {
             .builtin => {
-                if (plugin.built_in) |built_in| {
+                if (plugin.built_in != null) {
                     std.log.info("Loading built-in plugin: {s}", .{plugin.name});
                     // Built-in plugins are already loaded
                 }
             },
             .external => {
-                if (plugin.external) |external| {
-                    std.log.info("Loading external plugin: {s} from {s}", .{ plugin.name, external.path });
-                    external.loaded = true;
+                if (self.plugins.getPtr(plugin.name)) |plugin_ptr| {
+                    if (plugin_ptr.external) |*external| {
+                        std.log.info("Loading external plugin: {s} from {s}", .{ plugin.name, external.path });
+                        external.loaded = true;
+                    }
                 }
             },
         }
@@ -145,9 +145,11 @@ pub const PluginRegistry = struct {
                     std.log.info("Cannot unload built-in plugin: {s}", .{name});
                 },
                 .external => {
-                    if (plugin.external) |external| {
-                        std.log.info("Unloading external plugin: {s}", .{name});
-                        external.loaded = false;
+                    if (self.plugins.getPtr(name)) |plugin_ptr| {
+                        if (plugin_ptr.external) |*external| {
+                            std.log.info("Unloading external plugin: {s}", .{name});
+                            external.loaded = false;
+                        }
                     }
                 },
             }
@@ -156,7 +158,7 @@ pub const PluginRegistry = struct {
 
     // Update plugin configuration
     pub fn updatePluginConfig(self: *PluginRegistry, name: []const u8, config_data: std.json.ObjectMap) !void {
-        const existing_config = self.plugin_configs.get(name) orelse PluginConfig.default;
+        const existing_config = self.plugin_configs.get(name) orelse PluginConfig.default(self.allocator);
 
         const updated_config = PluginConfig{
             .enabled = existing_config.enabled,
@@ -180,7 +182,7 @@ pub const PluginRegistry = struct {
             }
         }
 
-        return plugins_of_type.toOwnedSlice();
+        return try plugins_of_type.toOwnedSlice();
     }
 
     // Get prioritized plugin list
@@ -198,16 +200,15 @@ pub const PluginRegistry = struct {
 
         // Sort by priority (higher priority first)
         const slice = prioritized.items;
-        std.sort.sort(Plugin, slice, {}, struct {
-            fn compare(context: void, a: Plugin, b: Plugin) bool {
-                _ = context;
-                const config_a = self.plugin_configs.get(a.name) orelse PluginConfig.default;
-                const config_b = self.plugin_configs.get(b.name) orelse PluginConfig.default;
+        std.mem.sort(Plugin, slice, self, struct {
+            fn lessThan(context: *PluginRegistry, a: Plugin, b: Plugin) bool {
+                const config_a = context.plugin_configs.get(a.name) orelse PluginConfig.default(context.allocator);
+                const config_b = context.plugin_configs.get(b.name) orelse PluginConfig.default(context.allocator);
                 return config_a.priority > config_b.priority;
             }
-        }.compare);
+        }.lessThan);
 
-        return prioritized.toOwnedSlice();
+        return try prioritized.toOwnedSlice();
     }
 
     // Find plugin that can handle request
@@ -233,18 +234,12 @@ pub const PluginRegistry = struct {
 
         // Built-in plugins have known capabilities
         if (plugin.built_in) |built_in| {
-            if (std.mem.eql(u8, request_type, "pty")) {
-                return true;
-            }
-            if (std.mem.eql(u8, request_type, "table_formatter")) {
-                return true;
-            }
-            if (std.mem.eql(u8, request_type, "notifier")) {
-                return true;
-            }
-            if (std.mem.eql(u8, request_type, "shell_strategy")) {
-                return true;
-            }
+            return switch (built_in) {
+                .pty => std.mem.eql(u8, request_type, "pty"),
+                .table_formatter => std.mem.eql(u8, request_type, "table_formatter"),
+                .notifier => std.mem.eql(u8, request_type, "notifier"),
+                .shell_strategy => std.mem.eql(u8, request_type, "shell_strategy"),
+            };
         }
 
         // External plugins would need to declare capabilities
@@ -294,9 +289,11 @@ pub const PluginConfig = struct {
     config_data: std.json.ObjectMap,
     priority: u32,
 
-    pub const default = PluginConfig{
-        .enabled = true,
-        .config_data = undefined,
-        .priority = 50,
-    };
+    pub fn default(allocator: Allocator) PluginConfig {
+        return PluginConfig{
+            .enabled = true,
+            .config_data = std.json.ObjectMap.init(allocator),
+            .priority = 50,
+        };
+    }
 };

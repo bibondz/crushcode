@@ -17,6 +17,8 @@ pub const AIClientError = error{
 };
 
 /// Configuration for retry logic
+/// NOTE: agent/loop.zig has its own RetryConfig with sleep/wait methods
+/// and u64/f64 fields. Keep in sync or merge if use cases converge.
 pub const RetryConfig = struct {
     max_attempts: u32 = 3,
     base_delay_ms: u32 = 1000,
@@ -84,7 +86,7 @@ pub const RateLimiter = struct {
             const wait_time = @max(0, (oldest_request + 60) - now);
 
             if (wait_time > 0) {
-                std.debug.print("Rate limit reached. Waiting {d} seconds...\n", .{wait_time});
+                std.log.warn("Rate limit reached. Waiting {d} seconds...", .{wait_time});
                 // Note: In real implementation, use proper sleep
                 // std.time.sleep(@as(u64, @intCast(wait_time * std.time.ns_per_s)));
                 return error.RateLimitError;

@@ -1,7 +1,12 @@
 const std = @import("std");
+const file_compat = @import("file_compat");
 const args_mod = @import("args");
 const commands = @import("handlers");
 const config_mod = @import("config");
+
+inline fn err_print(comptime fmt: []const u8, args: anytype) void {
+    file_compat.File.stderr().writer().print(fmt, args) catch {};
+}
 
 /// Helper function to safely cleanup parsed arguments with proper error handling
 fn cleanupParsedArgs(allocator: std.mem.Allocator, parsed_args: args_mod.Args) void {
@@ -95,7 +100,7 @@ pub fn main() !void {
     // Early Exit: Handle argument iterator initialization failure
     var args_iter = std.process.argsWithAllocator(allocator) catch |err| switch (err) {
         error.OutOfMemory => {
-            std.debug.print("Error: Failed to allocate memory for argument parsing\n", .{});
+            err_print("Error: Failed to allocate memory for argument parsing\n", .{});
             return error.OutOfMemory;
         },
     };
@@ -104,7 +109,7 @@ pub fn main() !void {
     // Early Exit: Handle argument parsing failure with comprehensive error handling
     const parsed_args = args_mod.Args.parse(allocator, &args_iter) catch |err| switch (err) {
         error.OutOfMemory => {
-            std.debug.print("Error: Insufficient memory to parse command line arguments\n", .{});
+            err_print("Error: Insufficient memory to parse command line arguments\n", .{});
             return error.OutOfMemory;
         },
     };
@@ -113,27 +118,27 @@ pub fn main() !void {
     // Early Exit: Handle config loading failure with user-friendly errors
     var config = config_mod.loadOrCreateConfig(allocator) catch |err| switch (err) {
         error.OutOfMemory => {
-            std.debug.print("Error: Failed to allocate memory for configuration\n", .{});
+            err_print("Error: Failed to allocate memory for configuration\n", .{});
             return error.OutOfMemory;
         },
         error.HomeNotFound => {
-            std.debug.print("Error: Cannot find home directory for configuration\n", .{});
+            err_print("Error: Cannot find home directory for configuration\n", .{});
             return error.HomeNotFound;
         },
         error.InvalidPath => {
-            std.debug.print("Error: Invalid configuration path\n", .{});
+            err_print("Error: Invalid configuration path\n", .{});
             return error.InvalidPath;
         },
         error.FileNotFound => {
-            std.debug.print("Error: Configuration file not found and could not be created\n", .{});
+            err_print("Error: Configuration file not found and could not be created\n", .{});
             return error.FileNotFound;
         },
         error.AccessDenied => {
-            std.debug.print("Error: Permission denied accessing configuration\n", .{});
+            err_print("Error: Permission denied accessing configuration\n", .{});
             return error.AccessDenied;
         },
         else => {
-            std.debug.print("Error: Failed to load configuration: {}\n", .{err});
+            err_print("Error: Failed to load configuration: {}\n", .{err});
             return err;
         },
     };
@@ -153,7 +158,7 @@ pub fn main() !void {
             return;
         }
 
-        std.debug.print("Error: Unknown command '{s}'\n\n", .{parsed_args.command});
+        err_print("Error: Unknown command '{s}'\n\n", .{parsed_args.command});
         try commands.printHelp();
         return error.UnknownCommand;
     }
@@ -186,6 +191,8 @@ pub fn main() !void {
             break :blk commands.handleAgents(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
             break :blk commands.handleTools(parsed_args);
+        } else if (std.mem.eql(u8, parsed_args.command, "plugin")) {
+            break :blk commands.handlePlugin(parsed_args);
         } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
             break :blk commands.handleTUI(parsed_args, &config);
         } else if (std.mem.eql(u8, parsed_args.command, "install")) {
