@@ -17,6 +17,7 @@ pub const Args = struct {
     memory: ?[]const u8 = null, // session memory/history (file path or "auto")
     memory_limit: u32 = 100, // max messages to remember
     stream: bool = false, // enable streaming output
+    permission: ?[]const u8 = null, // permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -122,6 +123,12 @@ pub const Args = struct {
                 } else if (std.mem.startsWith(u8, arg, "--memory-limit=")) {
                     const val = arg[15..];
                     result.memory_limit = std.fmt.parseInt(u32, val, 10) catch 100;
+                } else if (std.mem.startsWith(u8, arg, "--permission=")) {
+                    result.permission = arg[13..];
+                } else if (std.mem.eql(u8, arg, "--permission") or std.mem.eql(u8, arg, "-p")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.permission = next_arg;
+                    }
                 } else if (std.mem.eql(u8, arg, "--stream") or std.mem.eql(u8, arg, "-s")) {
                     result.stream = true;
                 } else {
@@ -154,6 +161,7 @@ pub const Args = struct {
             .memory = if (result.memory) |m| try allocator.dupe(u8, m) else null,
             .memory_limit = result.memory_limit,
             .stream = result.stream,
+            .permission = if (result.permission) |p| try allocator.dupe(u8, p) else null,
             .remaining = remaining,
             .has_command = has_command,
         };

@@ -40,6 +40,13 @@ const ToolResult = agent_loop_mod.ToolResult;
 const ToolRegistry = tools_mod.ToolRegistry;
 
 const PermissionEvaluator = permission_mod.PermissionEvaluator;
+const PermissionConfig = permission_mod.PermissionConfig;
+const PermissionMode = permission_mod.PermissionMode;
+const PermissionRequest = permission_mod.PermissionRequest;
+const PermissionResult = permission_mod.PermissionResult;
+
+/// Module-level permission evaluator — initialized once per chat session
+var active_evaluator: ?PermissionEvaluator = null;
 
 fn preRequestHook(ctx: *HookContext) !void {
     std.debug.print("\x1b[2m[hook: {s} → {s}/{s}]\x1b[0m\n", .{
@@ -165,6 +172,7 @@ const BuiltinToolDefinition = struct {
 
 threadlocal var active_bridge_context: ?*InteractiveBridgeContext = null;
 threadlocal var active_json_output: json_output_mod.JsonOutput = .{ .enabled = false };
+threadlocal var active_streaming_enabled: bool = false;
 
 fn buildToolFailure(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall, err: anyerror) !ToolExecution {
     return .{
@@ -198,13 +206,39 @@ fn adaptToolExecution(
     // JSON: emit tool_call event
     active_json_output.emitToolCall(tool_name, call_id, arguments);
 
-    // Permission check - log dangerous operations
-    // TODO: Wire in full PermissionEvaluator with config from --permission flag
-    const is_shell = std.mem.eql(u8, tool_name, "shell");
-    const is_write = std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit");
-    if (is_shell or is_write) {
-        // For dangerous operations, we'd normally prompt - for now just log
-        std.debug.print("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
+    // Permission check via PermissionEvaluator if configured
+    if (active_evaluator) |*evaluator| {
+        var req = PermissionRequest.init(tool_name, "execute", allocator) catch unreachable;
+        defer req.deinit(allocator);
+        const perm_result = evaluator.evaluate(&req);
+        switch (perm_result.action) {
+            .deny => {
+                const msg = perm_result.error_message orelse "Permission denied";
+                std.debug.print("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
+                return try ToolResult.init(allocator, call_id, msg, false);
+            },
+            .ask => {
+                // Prompt user for permission
+                std.debug.print("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
+                var buf: [16]u8 = undefined;
+                const stdin = file_compat.File.stdin().reader();
+                const answer = stdin.readUntilDelimiterOrEof(&buf, '\n') catch "n" orelse "n";
+                if (answer.len == 0 or !(answer[0] == 'y' or answer[0] == 'Y')) {
+                    return try ToolResult.init(allocator, call_id, "User denied permission", false);
+                }
+            },
+            .allow => {
+                // Proceed
+                std.debug.print("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
+            },
+        }
+    } else {
+        // No evaluator configured — just log dangerous operations
+        const is_shell = std.mem.eql(u8, tool_name, "shell");
+        const is_write = std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit");
+        if (is_shell or is_write) {
+            std.debug.print("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
+        }
     }
 
     var success = true;
@@ -361,14 +395,22 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
 
     std.debug.print("\n\x1b[36mAssistant:\x1b[0m ", .{});
 
-    // Use non-streaming for all providers - more reliable, avoids Zig stdlib HTTP bugs
-    // TODO: Add --streaming flag for opt-in streaming when UX is desired
     var response: core.ChatResponse = undefined;
-    response = ctx.client.sendChatWithHistory(ctx.messages.items) catch |err| {
-        ctx.turn_failed = true;
-        std.debug.print("\n\nError: {}\n", .{err});
-        return err;
-    };
+    if (active_streaming_enabled) {
+        // Streaming mode — print tokens as they arrive
+        response = ctx.client.sendChatStreaming(ctx.messages.items, interactiveStreamCallback) catch |err| {
+            ctx.turn_failed = true;
+            std.debug.print("\n\nError: {}\n", .{err});
+            return err;
+        };
+    } else {
+        // Non-streaming mode (default) — more reliable, avoids Zig stdlib HTTP bugs
+        response = ctx.client.sendChatWithHistory(ctx.messages.items) catch |err| {
+            ctx.turn_failed = true;
+            std.debug.print("\n\nError: {}\n", .{err});
+            return err;
+        };
+    }
 
     if (response.choices.len == 0) {
         ctx.turn_failed = true;
@@ -1002,6 +1044,25 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         client.setSystemPrompt(sys_prompt);
     }
 
+    // Initialize permission evaluator from --permission flag
+    if (args.permission) |perm_str| {
+        const mode = PermissionMode.fromString(perm_str) orelse blk: {
+            std.debug.print("Warning: Unknown permission mode '{s}' — using default\n", .{perm_str});
+            break :blk PermissionMode.default;
+        };
+        const perm_config = PermissionConfig.init(allocator);
+        var eval_config = perm_config;
+        eval_config.mode = mode;
+        active_evaluator = PermissionEvaluator.init(allocator, eval_config);
+        std.debug.print("\x1b[2m[Permission] mode: {s}\x1b[0m\n", .{mode.toString()});
+    }
+    defer {
+        if (active_evaluator) |*ev| {
+            ev.deinit();
+            active_evaluator = null;
+        }
+    }
+
     // Define available tools for function calling (OpenAI schema format)
     const default_tool_schemas = try tool_loader.loadDefaultToolSchemas(allocator);
     defer tool_loader.freeToolSchemas(allocator, default_tool_schemas);
@@ -1322,8 +1383,10 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         active_bridge_context = &bridge_ctx;
         active_json_output = json_out;
+        active_streaming_enabled = args.stream;
         var loop_result = try agent_loop.run(sendInteractiveLoopMessages, user_message);
         active_bridge_context = null;
+        active_streaming_enabled = false;
         defer loop_result.deinit();
 
         const hit_max_iterations = loop_result.steps.items.len > 0 and

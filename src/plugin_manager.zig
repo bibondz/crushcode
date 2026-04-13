@@ -297,20 +297,132 @@ pub const PluginManager = struct {
         return self.registry.listPlugins();
     }
     
-    // Load plugin configuration
+    // Load plugin configuration from a JSON file
+    // Format: {"plugin_name":{"enabled":true,"priority":50}, ...}
     pub fn loadPluginConfig(self: *PluginManager, config_path: []const u8) !void {
-        _ = self;
-        _ = config_path;
-        // TODO: Load configuration from file
-        std.log.info("Loading plugin configuration from {s}", .{config_path});
+        const file = std.fs.cwd().openFile(config_path, .{}) catch |err| {
+            if (err == error.FileNotFound) {
+                std.log.info("No plugin config file at {s} — using defaults", .{config_path});
+                return;
+            }
+            return err;
+        };
+        defer file.close();
+
+        const file_size = try file.getEndPos();
+        if (file_size == 0 or file_size > 1024 * 1024) return;
+        const buf = try self.allocator.alloc(u8, file_size);
+        defer self.allocator.free(buf);
+
+        const bytes_read = try file.readAll(buf);
+        const data = buf[0..bytes_read];
+
+        // Simple JSON parsing: find each "plugin_name":{...}
+        var i: usize = 0;
+        while (i < data.len and data[i] != '{') : (i += 1) {}
+        if (i >= data.len) return;
+        i += 1; // skip {
+
+        while (i < data.len) {
+            // Skip whitespace
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+            if (i >= data.len or data[i] == '}') break;
+            if (data[i] != '"') break;
+
+            // Parse plugin name
+            i += 1;
+            const name_start = i;
+            while (i < data.len and data[i] != '"') : (i += 1) {}
+            const plugin_name = data[name_start..i];
+            i += 1;
+
+            // Skip to value
+            while (i < data.len and data[i] != ':') : (i += 1) {}
+            i += 1;
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+            if (i >= data.len or data[i] != '{') break;
+
+            // Parse config object
+            i += 1; // skip {
+            var enabled = true;
+
+            while (i < data.len) {
+                while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+                if (i >= data.len or data[i] == '}') { i += 1; break; }
+                if (data[i] != '"') break;
+
+                i += 1;
+                const field_start = i;
+                while (i < data.len and data[i] != '"') : (i += 1) {}
+                const field_name = data[field_start..i];
+                i += 1;
+
+                while (i < data.len and data[i] != ':') : (i += 1) {}
+                i += 1;
+                while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+
+                if (std.mem.eql(u8, field_name, "enabled")) {
+                    if (i + 4 <= data.len and std.mem.eql(u8, data[i .. i + 4], "true")) {
+                        enabled = true;
+                        i += 4;
+                    } else if (i + 5 <= data.len and std.mem.eql(u8, data[i .. i + 5], "false")) {
+                        enabled = false;
+                        i += 5;
+                    }
+                } else if (std.mem.eql(u8, field_name, "priority")) {
+                    // Skip number
+                    while (i < data.len and std.mem.indexOfScalar(u8, "0123456789", data[i]) != null) : (i += 1) {}
+                } else {
+                    // Skip unknown field value
+                    if (data[i] == '"') {
+                        i += 1;
+                        while (i < data.len and data[i] != '"') : (i += 1) {}
+                        i += 1;
+                    } else {
+                        while (i < data.len and data[i] != ',' and data[i] != '}') : (i += 1) {}
+                    }
+                }
+
+                // Skip comma
+                while (i < data.len and (data[i] == ',' or data[i] == ' ')) : (i += 1) {}
+            }
+
+            // Apply config — disable plugins that are marked disabled
+            if (!enabled) {
+                self.setPluginEnabled(plugin_name, false) catch {};
+            }
+
+            // Skip trailing comma
+            while (i < data.len and (data[i] == ',' or data[i] == ' ' or data[i] == '\n')) : (i += 1) {}
+        }
+
+        std.log.info("Loaded plugin configuration from {s}", .{config_path});
     }
     
-    // Save plugin configuration
+    // Save plugin configuration to a JSON file
     pub fn savePluginConfig(self: *PluginManager, config_path: []const u8) !void {
-        _ = self;
-        _ = config_path;
-        // TODO: Save configuration to file
-        std.log.info("Saving plugin configuration to {s}", .{config_path});
+        // Ensure directory exists
+        const dir = std.fs.path.dirname(config_path) orelse return error.InvalidPath;
+        std.fs.cwd().makePath(dir) catch {};
+
+        const file = try std.fs.cwd().createFile(config_path, .{});
+        defer file.close();
+
+        const writer = file.writer();
+        try writer.writeAll("{");
+
+        const plugins = self.listPlugins() catch &[_]PluginInfo{};
+        for (plugins, 0..) |info, idx| {
+            if (idx > 0) try writer.writeAll(",");
+            const is_enabled = self.registry.isPluginEnabled(info.name);
+            try writer.print("\"{s}\":{{\"enabled\":{},\"priority\":50}}", .{
+                info.name,
+                is_enabled,
+            });
+        }
+
+        try writer.writeAll("}");
+        std.log.info("Saved plugin configuration to {s}", .{config_path});
     }
 };
 

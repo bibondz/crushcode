@@ -116,12 +116,11 @@ pub fn handleWrite(args: [][]const u8) !void {
         if (is_glob) {
             std.debug.print("Glob pattern: {s}\n", .{p});
             // Basic glob implementation - write to all files matching extension
-            const wildcard_pos = std.mem.lastIndexOfScalar(u8, p, '*');
-            if (wildcard_pos == null) {
+            const wildcard_pos = std.mem.lastIndexOfScalar(u8, p, '*') orelse {
                 std.debug.print("Error: Pattern must contain wildcard (*)\n", .{});
                 return;
-            }
-            const extension = p[@intCast(wildcard_pos + 1)..];
+            };
+            const extension = p[wildcard_pos + 1 ..];
 
             var files_written: usize = 0;
             var dir = fs.cwd().openDir(".", .{}) catch |err| {
@@ -130,7 +129,8 @@ pub fn handleWrite(args: [][]const u8) !void {
             };
             defer dir.close();
 
-            while (dir.next() catch {}) |entry| {
+            var iter = dir.iterate();
+            while (iter.next() catch null) |entry| {
                 if (std.mem.endsWith(u8, entry.name, extension)) {
                     try writeFile(entry.name, content.?);
                     files_written += 1;

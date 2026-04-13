@@ -76,7 +76,8 @@ pub const PermissionEvaluator = struct {
         // Check session auto-approval (Crush pattern)
         if (request.context) |ctx| {
             if (ctx.object.get("session_id")) |session_val| {
-                if (session_val.string) |session_id| {
+                if (session_val == .string) {
+                    const session_id = session_val.string;
                     if (self.config.isSessionAutoApproved(session_id)) {
                         return true;
                     }

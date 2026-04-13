@@ -1224,18 +1224,146 @@ fn exchangeCodeForTokens(
     return error.OAuthNotImplemented;
 }
 
-/// Store OAuth tokens for a server
-/// Store OAuth tokens for a server
+/// Get path to MCP token storage file (~/.crushcode/mcp_tokens.json)
+fn getTokenStorePath(allocator: Allocator) ![]const u8 {
+    const home = std.process.getEnvVarOwned(allocator, "HOME") catch |err| {
+        if (err == error.EnvironmentVariableNotFound) {
+            if (std.process.getEnvVarOwned(allocator, "USERPROFILE")) |userprofile| {
+                return std.fmt.allocPrint(allocator, "{s}\\.crushcode\\mcp_tokens.json", .{userprofile});
+            } else |_| {
+                return error.HomeNotFound;
+            }
+        }
+        return err;
+    };
+    return std.fmt.allocPrint(allocator, "{s}/.crushcode/mcp_tokens.json", .{home});
+}
+
+/// Store OAuth tokens for a server — persists to ~/.crushcode/mcp_tokens.json
 fn storeOAuthTokens(server_name: []const u8, tokens: OAuthTokens, allocator: Allocator) !void {
-    _ = allocator;
-    // TODO: Implement token storage (file-based or in-memory cache)
-    // For now, just log the tokens
-    std.log.info("Stored tokens for server '{s}': access_token={s}, expires_in={?d}, refresh_token={?s}", .{
-        server_name,
-        tokens.access_token,
-        tokens.expires_in,
-        tokens.refresh_token,
-    });
+    const token_path = getTokenStorePath(allocator) catch |err| {
+        std.log.warn("Cannot resolve token store path: {} — tokens kept in memory only", .{err});
+        return;
+    };
+    defer allocator.free(token_path);
+
+    // Ensure directory exists
+    const dir = std.fs.path.dirname(token_path) orelse return error.InvalidPath;
+    std.fs.cwd().makePath(dir) catch {};
+
+    // Build JSON: {"server_name":{"access_token":"...","token_type":"...","expires_at":123,...}}
+    var buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer buf.deinit();
+    const w = buf.writer();
+
+    // Read existing file to preserve other servers' tokens
+    var existing_data: ?[]const u8 = null;
+    if (std.fs.cwd().openFile(token_path, .{})) |file| {
+        defer file.close();
+        const file_size = file.getEndPos() catch 0;
+        if (file_size > 0 and file_size < 1024 * 1024) {
+            const contents = try allocator.alloc(u8, file_size);
+            const bytes_read = file.readAll(contents) catch 0;
+            if (bytes_read > 0) {
+                existing_data = contents[0..bytes_read];
+            } else {
+                allocator.free(contents);
+            }
+        }
+    } else |_| {}
+
+    // Start building JSON
+    try w.writeAll("{");
+
+    // Write existing entries (skip the current server_name to overwrite it)
+    var first = true;
+    if (existing_data) |data| {
+        // Simple parsing: find server entries in the existing JSON
+        var i: usize = 0;
+        // Skip to first {
+        while (i < data.len and data[i] != '{') : (i += 1) {}
+        if (i < data.len) i += 1; // skip {
+
+        while (i < data.len) {
+            // Skip whitespace
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+            if (i >= data.len or data[i] == '}') break;
+            if (data[i] != '"') break;
+
+            // Parse key (server name)
+            i += 1;
+            const key_start = i;
+            while (i < data.len and data[i] != '"') : (i += 1) {}
+            const key_end = i;
+            i += 1;
+
+            // Skip to value
+            while (i < data.len and data[i] != ':') : (i += 1) {}
+            i += 1;
+            while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+
+            // Find the matching closing brace for this server's object
+            const obj_start = i;
+            var depth: usize = 0;
+            while (i < data.len) : (i += 1) {
+                if (data[i] == '{') depth += 1;
+                if (data[i] == '}') {
+                    if (depth == 1) {
+                        i += 1;
+                        break;
+                    }
+                    depth -= 1;
+                }
+            }
+
+            // Skip the server we're updating
+            if (std.mem.eql(u8, data[key_start..key_end], server_name)) {
+                // Skip trailing comma
+                while (i < data.len and (data[i] == ',' or data[i] == ' ' or data[i] == '\n')) : (i += 1) {}
+                continue;
+            }
+
+            // Write this entry: "server_name":{...}
+            if (!first) try w.writeAll(",");
+            first = false;
+            try w.writeByte('"');
+            try w.writeAll(data[key_start..key_end]);
+            try w.writeAll("\":");
+            try w.writeAll(data[obj_start..i]);
+
+            // Skip trailing comma
+            while (i < data.len and (data[i] == ',' or data[i] == ' ' or data[i] == '\n')) : (i += 1) {}
+        }
+
+        defer allocator.free(data);
+    }
+
+    // Write the new/updated server entry
+    if (!first) try w.writeAll(",");
+    try w.print("\"{s}\":{{\"access_token\":\"{s}\",\"token_type\":\"{s}\"", .{ server_name, tokens.access_token, tokens.token_type });
+    if (tokens.expires_at) |ea| {
+        try w.print(",\"expires_at\":{d}", .{ea});
+    }
+    if (tokens.expires_in) |ei| {
+        try w.print(",\"expires_in\":{d}", .{ei});
+    }
+    if (tokens.refresh_token) |rt| {
+        try w.print(",\"refresh_token\":\"{s}\"", .{rt});
+    }
+    if (tokens.scope) |sc| {
+        try w.print(",\"scope\":\"{s}\"", .{sc});
+    }
+    try w.writeAll("}}");
+
+    // Write to file
+    const out_file = std.fs.cwd().createFile(token_path, .{}) catch |err| {
+        std.log.warn("Failed to create token store file: {}", .{err});
+        return;
+    };
+    defer out_file.close();
+    try out_file.writeAll(buf.items);
+
+    std.log.info("Stored tokens for server '{s}'", .{server_name});
 }
 
 /// Refresh expired OAuth tokens - stubbed out
@@ -1262,12 +1390,127 @@ pub fn getOAuthTokens(
     allocator: Allocator,
 ) !OAuthTokens {
     _ = self;
-    _ = server_name;
     _ = config;
-    _ = allocator;
-    // TODO: Load tokens from storage
-    // For now, return error indicating tokens need to be obtained
-    return error.TokensNotFound;
+
+    const token_path = getTokenStorePath(allocator) catch return error.TokensNotFound;
+    defer allocator.free(token_path);
+
+    const file = std.fs.cwd().openFile(token_path, .{}) catch return error.TokensNotFound;
+    defer file.close();
+
+    const file_size = try file.getEndPos();
+    if (file_size == 0 or file_size > 1024 * 1024) return error.TokensNotFound;
+    const buf = try allocator.alloc(u8, file_size);
+    defer allocator.free(buf);
+
+    const bytes_read = try file.readAll(buf);
+    const data = buf[0..bytes_read];
+
+    // Simple JSON search: find "server_name":{...}
+    // Build the key pattern: "\"server_name\":{"
+    var key_buf: [256]u8 = undefined;
+    const key_prefix = std.fmt.bufPrint(&key_buf, "\"{s}\":", .{server_name}) catch return error.TokensNotFound;
+
+    const idx = std.mem.indexOf(u8, data, key_prefix) orelse return error.TokensNotFound;
+    var i = idx + key_prefix.len;
+
+    // Skip whitespace
+    while (i < data.len and std.mem.indexOfScalar(u8, " \t\n\r", data[i]) != null) : (i += 1) {}
+    if (i >= data.len or data[i] != '{') return error.TokensNotFound;
+
+    // Extract the object substring
+    const obj_start = i;
+    var depth: usize = 0;
+    while (i < data.len) : (i += 1) {
+        if (data[i] == '{') depth += 1;
+        if (data[i] == '}') {
+            depth -= 1;
+            if (depth == 0) {
+                i += 1;
+                break;
+            }
+        }
+    }
+    const obj_str = data[obj_start..i];
+
+    // Parse fields from the object
+    var access_token: ?[]const u8 = null;
+    var refresh_token: ?[]const u8 = null;
+    var token_type: []const u8 = "Bearer";
+    var expires_in: ?u64 = null;
+    var expires_at: ?i64 = null;
+    var scope: ?[]const u8 = null;
+
+    var j: usize = 1; // skip opening {
+    while (j < obj_str.len) {
+        // Skip whitespace
+        while (j < obj_str.len and std.mem.indexOfScalar(u8, " \t\n\r", obj_str[j]) != null) : (j += 1) {}
+        if (j >= obj_str.len or obj_str[j] == '}') break;
+        if (obj_str[j] != '"') break;
+
+        // Parse field name
+        j += 1;
+        const fname_start = j;
+        while (j < obj_str.len and obj_str[j] != '"') : (j += 1) {}
+        const fname_end = j;
+        const fname = obj_str[fname_start..fname_end];
+        j += 1;
+
+        // Skip to value
+        while (j < obj_str.len and obj_str[j] != ':') : (j += 1) {}
+        j += 1;
+        while (j < obj_str.len and std.mem.indexOfScalar(u8, " \t\n\r", obj_str[j]) != null) : (j += 1) {}
+
+        if (obj_str[j] == '"') {
+            // String value
+            j += 1;
+            const vs = j;
+            while (j < obj_str.len and obj_str[j] != '"') : (j += 1) {}
+            const val = obj_str[vs..j];
+            j += 1;
+
+            if (std.mem.eql(u8, fname, "access_token")) {
+                access_token = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "refresh_token")) {
+                refresh_token = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "token_type")) {
+                token_type = try allocator.dupe(u8, val);
+            } else if (std.mem.eql(u8, fname, "scope")) {
+                scope = try allocator.dupe(u8, val);
+            }
+        } else {
+            // Number value
+            const ns = j;
+            while (j < obj_str.len and obj_str[j] != ',' and obj_str[j] != '}') : (j += 1) {}
+            const num_str = std.mem.trim(u8, obj_str[ns..j], " \t\n\r");
+
+            if (std.mem.eql(u8, fname, "expires_at")) {
+                expires_at = std.fmt.parseInt(i64, num_str, 10) catch null;
+            } else if (std.mem.eql(u8, fname, "expires_in")) {
+                expires_in = std.fmt.parseInt(u64, num_str, 10) catch null;
+            }
+        }
+
+        // Skip comma
+        while (j < obj_str.len and (obj_str[j] == ',' or obj_str[j] == ' ')) : (j += 1) {}
+    }
+
+    const at = access_token orelse return error.TokensNotFound;
+
+    // Check if expired
+    if (expires_at) |ea| {
+        const now = std.time.timestamp();
+        if (now >= ea) return error.TokenExpired;
+    }
+
+    return OAuthTokens{
+        .access_token = at,
+        .refresh_token = refresh_token,
+        .token_type = token_type,
+        .expires_in = expires_in,
+        .expires_at = expires_at,
+        .scope = scope,
+    };
 }
 
 // =============================================================================

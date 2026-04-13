@@ -275,10 +275,9 @@ pub const TUIApp = struct {
     }
 };
 
-/// Run interactive TUI with event loop (legacy, no AI client)
+/// Run interactive TUI with event loop using a prompt function for AI responses
+/// The prompt_fn is expected to have signature: fn ([]const u8) anyerror![]const u8
 pub fn runTUI(allocator: std.mem.Allocator, prompt_fn: anytype) !void {
-    _ = prompt_fn; // TODO: integrate AI chat
-
     var app = try TUIApp.init(allocator, null);
     defer app.deinit();
 
@@ -293,11 +292,57 @@ pub fn runTUI(allocator: std.mem.Allocator, prompt_fn: anytype) !void {
 
     try app.render();
 
-    // Main event loop
+    // Main event loop — intercepts Enter to route user input through prompt_fn
     var running = true;
     while (running) {
         if (app.input_reader.readEvent()) |event| {
-            running = try app.handleKey(event);
+            switch (event) {
+                .key_press => |kp| {
+                    const key = kp.key;
+                    const mods = kp.mods;
+
+                    // Handle Ctrl+C / Ctrl+D
+                    if (mods.ctrl and key == .character) {
+                        const ch = @as(u8, @truncate(key.character));
+                        if (ch == 'c' or ch == 'C' or ch == 'd' or ch == 'D') {
+                            running = false;
+                            continue;
+                        }
+                    }
+
+                    switch (key) {
+                        .enter => {
+                            const input = app.input_box.getText();
+                            if (input.len > 0) {
+                                try app.addUserLine(input);
+
+                                // Check for slash commands first
+                                if (input[0] == '/') {
+                                    try app.handleCommand(input);
+                                } else {
+                                    // Route through prompt_fn for AI response
+                                    const response = prompt_fn(input) catch |err| {
+                                        try app.addErrorLine(@errorName(err));
+                                        app.input_box.clear();
+                                        try app.render();
+                                        continue;
+                                    };
+                                    try app.addAssistantLine(response);
+                                }
+
+                                app.input_box.clear();
+                            }
+                        },
+                        else => {
+                            // Delegate all other key handling to the standard handler
+                            running = try app.handleKey(event);
+                        },
+                    }
+                },
+                else => {
+                    running = try app.handleKey(event);
+                },
+            }
             try app.render();
         }
     }
