@@ -1,27 +1,22 @@
 const std = @import("std");
 
+const types = @import("types.zig");
+const registry = @import("registry.zig");
+
 const Allocator = std.mem.Allocator;
 
-const PTYPlugin = @import("plugins/pty.zig").PTYPlugin;
-const TableFormatterPlugin = @import("plugins/table_formatter.zig").TableFormatterPlugin;
-const NotifierPlugin = @import("plugins/notifier.zig").NotifierPlugin;
-const ShellStrategyPlugin = @import("plugins/shell_strategy.zig").ShellStrategyPlugin;
-const PluginRegistry = @import("plugins/registry.zig").PluginRegistry;
+const PTYPlugin = @import("pty").PTYPlugin;
+const TableFormatterPlugin = @import("table_formatter").TableFormatterPlugin;
+const NotifierPlugin = @import("notifier").NotifierPlugin;
+const ShellStrategyPlugin = @import("shell_strategy").ShellStrategyPlugin;
 
-const Plugin = @import("plugins/registry.zig").Plugin;
-const PluginInfo = @import("plugins/registry.zig").PluginInfo;
-const PluginConfig = @import("plugins/registry.zig").PluginConfig;
-const PluginType = @import("plugins/registry.zig").PluginType;
-
-const PTYRequest = @import("plugins/pty.zig").PTYRequest;
-const PTYMethod = @import("plugins/pty.zig").PTYMethod;
-const PTYArgs = @import("plugins/pty.zig").PTYArgs;
-const EventType = @import("plugins/notifier.zig").EventType;
-const NotifierEvent = @import("plugins/notifier.zig").NotifierEvent;
+const PTYMethod = @import("pty").PTYMethod;
+const PTYArgs = @import("pty").PTYArgs;
+const EventType = @import("notifier").EventType;
 
 pub const PluginManager = struct {
     allocator: Allocator,
-    registry: PluginRegistry,
+    registry: registry.PluginRegistry,
 
     pty_plugin: ?PTYPlugin,
     table_formatter: ?TableFormatterPlugin,
@@ -31,7 +26,7 @@ pub const PluginManager = struct {
     pub fn init(allocator: Allocator) PluginManager {
         return PluginManager{
             .allocator = allocator,
-            .registry = PluginRegistry.init(allocator),
+            .registry = registry.PluginRegistry.init(allocator),
             .pty_plugin = null,
             .table_formatter = null,
             .notifier = null,
@@ -50,7 +45,7 @@ pub const PluginManager = struct {
 
     pub fn initializeBuiltIns(self: *PluginManager) !void {
         self.pty_plugin = PTYPlugin.init(self.allocator);
-        self.registry.registerBuiltIn("pty", Plugin{
+        self.registry.registerBuiltIn("pty", types.Plugin{
             .name = "pty",
             .version = "1.0.0",
             .description = "Terminal management with PTY sessions",
@@ -63,7 +58,7 @@ pub const PluginManager = struct {
         };
 
         self.table_formatter = TableFormatterPlugin.init(self.allocator);
-        self.registry.registerBuiltIn("table_formatter", Plugin{
+        self.registry.registerBuiltIn("table_formatter", types.Plugin{
             .name = "table_formatter",
             .version = "1.0.0",
             .description = "Auto-format markdown tables",
@@ -76,7 +71,7 @@ pub const PluginManager = struct {
         };
 
         self.notifier = NotifierPlugin.init(self.allocator);
-        self.registry.registerBuiltIn("notifier", Plugin{
+        self.registry.registerBuiltIn("notifier", types.Plugin{
             .name = "notifier",
             .version = "1.0.0",
             .description = "Desktop notifications and sound",
@@ -89,7 +84,7 @@ pub const PluginManager = struct {
         };
 
         self.shell_strategy = ShellStrategyPlugin.init(self.allocator);
-        self.registry.registerBuiltIn("shell_strategy", Plugin{
+        self.registry.registerBuiltIn("shell_strategy", types.Plugin{
             .name = "shell_strategy",
             .version = "1.0.0",
             .description = "Non-interactive shell patterns",
@@ -102,23 +97,23 @@ pub const PluginManager = struct {
         };
     }
 
-    pub fn handleRequest(self: *PluginManager, request_type: []const u8, method: []const u8, args: anytype) !PluginResponse {
+    pub fn handleRequest(self: *PluginManager, request_type: []const u8, method: []const u8, args: anytype) !types.PluginResponse {
         if (request_type.len == 0) return error.EmptyRequestType;
         if (method.len == 0) return error.EmptyMethod;
 
         const plugin = self.registry.findPluginForRequest(request_type) orelse {
-            return PluginResponse{ .success = false, .err = "No plugin registered to handle this request type" };
+            return types.PluginResponse{ .success = false, .err = "No plugin registered to handle this request type" };
         };
 
         const built_in = plugin.built_in orelse {
-            return PluginResponse{ .success = false, .err = "Request matched a plugin without a built-in implementation" };
+            return types.PluginResponse{ .success = false, .err = "Request matched a plugin without a built-in implementation" };
         };
 
         switch (built_in) {
             .pty => {
-                const pty = self.pty_plugin orelse return PluginResponse{ .success = false, .err = "PTY plugin is not initialized" };
+                const pty = self.pty_plugin orelse return types.PluginResponse{ .success = false, .err = "PTY plugin is not initialized" };
                 const pty_method = std.meta.stringToEnum(PTYMethod, method) orelse {
-                    return PluginResponse{ .success = false, .err = "Invalid PTY method" };
+                    return types.PluginResponse{ .success = false, .err = "Invalid PTY method" };
                 };
 
                 var pty_copy = pty;
@@ -126,36 +121,36 @@ pub const PluginManager = struct {
                     .method = pty_method,
                     .args = buildPTYArgs(args),
                 }) catch |err| {
-                    return PluginResponse{
+                    return types.PluginResponse{
                         .success = false,
                         .err = try std.fmt.allocPrint(self.allocator, "PTY plugin request failed: {}", .{err}),
                     };
                 };
-                return PluginResponse.fromPTY(pty_response);
+                return types.PluginResponse.fromPTY(pty_response);
             },
             .table_formatter => {
-                const formatter = self.table_formatter orelse return PluginResponse{ .success = false, .err = "Table Formatter plugin is not initialized" };
+                const formatter = self.table_formatter orelse return types.PluginResponse{ .success = false, .err = "Table Formatter plugin is not initialized" };
                 if (!std.mem.eql(u8, method, "format_tables")) {
-                    return PluginResponse{ .success = false, .err = "Invalid method for Table Formatter plugin" };
+                    return types.PluginResponse{ .success = false, .err = "Invalid method for Table Formatter plugin" };
                 }
 
                 var formatter_copy = formatter;
                 const formatted = formatter_copy.formatMarkdownTables(args.text) catch |err| {
-                    return PluginResponse{
+                    return types.PluginResponse{
                         .success = false,
                         .err = try std.fmt.allocPrint(self.allocator, "Table formatting failed: {}", .{err}),
                     };
                 };
-                return PluginResponse{
+                return types.PluginResponse{
                     .success = true,
                     .text = formatted,
                     .message = "Markdown tables formatted",
                 };
             },
             .notifier => {
-                const notifier = self.notifier orelse return PluginResponse{ .success = false, .err = "Notifier plugin is not initialized" };
+                const notifier = self.notifier orelse return types.PluginResponse{ .success = false, .err = "Notifier plugin is not initialized" };
                 const event_type = std.meta.stringToEnum(EventType, method) orelse {
-                    return PluginResponse{ .success = false, .err = "Invalid notifier event type" };
+                    return types.PluginResponse{ .success = false, .err = "Invalid notifier event type" };
                 };
 
                 var notifier_copy = notifier;
@@ -168,25 +163,25 @@ pub const PluginManager = struct {
                     .error_message = if (@hasField(@TypeOf(args), "error_message")) args.error_message else null,
                     .timestamp = std.time.timestamp(),
                 }) catch |err| {
-                    return PluginResponse{
+                    return types.PluginResponse{
                         .success = false,
                         .err = try std.fmt.allocPrint(self.allocator, "Notifier event handling failed: {}", .{err}),
                     };
                 };
 
-                return PluginResponse{ .success = true, .message = "Notifier event handled" };
+                return types.PluginResponse{ .success = true, .message = "Notifier event handled" };
             },
             .shell_strategy => {
-                const shell = self.shell_strategy orelse return PluginResponse{ .success = false, .err = "Shell Strategy plugin is not initialized" };
+                const shell = self.shell_strategy orelse return types.PluginResponse{ .success = false, .err = "Shell Strategy plugin is not initialized" };
                 var shell_copy = shell;
                 const processed = shell_copy.processCommand(args.command, args.args) catch |err| {
-                    return PluginResponse{
+                    return types.PluginResponse{
                         .success = false,
                         .err = try std.fmt.allocPrint(self.allocator, "Shell command processing failed: {}", .{err}),
                     };
                 };
 
-                return PluginResponse{
+                return types.PluginResponse{
                     .success = processed.allowed,
                     .message = if (processed.allowed) "Shell command processed" else processed.reason,
                     .err = if (processed.allowed) null else processed.reason,
@@ -195,15 +190,15 @@ pub const PluginManager = struct {
         }
     }
 
-    pub fn getPluginStatus(self: *PluginManager, plugin_name: []const u8) !PluginStatus {
+    pub fn getPluginStatus(self: *PluginManager, plugin_name: []const u8) !types.PluginStatus {
         if (self.registry.getPlugin(plugin_name)) |plugin| {
-            return PluginStatus{
+            return types.PluginStatus{
                 .name = plugin.name,
                 .version = plugin.version,
                 .description = plugin.description,
                 .enabled = self.registry.isPluginEnabled(plugin_name),
                 .type = plugin.type,
-                .config = self.registry.plugin_configs.get(plugin_name) orelse PluginConfig.default(self.allocator),
+                .config = self.registry.plugin_configs.get(plugin_name) orelse types.PluginConfig.default(self.allocator),
             };
         }
         return error.PluginNotFound;
@@ -213,7 +208,7 @@ pub const PluginManager = struct {
         try self.registry.setPluginEnabled(plugin_name, enabled);
     }
 
-    pub fn listPlugins(self: *PluginManager) ![]PluginInfo {
+    pub fn listPlugins(self: *PluginManager) ![]types.PluginInfo {
         return try self.registry.listPlugins();
     }
 
@@ -332,32 +327,6 @@ pub const PluginManager = struct {
 
         try writer.writeAll("}");
         std.log.info("Saved plugin configuration to {s}", .{config_path});
-    }
-};
-
-pub const PluginStatus = struct {
-    name: []const u8,
-    version: []const u8,
-    description: []const u8,
-    enabled: bool,
-    type: PluginType,
-    config: PluginConfig,
-};
-
-pub const PluginResponse = struct {
-    success: bool,
-    data: ?std.json.Value = null,
-    text: ?[]const u8 = null,
-    message: ?[]const u8 = null,
-    err: ?[]const u8 = null,
-
-    fn fromPTY(response: @import("plugins/pty.zig").PTYResponse) PluginResponse {
-        return PluginResponse{
-            .success = response.success,
-            .data = response.data,
-            .message = response.message,
-            .err = response.err,
-        };
     }
 };
 

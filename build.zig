@@ -1,5 +1,25 @@
 const std = @import("std");
 
+/// Helper: Create a module with standard compat imports (array_list_compat + file_compat).
+/// Reduces boilerplate from 5 lines to 1 line per module.
+fn createCompatModule(
+    b: *std.Build,
+    path: []const u8,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    array_list_mod: *std.Build.Module,
+    file_mod: *std.Build.Module,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path(path),
+        .target = target,
+        .optimize = optimize,
+    });
+    mod.addImport("array_list_compat", array_list_mod);
+    mod.addImport("file_compat", file_mod);
+    return mod;
+}
+
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
@@ -52,6 +72,13 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    const ai_streaming_parsers_mod = b.createModule(.{
+        .root_source_file = b.path("src/ai/streaming_parsers.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    ai_streaming_parsers_mod.addImport("ai_types", ai_types_mod);
+
     const tool_loader_mod = b.createModule(.{
         .root_source_file = b.path("src/config/tool_loader.zig"),
         .target = target,
@@ -70,6 +97,7 @@ pub fn build(b: *std.Build) !void {
     client_mod.addImport("ai_types", ai_types_mod);
     client_mod.addImport("tool_types", tool_types_mod);
     client_mod.addImport("http_client", http_client_mod);
+    client_mod.addImport("ai_streaming_parsers", ai_streaming_parsers_mod);
 
     // Config module
     const config_mod = b.createModule(.{
@@ -129,16 +157,40 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
-    // Plugin module
-    const plugin_mod = b.createModule(.{ .root_source_file = b.path("src/plugin/interface.zig"), .imports = &.{
-        .{ .name = "protocol", .module = b.createModule(.{ .root_source_file = b.path("src/plugin/protocol.zig"), .imports = &.{} }) },
-    } });
-
-    const plugin_manager_mod = b.createModule(.{
-        .root_source_file = b.path("src/plugin_manager.zig"),
+    const pty_plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugins/pty.zig"),
         .target = target,
         .optimize = optimize,
     });
+    const table_formatter_plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugins/table_formatter.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const notifier_plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugins/notifier.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const shell_strategy_plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugins/shell_strategy.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Plugin module (consolidated)
+    const plugin_mod = b.createModule(.{
+        .root_source_file = b.path("src/plugin/mod.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    plugin_mod.addImport("pty", pty_plugin_mod);
+    plugin_mod.addImport("table_formatter", table_formatter_plugin_mod);
+    plugin_mod.addImport("notifier", notifier_plugin_mod);
+    plugin_mod.addImport("shell_strategy", shell_strategy_plugin_mod);
+
+    // Plugin manager is now part of plugin module
+    const plugin_manager_mod = plugin_mod;
 
     // Read module
     const read_mod = b.createModule(.{
@@ -149,6 +201,12 @@ pub fn build(b: *std.Build) !void {
     read_mod.addImport("fileops", fileops_mod);
 
     // Chat module
+    const chat_tool_executors_mod = b.createModule(.{
+        .root_source_file = b.path("src/chat/tool_executors.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     const chat_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/chat.zig"),
         .target = target,
@@ -163,6 +221,7 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("provider_config", provider_config_mod);
     chat_mod.addImport("plugin", plugin_mod);
     chat_mod.addImport("tool_loader", tool_loader_mod);
+    chat_mod.addImport("chat_tool_executors", chat_tool_executors_mod);
 
     const plugin_command_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/plugin_command.zig"),
@@ -201,7 +260,7 @@ pub fn build(b: *std.Build) !void {
 
     // Skills module
     const skills_mod = b.createModule(.{
-        .root_source_file = b.path("src/commands/skills.zig"),
+        .root_source_file = b.path("src/commands/builtins.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -242,7 +301,7 @@ pub fn build(b: *std.Build) !void {
 
     // Skills loader module (SKILL.md parsing)
     const skills_loader_mod = b.createModule(.{
-        .root_source_file = b.path("src/skills/types.zig"),
+        .root_source_file = b.path("src/skills/loader.zig"),
         .target = target,
         .optimize = optimize,
     });
@@ -280,6 +339,36 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+
+    // Output intensity module (F1: Caveman-inspired compression levels)
+    const intensity_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/intensity.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Tiered context loading (F2: LLM Wiki-inspired loading strategy)
+    const tiered_loader_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/tiered_loader.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    // Convergence detection (F14: Cavekit-inspired plateau detection)
+    const convergence_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/convergence.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const revision_loop_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/revision_loop.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    revision_loop_mod.addImport("array_list_compat", compat_array_list_mod);
+    revision_loop_mod.addImport("convergence", convergence_mod);
+
     ndjson_mod.addImport("types", streaming_types_mod);
 
     const sse_mod = b.createModule(.{
@@ -312,6 +401,35 @@ pub fn build(b: *std.Build) !void {
     core_api_mod.addImport("streaming", streaming_session_mod);
     core_api_mod.addImport("streaming_buffer", streaming_buffer_mod);
     core_api_mod.addImport("streaming_display", streaming_display_mod);
+
+    chat_mod.addImport("intensity", intensity_mod);
+    chat_mod.addImport("tiered_loader", tiered_loader_mod);
+    chat_mod.addImport("convergence", convergence_mod);
+    chat_mod.addImport("revision_loop", revision_loop_mod);
+
+    // Session summarizer (F11)
+    const session_summarizer_mod = createCompatModule(b, "src/core/session_summarizer.zig", target, optimize, compat_array_list_mod, compat_file_mod);
+
+    // Model hot-swap (F13)
+    const model_hotswap_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/model_hotswap.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    model_hotswap_mod.addImport("array_list_compat", compat_array_list_mod);
+
+    chat_mod.addImport("session_summarizer", session_summarizer_mod);
+    chat_mod.addImport("model_hotswap", model_hotswap_mod);
+
+    // Adversarial dual-model review (F10)
+    const adversarial_review_mod = b.createModule(.{
+        .root_source_file = b.path("src/core/adversarial_review.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    adversarial_review_mod.addImport("array_list_compat", compat_array_list_mod);
+
+    chat_mod.addImport("adversarial_review", adversarial_review_mod);
 
     // Add core_api to TUI module
     tui_mod.addImport("core_api", core_api_mod);
@@ -406,6 +524,18 @@ pub fn build(b: *std.Build) !void {
     validated_edit_mod.addImport("hash_index", hash_index_mod);
     validated_edit_mod.addImport("conflict", conflict_mod);
 
+    const lsp_handler_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/lsp_handler.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
+    const mcp_handler_mod = b.createModule(.{
+        .root_source_file = b.path("src/commands/mcp_handler.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // Handlers module
     const handlers_mod = b.createModule(.{
         .root_source_file = b.path("src/commands/handlers.zig"),
@@ -435,6 +565,8 @@ pub fn build(b: *std.Build) !void {
     handlers_mod.addImport("profile", profile_mod);
     handlers_mod.addImport("json_output", json_output_mod);
     handlers_mod.addImport("plugin_manager", plugin_manager_mod);
+    handlers_mod.addImport("lsp_handler", lsp_handler_mod);
+    handlers_mod.addImport("mcp_handler", mcp_handler_mod);
 
     // Diff visualizer module
     const diff_mod = b.createModule(.{
@@ -443,6 +575,10 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
     handlers_mod.addImport("diff", diff_mod);
+
+    // Custom commands module (F15: Markdown Custom Commands)
+    const custom_commands_mod = createCompatModule(b, "src/commands/custom_commands.zig", target, optimize, compat_array_list_mod, compat_file_mod);
+    handlers_mod.addImport("custom_commands", custom_commands_mod);
 
     // Config backup module
     const backup_mod = b.createModule(.{
@@ -474,6 +610,7 @@ pub fn build(b: *std.Build) !void {
     main_mod.addImport("validated_edit", validated_edit_mod);
     main_mod.addImport("profile", profile_mod);
     main_mod.addImport("json_output", json_output_mod);
+    main_mod.addImport("custom_commands", custom_commands_mod);
 
     // Phase 17-22 modules
     const fallback_mod = b.createModule(.{
@@ -487,6 +624,13 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+
+    const task_mod = b.createModule(.{
+        .root_source_file = b.path("src/agent/task.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    parallel_mod.addImport("task", task_mod);
 
     // Memory module (Phase 9 - session persistence)
     const memory_mod = b.createModule(.{
@@ -548,6 +692,8 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("intent_gate", intent_gate_mod);
     chat_mod.addImport("lifecycle_hooks", lifecycle_hooks_mod);
     chat_mod.addImport("memory", memory_mod);
+    lsp_handler_mod.addImport("args", cli_mod);
+    lsp_handler_mod.addImport("lsp", lsp_mod);
     handlers_mod.addImport("fallback", fallback_mod);
     handlers_mod.addImport("parallel", parallel_mod);
     handlers_mod.addImport("worktree", worktree_mod);
@@ -592,6 +738,7 @@ pub fn build(b: *std.Build) !void {
         .target = target,
         .optimize = optimize,
     });
+    workflow_mod.addImport("task", task_mod);
 
     // Phase 26: Auto-Context Compaction (OpenHarness-inspired)
     const compaction_mod = b.createModule(.{
@@ -607,15 +754,37 @@ pub fn build(b: *std.Build) !void {
         .optimize = optimize,
     });
 
+    // Capability catalog — read-only index over all registries
+    const capability_catalog_mod = b.createModule(.{
+        .root_source_file = b.path("src/capability/catalog.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+
     // MCP (Model Context Protocol) client modules
+    const mcp_transport_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/transport.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_transport_mod.addImport("http_client", http_client_mod);
+
+    const mcp_oauth_mod = b.createModule(.{
+        .root_source_file = b.path("src/mcp/oauth.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    mcp_oauth_mod.addImport("env", env_mod);
+    mcp_oauth_mod.addImport("http_client", http_client_mod);
+    mcp_oauth_mod.addImport("json_extract", json_extract_mod);
+
     const mcp_client_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/client.zig"),
         .target = target,
         .optimize = optimize,
     });
-    mcp_client_mod.addImport("env", env_mod);
-    mcp_client_mod.addImport("http_client", http_client_mod);
-    mcp_client_mod.addImport("json_extract", json_extract_mod);
+    mcp_client_mod.addImport("mcp_transport", mcp_transport_mod);
+    mcp_client_mod.addImport("mcp_oauth", mcp_oauth_mod);
     const mcp_discovery_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/discovery.zig"),
         .target = target,
@@ -625,6 +794,9 @@ pub fn build(b: *std.Build) !void {
     mcp_discovery_mod.addImport("env", env_mod);
     mcp_discovery_mod.addImport("http_client", http_client_mod);
     mcp_discovery_mod.addImport("json_extract", json_extract_mod);
+    mcp_handler_mod.addImport("args", cli_mod);
+    mcp_handler_mod.addImport("mcp_client", mcp_client_mod);
+    mcp_handler_mod.addImport("mcp_discovery", mcp_discovery_mod);
 
     const mcp_bridge_mod = b.createModule(.{
         .root_source_file = b.path("src/mcp/bridge.zig"),
@@ -636,6 +808,7 @@ pub fn build(b: *std.Build) !void {
     mcp_bridge_mod.addImport("client", client_mod);
 
     // Register Phase 23-27 modules on main
+    main_mod.addImport("capability_catalog", capability_catalog_mod);
     main_mod.addImport("graph", graph_mod);
     main_mod.addImport("agent_loop", agent_loop_mod);
     main_mod.addImport("workflow", workflow_mod);
@@ -663,6 +836,10 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("tools", tools_mod);
     chat_mod.addImport("skills_loader", skills_loader_mod);
     chat_mod.addImport("streaming_types", streaming_types_mod);
+    chat_tool_executors_mod.addImport("core_api", core_api_mod);
+    chat_tool_executors_mod.addImport("agent_loop", agent_loop_mod);
+    chat_tool_executors_mod.addImport("json_output", json_output_mod);
+    chat_tool_executors_mod.addImport("permission_evaluate", permission_evaluate_mod);
 
     for (&[_]*std.Build.Module{
         cli_mod,
@@ -677,9 +854,13 @@ pub fn build(b: *std.Build) !void {
         provider_config_mod,
         toml_mod,
         fileops_mod,
+        pty_plugin_mod,
+        table_formatter_plugin_mod,
+        notifier_plugin_mod,
+        shell_strategy_plugin_mod,
         plugin_mod,
-        plugin_manager_mod,
         read_mod,
+        chat_tool_executors_mod,
         chat_mod,
         plugin_command_mod,
         default_commands_mod,
@@ -710,6 +891,8 @@ pub fn build(b: *std.Build) !void {
         conflict_mod,
         validated_edit_mod,
         ast_grep_mod,
+        lsp_handler_mod,
+        mcp_handler_mod,
         handlers_mod,
         main_mod,
         fallback_mod,
@@ -724,7 +907,17 @@ pub fn build(b: *std.Build) !void {
         agent_loop_mod,
         workflow_mod,
         compaction_mod,
+        capability_catalog_mod,
+        intensity_mod,
+        tiered_loader_mod,
+        revision_loop_mod,
+        session_summarizer_mod,
+        model_hotswap_mod,
+        adversarial_review_mod,
+        convergence_mod,
         scaffold_mod,
+        mcp_transport_mod,
+        mcp_oauth_mod,
         mcp_client_mod,
         mcp_discovery_mod,
         mcp_bridge_mod,
@@ -738,6 +931,7 @@ pub fn build(b: *std.Build) !void {
         memory_mod,
         lsp_mod,
         json_extract_mod,
+        ai_streaming_parsers_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -749,17 +943,19 @@ pub fn build(b: *std.Build) !void {
         .root_module = main_mod,
     });
 
-    const plugin_manager_obj = b.addObject(.{
-        .name = "plugin_manager_check",
-        .root_module = plugin_manager_mod,
-    });
-    b.default_step.dependOn(&plugin_manager_obj.step);
-
     b.installArtifact(exe);
 
     // Tests
     const mcp_client_tests = b.addTest(.{
         .root_module = mcp_client_mod,
+    });
+
+    const mcp_transport_tests = b.addTest(.{
+        .root_module = mcp_transport_mod,
+    });
+
+    const mcp_oauth_tests = b.addTest(.{
+        .root_module = mcp_oauth_mod,
     });
 
     const graph_parser_tests = b.addTest(.{
@@ -796,6 +992,8 @@ pub fn build(b: *std.Build) !void {
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&mcp_client_tests.step);
+    test_step.dependOn(&mcp_transport_tests.step);
+    test_step.dependOn(&mcp_oauth_tests.step);
     test_step.dependOn(&graph_parser_tests.step);
     test_step.dependOn(&graph_tests.step);
     test_step.dependOn(&agent_loop_tests.step);

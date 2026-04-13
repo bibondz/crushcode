@@ -282,7 +282,7 @@ pub const StdioTransport = struct {
     }
 
     fn send(transport: *Transport, data: []const u8) !void {
-        const self: *StdioTransport = @fieldParentPtr("transport", transport);
+        _ = transport;
         const stdout = file_compat.File.stdout();
 
         _ = try stdout.write("Content-Length: ");

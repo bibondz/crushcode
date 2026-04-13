@@ -1,17 +1,14 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 
-/// Plugin interface for external tool integration
-pub const Plugin = struct {
+pub const RuntimePlugin = struct {
     name: []const u8,
     version: []const u8,
     capabilities: []const Capability,
 
-    // Plugin process handle
     process: ?std.process.Child,
     socket: ?std.net.Stream,
 
-    // Lifecycle methods
     init_fn: fn () anyerror!void,
     deinit_fn: fn () void,
     handle_fn: fn (request: Request) anyerror!Response,
@@ -37,7 +34,7 @@ pub const Plugin = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        if (self.process) |proc| {
+        if (self.process) |*proc| {
             proc.kill() catch {};
             proc.wait() catch {};
         }
@@ -47,8 +44,7 @@ pub const Plugin = struct {
     }
 
     pub fn start(self: *Self, plugin_path: []const u8) !void {
-        // Start plugin process
-        var proc = try std.process.Child.init(&[_][]const u8{plugin_path}, self.allocator);
+        var proc = std.process.Child.init(&[_][]const u8{plugin_path}, self.allocator);
         proc.stdin_behavior = .Pipe;
         proc.stdout_behavior = .Pipe;
         proc.stderr_behavior = .Inherit;
@@ -56,27 +52,22 @@ pub const Plugin = struct {
         try proc.spawn();
         self.process = proc;
 
-        // Initialize plugin
         try self.init_fn();
     }
 
     pub fn sendRequest(self: *Self, request: Request) !Response {
-        if (self.process) |proc| {
-            // Send JSON-RPC request via stdin
+        if (self.process) |*proc| {
             const request_json = try std.json.stringifyAlloc(self.allocator, request, .{});
             defer self.allocator.free(request_json);
 
             _ = try proc.stdin.?.write(request_json);
             _ = try proc.stdin.?.write("\n");
 
-            // Read response from stdout
             var buffer: [4096]u8 = undefined;
             const bytes_read = try proc.stdout.?.read(&buffer);
             const response_str = buffer[0..bytes_read];
 
-            var response = Response{};
-            try std.json.parseFromSliceLeaky(Response, self.allocator, response_str, .{});
-            return response;
+            return try std.json.parseFromSliceLeaky(Response, self.allocator, response_str, .{});
         }
         return error.PluginNotRunning;
     }
@@ -85,7 +76,6 @@ pub const Plugin = struct {
         return self.health_fn();
     }
 
-    // Default implementations
     fn defaultInit() !void {}
     fn defaultDeinit() void {}
     fn defaultHandle(request: Request) !Response {
@@ -147,9 +137,8 @@ pub const HealthStatus = struct {
     };
 };
 
-/// Plugin manager for lifecycle and discovery
-pub const PluginManager = struct {
-    plugins: std.StringHashMap(Plugin),
+pub const ExternalPluginManager = struct {
+    plugins: std.StringHashMap(RuntimePlugin),
     plugin_dir: []const u8,
     auto_load: bool,
     health_check_interval: u32,
@@ -160,7 +149,7 @@ pub const PluginManager = struct {
 
     pub fn init(allocator: std.mem.Allocator, plugin_dir: []const u8) Self {
         return Self{
-            .plugins = std.StringHashMap(Plugin).init(allocator),
+            .plugins = std.StringHashMap(RuntimePlugin).init(allocator),
             .plugin_dir = plugin_dir,
             .auto_load = true,
             .health_check_interval = 30,
@@ -214,21 +203,21 @@ pub const PluginManager = struct {
         }, self.allocator, contents, .{});
         defer parsed.deinit();
 
-        const plugin = try self.allocator.create(Plugin);
-        plugin.* = Plugin.init(self.allocator);
-        plugin.name = self.allocator.dupe(u8, parsed.value.name);
-        plugin.version = self.allocator.dupe(u8, parsed.value.version);
+        var plugin = RuntimePlugin.init(self.allocator);
+        plugin.name = try self.allocator.dupe(u8, parsed.value.name);
+        plugin.version = try self.allocator.dupe(u8, parsed.value.version);
         plugin.capabilities = try self.allocator.dupe(Capability, parsed.value.capabilities);
 
         const exec_path = try std.fs.path.join(self.allocator, &.{ self.plugin_dir, parsed.value.executable });
+        defer self.allocator.free(exec_path);
         try plugin.start(exec_path);
 
-        try self.plugins.put(plugin.name, plugin.*);
+        try self.plugins.put(plugin.name, plugin);
 
         std.log.info("Loaded plugin: {s} v{s}", .{ plugin.name, plugin.version });
     }
 
-    pub fn getPlugin(self: Self, name: []const u8) ?Plugin {
+    pub fn getPlugin(self: Self, name: []const u8) ?RuntimePlugin {
         return self.plugins.get(name);
     }
 
@@ -237,7 +226,8 @@ pub const PluginManager = struct {
 
         var it = self.plugins.iterator();
         while (it.next()) |entry| {
-            plugin_names.append(self.allocator.dupe(u8, entry.key_ptr.*)) catch continue;
+            const plugin_name = self.allocator.dupe(u8, entry.key_ptr.*) catch continue;
+            plugin_names.append(plugin_name) catch continue;
         }
 
         return plugin_names.toOwnedSlice() catch &[_][]const u8{};

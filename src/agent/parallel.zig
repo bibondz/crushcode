@@ -1,6 +1,7 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+const task = @import("task");
 
 const Allocator = std.mem.Allocator;
 
@@ -94,29 +95,6 @@ pub fn parseCategory(s: []const u8) ?AgentCategory {
     return null;
 }
 
-/// Status of a parallel task
-pub const TaskStatus = enum {
-    pending,
-    running,
-    completed,
-    failed,
-    cancelled,
-};
-
-/// Result from a single parallel task
-pub const TaskResult = struct {
-    task_id: []const u8,
-    status: TaskStatus,
-    output: []const u8,
-    duration_ms: u64,
-    allocator: Allocator,
-
-    pub fn deinit(self: *TaskResult) void {
-        self.allocator.free(self.task_id);
-        self.allocator.free(self.output);
-    }
-};
-
 /// A task to be executed by a parallel agent
 pub const ParallelTask = struct {
     id: []const u8,
@@ -125,7 +103,7 @@ pub const ParallelTask = struct {
     model: []const u8,
     category: AgentCategory,
     priority: u32,
-    status: TaskStatus,
+    status: task.RunState,
     result: ?[]const u8,
     allocator: Allocator,
 
@@ -162,7 +140,7 @@ pub const ParallelExecutor = struct {
     allocator: Allocator,
     tasks: array_list_compat.ArrayList(*ParallelTask),
     max_concurrent: u32,
-    completed_results: array_list_compat.ArrayList(TaskResult),
+    completed_results: array_list_compat.ArrayList(task.TaskResult),
     next_id: u32,
 
     pub fn init(allocator: Allocator, max_concurrent: u32) ParallelExecutor {
@@ -170,7 +148,7 @@ pub const ParallelExecutor = struct {
             .allocator = allocator,
             .tasks = array_list_compat.ArrayList(*ParallelTask).init(allocator),
             .max_concurrent = max_concurrent,
-            .completed_results = array_list_compat.ArrayList(TaskResult).init(allocator),
+            .completed_results = array_list_compat.ArrayList(task.TaskResult).init(allocator),
             .next_id = 1,
         };
     }
@@ -180,26 +158,26 @@ pub const ParallelExecutor = struct {
         const id = try std.fmt.allocPrint(self.allocator, "task_{d}", .{self.next_id});
         self.next_id += 1;
 
-        const task = try self.allocator.create(ParallelTask);
-        task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model, category);
+        const parallel_task = try self.allocator.create(ParallelTask);
+        parallel_task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model, category);
 
-        try self.tasks.append(task);
+        try self.tasks.append(parallel_task);
         return id;
     }
 
     /// Get a task by ID
     pub fn getTask(self: *ParallelExecutor, task_id: []const u8) ?*ParallelTask {
-        for (self.tasks.items) |task| {
-            if (std.mem.eql(u8, task.id, task_id)) return task;
+        for (self.tasks.items) |parallel_task| {
+            if (std.mem.eql(u8, parallel_task.id, task_id)) return parallel_task;
         }
         return null;
     }
 
     /// Cancel a pending or running task
     pub fn cancel(self: *ParallelExecutor, task_id: []const u8) bool {
-        if (self.getTask(task_id)) |task| {
-            if (task.status == .pending or task.status == .running) {
-                task.status = .cancelled;
+        if (self.getTask(task_id)) |parallel_task| {
+            if (parallel_task.status == .pending or parallel_task.status == .running) {
+                parallel_task.status = .cancelled;
                 return true;
             }
         }
@@ -207,10 +185,10 @@ pub const ParallelExecutor = struct {
     }
 
     /// Get count of tasks by status
-    pub fn countByStatus(self: *const ParallelExecutor, status: TaskStatus) u32 {
+    pub fn countByStatus(self: *const ParallelExecutor, status: task.RunState) u32 {
         var count: u32 = 0;
-        for (self.tasks.items) |task| {
-            if (task.status == status) count += 1;
+        for (self.tasks.items) |parallel_task| {
+            if (parallel_task.status == status) count += 1;
         }
         return count;
     }
@@ -226,23 +204,23 @@ pub const ParallelExecutor = struct {
     }
 
     /// Get all completed results
-    pub fn getResults(self: *const ParallelExecutor) []const TaskResult {
+    pub fn getResults(self: *const ParallelExecutor) []const task.TaskResult {
         return self.completed_results.items;
     }
 
     /// Record a task result
     pub fn recordResult(self: *ParallelExecutor, task_id: []const u8, output: []const u8, success: bool) !void {
-        if (self.getTask(task_id)) |task| {
-            const result = TaskResult{
-                .task_id = try self.allocator.dupe(u8, task_id),
-                .status = if (success) .completed else .failed,
+        if (self.getTask(task_id)) |parallel_task| {
+            const result = task.TaskResult{
+                .id = try self.allocator.dupe(u8, task_id),
+                .state = if (success) .completed else .failed,
                 .output = try self.allocator.dupe(u8, output),
                 .duration_ms = 0,
                 .allocator = self.allocator,
             };
             try self.completed_results.append(result);
-            task.status = if (success) .completed else .failed;
-            task.result = try self.allocator.dupe(u8, output);
+            parallel_task.status = if (success) .completed else .failed;
+            parallel_task.result = try self.allocator.dupe(u8, output);
         }
     }
 
@@ -256,22 +234,24 @@ pub const ParallelExecutor = struct {
         stdout.print("  Completed: {d}\n", .{self.countByStatus(.completed)}) catch {};
         stdout.print("  Failed: {d}\n", .{self.countByStatus(.failed)}) catch {};
 
-        for (self.tasks.items) |task| {
-            const status_icon = switch (task.status) {
+        for (self.tasks.items) |parallel_task| {
+            const status_icon = switch (parallel_task.status) {
                 .pending => "⏳",
                 .running => "🔄",
                 .completed => "✅",
                 .failed => "❌",
                 .cancelled => "🚫",
+                .skipped => "⏭️ ",
+                .verified => "✓ ",
             };
-            const category_name = @tagName(task.category);
+            const category_name = @tagName(parallel_task.category);
             stdout.print("  {s} [{s}] {s}: {s}/{s} — {s:.40}\n", .{
                 status_icon,
                 category_name,
-                task.id,
-                task.provider,
-                task.model,
-                task.prompt,
+                parallel_task.id,
+                parallel_task.provider,
+                parallel_task.model,
+                parallel_task.prompt,
             }) catch {};
         }
     }
@@ -290,12 +270,12 @@ pub const ParallelExecutor = struct {
         }) catch {};
 
         for (self.completed_results.items) |result| {
-            const icon = switch (result.status) {
+            const icon = switch (result.state) {
                 .completed => "✅",
                 .failed => "❌",
                 else => "❓",
             };
-            stdout.print("  {s} {s}\n", .{ icon, result.task_id }) catch {};
+            stdout.print("  {s} {s}\n", .{ icon, result.id }) catch {};
             if (result.output.len > 0) {
                 stdout.print("      {s:.100}\n", .{result.output}) catch {};
             }
@@ -312,9 +292,9 @@ pub const ParallelExecutor = struct {
     }
 
     pub fn deinit(self: *ParallelExecutor) void {
-        for (self.tasks.items) |task| {
-            task.deinit();
-            self.allocator.destroy(task);
+        for (self.tasks.items) |parallel_task| {
+            parallel_task.deinit();
+            self.allocator.destroy(parallel_task);
         }
         self.tasks.deinit();
         for (self.completed_results.items) |*result| {

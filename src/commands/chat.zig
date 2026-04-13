@@ -18,6 +18,7 @@ const compaction_mod = @import("compaction");
 const graph_mod = @import("graph");
 const mcp_bridge_mod = @import("mcp_bridge");
 const agent_loop_mod = @import("agent_loop");
+const tool_executors = @import("chat_tool_executors");
 const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
 const skills_loader_mod = @import("skills_loader");
@@ -39,16 +40,11 @@ const Bridge = mcp_bridge_mod.Bridge;
 const AgentLoop = agent_loop_mod.AgentLoop;
 const AIResponse = agent_loop_mod.AIResponse;
 const LoopMessage = agent_loop_mod.LoopMessage;
-const ToolExecutor = agent_loop_mod.ToolExecutor;
-const ToolResult = agent_loop_mod.ToolResult;
 const ToolRegistry = tools_mod.ToolRegistry;
 
 const PermissionEvaluator = permission_mod.PermissionEvaluator;
 const PermissionConfig = permission_mod.PermissionConfig;
 const PermissionMode = permission_mod.PermissionMode;
-const PermissionRequest = permission_mod.PermissionRequest;
-const PermissionResult = permission_mod.PermissionResult;
-
 /// Module-level permission evaluator — initialized once per chat session
 var active_evaluator: ?PermissionEvaluator = null;
 
@@ -143,11 +139,6 @@ fn appendResponseMessage(messages: *array_list_compat.ArrayList(core.ChatMessage
     });
 }
 
-const ToolExecution = struct {
-    display: []const u8,
-    result: []const u8,
-};
-
 const InteractiveBridgeContext = struct {
     allocator: std.mem.Allocator,
     client: *core.AIClient,
@@ -169,21 +160,8 @@ const InteractiveBridgeContext = struct {
     json_out: json_output_mod.JsonOutput,
 };
 
-const BuiltinToolDefinition = struct {
-    name: []const u8,
-    executor: ToolExecutor,
-};
-
 threadlocal var active_bridge_context: ?*InteractiveBridgeContext = null;
-threadlocal var active_json_output: json_output_mod.JsonOutput = .{ .enabled = false };
 threadlocal var active_streaming_enabled: bool = false;
-
-fn buildToolFailure(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall, err: anyerror) !ToolExecution {
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 {s} → error: {s}\n", .{ tool_call.name, @errorName(err) }),
-        .result = try std.fmt.allocPrint(allocator, "Tool execution failed: {s}", .{@errorName(err)}),
-    };
-}
 
 fn elapsedMillis(start_ms: i64) u64 {
     const end_ms = std.time.milliTimestamp();
@@ -191,158 +169,6 @@ fn elapsedMillis(start_ms: i64) u64 {
         return 0;
     }
     return @as(u64, @intCast(end_ms - start_ms));
-}
-
-fn adaptToolExecution(
-    allocator: std.mem.Allocator,
-    call_id: []const u8,
-    tool_name: []const u8,
-    arguments: []const u8,
-    implementation: *const fn (std.mem.Allocator, core.ParsedToolCall) anyerror!ToolExecution,
-) !ToolResult {
-    const start_ms = std.time.milliTimestamp();
-    const tool_call = core.ParsedToolCall{
-        .id = call_id,
-        .name = tool_name,
-        .arguments = arguments,
-    };
-
-    // JSON: emit tool_call event
-    active_json_output.emitToolCall(tool_name, call_id, arguments);
-
-    // Permission check via PermissionEvaluator if configured
-    if (active_evaluator) |*evaluator| {
-        var req = PermissionRequest.init(tool_name, "execute", allocator) catch unreachable;
-        defer req.deinit(allocator);
-        const perm_result = evaluator.evaluate(&req);
-        switch (perm_result.action) {
-            .deny => {
-                const msg = perm_result.error_message orelse "Permission denied";
-                out("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
-                return try ToolResult.init(allocator, call_id, msg, false);
-            },
-            .ask => {
-                // Prompt user for permission
-                out("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
-                var buf: [16]u8 = undefined;
-                const stdin = file_compat.File.stdin().reader();
-                const answer = stdin.readUntilDelimiterOrEof(&buf, '\n') catch "n" orelse "n";
-                if (answer.len == 0 or !(answer[0] == 'y' or answer[0] == 'Y')) {
-                    return try ToolResult.init(allocator, call_id, "User denied permission", false);
-                }
-            },
-            .allow => {
-                // Proceed
-                out("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
-            },
-        }
-    } else {
-        // No evaluator configured — just log dangerous operations
-        const is_shell = std.mem.eql(u8, tool_name, "shell");
-        const is_write = std.mem.eql(u8, tool_name, "write_file") or std.mem.eql(u8, tool_name, "edit");
-        if (is_shell or is_write) {
-            out("\n\x1b[33m[Permission] {s} operation requested\x1b[0m\n", .{tool_name});
-        }
-    }
-
-    var success = true;
-    const execution = implementation(allocator, tool_call) catch |err| blk: {
-        success = false;
-        break :blk try buildToolFailure(allocator, tool_call, err);
-    };
-    defer allocator.free(execution.display);
-    defer allocator.free(execution.result);
-
-    out("\n{s}", .{execution.display});
-
-    // JSON: emit tool_result event
-    active_json_output.emitToolResult(call_id, execution.result, success);
-
-    var result = try ToolResult.init(allocator, call_id, execution.result, success);
-    result.duration_ms = elapsedMillis(start_ms);
-    return result;
-}
-
-fn readFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "read_file", arguments, executeReadFileTool);
-}
-
-fn shellExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "shell", arguments, executeShellTool);
-}
-
-fn writeFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "write_file", arguments, executeWriteFileTool);
-}
-
-fn globExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "glob", arguments, executeGlobTool);
-}
-
-fn grepExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "grep", arguments, executeGrepTool);
-}
-
-fn editExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
-    return adaptToolExecution(allocator, call_id, "edit", arguments, executeEditTool);
-}
-
-const builtin_tool_bindings = [_]BuiltinToolDefinition{
-    .{
-        .name = "read_file",
-        .executor = readFileExecutor,
-    },
-    .{
-        .name = "shell",
-        .executor = shellExecutor,
-    },
-    .{
-        .name = "write_file",
-        .executor = writeFileExecutor,
-    },
-    .{
-        .name = "glob",
-        .executor = globExecutor,
-    },
-    .{
-        .name = "grep",
-        .executor = grepExecutor,
-    },
-    .{
-        .name = "edit",
-        .executor = editExecutor,
-    },
-};
-
-fn getExecutorForTool(name: []const u8) ?ToolExecutor {
-    inline for (builtin_tool_bindings) |tool_binding| {
-        if (std.mem.eql(u8, name, tool_binding.name)) {
-            return tool_binding.executor;
-        }
-    }
-
-    return null;
-}
-
-fn collectSupportedToolSchemas(allocator: std.mem.Allocator, tool_schemas: []const core.ToolSchema) ![]const core.ToolSchema {
-    var supported = array_list_compat.ArrayList(core.ToolSchema).init(allocator);
-    errdefer supported.deinit();
-
-    for (tool_schemas) |schema| {
-        if (getExecutorForTool(schema.name) != null) {
-            try supported.append(schema);
-        }
-    }
-
-    return supported.toOwnedSlice();
-}
-
-fn registerBuiltinAgentTools(agent_loop: *AgentLoop, tool_schemas: []const core.ToolSchema) !void {
-    for (tool_schemas) |schema| {
-        if (getExecutorForTool(schema.name)) |executor| {
-            try agent_loop.registerTool(schema.name, executor);
-        }
-    }
 }
 
 fn appendLoopHistoryMessage(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, loop_message: LoopMessage) !void {
@@ -490,302 +316,6 @@ fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []co
         .finish_reason = AIResponse.FinishReason.fromString(finish_reason_text),
         .tool_calls = loop_tool_calls,
     };
-}
-
-fn executeReadFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const ReadFileArgs = struct { path: []const u8 };
-
-    var parsed = try std.json.parseFromSlice(ReadFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const file = try std.fs.cwd().openFile(parsed.value.path, .{});
-    defer file.close();
-
-    const stat = try file.stat();
-    if (stat.kind != .file) {
-        return error.NotAFile;
-    }
-
-    const content = try file.readToEndAlloc(allocator, stat.size);
-    defer allocator.free(content);
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 read_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, stat.size }),
-        .result = try std.fmt.allocPrint(allocator, "=== {s} ({d} bytes) ===\n{s}", .{ parsed.value.path, stat.size, content }),
-    };
-}
-
-fn executeShellTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const ShellArgs = struct {
-        command: []const u8,
-        timeout: ?u32 = null,
-    };
-
-    var parsed = try std.json.parseFromSlice(ShellArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    // Use `timeout` utility if available and timeout is specified
-    if (parsed.value.timeout) |secs| {
-        if (secs > 0) {
-            const cmd = try std.fmt.allocPrint(allocator, "timeout --signal=KILL {d} sh -c {s}", .{ secs, parsed.value.command });
-            defer allocator.free(cmd);
-            const argv: [3][]const u8 = .{ "sh", "-c", cmd };
-            var child = std.process.Child.init(&argv, allocator);
-            child.stdout_behavior = .Pipe;
-            child.stderr_behavior = .Pipe;
-
-            _ = try child.spawn();
-
-            var stdout = std.ArrayListUnmanaged(u8){};
-            var stderr = std.ArrayListUnmanaged(u8){};
-            defer {
-                stdout.deinit(allocator);
-                stderr.deinit(allocator);
-            }
-
-            try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-            const term = try child.wait();
-            const exit_code: u8 = switch (term) {
-                .Exited => |code| @intCast(code),
-                .Signal => |code| @intCast(code),
-                else => 1,
-            };
-            const timed_out = if (exit_code == 124) true else false;
-            return .{
-                .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\", timeout={d}s) → exit {d}{s}\n", .{ parsed.value.command, secs, exit_code, if (timed_out) " (TIMEOUT)" else "" }),
-                .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, stdout.items, stderr.items }),
-            };
-        }
-    }
-
-    // No timeout: run directly
-    const argv: [3][]const u8 = .{ "sh", "-c", parsed.value.command };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
-    defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
-    }
-
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    const term = try child.wait();
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |code| @intCast(code),
-        else => 1,
-    };
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\") → exit {d}\n", .{ parsed.value.command, exit_code }),
-        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, stdout.items, stderr.items }),
-    };
-}
-
-fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const WriteFileArgs = struct {
-        path: []const u8,
-        content: []const u8,
-    };
-
-    var parsed = try std.json.parseFromSlice(WriteFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const file = try std.fs.cwd().createFile(parsed.value.path, .{});
-    defer file.close();
-    try file.writeAll(parsed.value.content);
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 write_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, parsed.value.content.len }),
-        .result = try std.fmt.allocPrint(allocator, "Wrote {d} bytes to {s}", .{ parsed.value.content.len, parsed.value.path }),
-    };
-}
-
-/// Glob tool: find files matching a pattern using shell `find` command
-fn executeGlobTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const GlobArgs = struct {
-        pattern: []const u8,
-        max_results: ?u32 = 50,
-    };
-
-    var parsed = try std.json.parseFromSlice(GlobArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const max = parsed.value.max_results orelse 50;
-
-    // Use `find` to match glob patterns — portable and no external deps
-    const find_cmd = try std.fmt.allocPrint(allocator, "find . -name '{s}' -type f 2>/dev/null | head -{d}", .{ parsed.value.pattern, max });
-    defer allocator.free(find_cmd);
-
-    const argv: [3][]const u8 = .{ "sh", "-c", find_cmd };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
-    defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
-    }
-
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
-    // Count matching files
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
-    while (lines.next()) |line| {
-        if (line.len > 0) count += 1;
-    }
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 glob(\"{s}\") → {d} files\n", .{ parsed.value.pattern, count }),
-        .result = try std.fmt.allocPrint(allocator, "Found {d} files matching '{s}':\n{s}", .{ count, parsed.value.pattern, stdout.items }),
-    };
-}
-
-/// Grep tool: search file contents using shell `grep` command
-fn executeGrepTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const GrepArgs = struct {
-        pattern: []const u8,
-        path: ?[]const u8 = null,
-        include: ?[]const u8 = null,
-        max_results: ?u32 = 50,
-    };
-
-    var parsed = try std.json.parseFromSlice(GrepArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const max = parsed.value.max_results orelse 50;
-    const search_path = parsed.value.path orelse ".";
-
-    var cmd_buf = array_list_compat.ArrayList(u8).init(allocator);
-    defer cmd_buf.deinit();
-    const writer = cmd_buf.writer();
-
-    try writer.print("grep -rn --binary-files=without-match '{s}' '{s}'", .{ parsed.value.pattern, search_path });
-    if (parsed.value.include) |inc| {
-        try writer.print(" --include='{s}'", .{inc});
-    }
-    try writer.print(" 2>/dev/null | head -{d}", .{max});
-
-    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
-    defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
-    }
-
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
-    while (lines.next()) |line| {
-        if (line.len > 0) count += 1;
-    }
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 grep(\"{s}\") → {d} matches\n", .{ parsed.value.pattern, count }),
-        .result = try std.fmt.allocPrint(allocator, "Found {d} matches for '{s}':\n{s}", .{ count, parsed.value.pattern, stdout.items }),
-    };
-}
-
-/// Edit tool: find and replace text in a file
-fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const EditArgs = struct {
-        file_path: []const u8,
-        old_string: []const u8,
-        new_string: []const u8,
-    };
-
-    var parsed = try std.json.parseFromSlice(EditArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    // Read the file
-    const file = try std.fs.cwd().openFile(parsed.value.file_path, .{});
-    defer file.close();
-    const stat = try file.stat();
-    const content = try file.readToEndAlloc(allocator, stat.size);
-    defer allocator.free(content);
-
-    // Find the old string
-    const pos = std.mem.indexOf(u8, content, parsed.value.old_string) orelse {
-        return error.OldStringNotFound;
-    };
-
-    // Check for multiple occurrences (ambiguous edit)
-    const after_first = pos + parsed.value.old_string.len;
-    if (std.mem.indexOf(u8, content[after_first..], parsed.value.old_string)) |_| {
-        return error.MultipleMatches;
-    }
-
-    // Build new content
-    var new_content = array_list_compat.ArrayList(u8).init(allocator);
-    defer new_content.deinit();
-    try new_content.appendSlice(content[0..pos]);
-    try new_content.appendSlice(parsed.value.new_string);
-    try new_content.appendSlice(content[after_first..]);
-
-    // Write back
-    const out_file = try std.fs.cwd().createFile(parsed.value.file_path, .{});
-    defer out_file.close();
-    try out_file.writeAll(new_content.items);
-
-    const lines_before = countLines(content);
-    const lines_after = countLines(new_content.items);
-
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 edit(\"{s}\") → replaced {d} chars with {d} chars\n", .{ parsed.value.file_path, parsed.value.old_string.len, parsed.value.new_string.len }),
-        .result = try std.fmt.allocPrint(allocator, "Edited {s}: replaced text at position {d}. File: {d} lines → {d} lines", .{ parsed.value.file_path, pos, lines_before, lines_after }),
-    };
-}
-
-/// Count lines in text
-fn countLines(text: []const u8) u32 {
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, text, "\n");
-    while (lines.next()) |_| {
-        count += 1;
-    }
-    return count;
-}
-
-fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    if (std.mem.eql(u8, tool_call.name, "read_file")) {
-        return executeReadFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "shell")) {
-        return executeShellTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "write_file")) {
-        return executeWriteFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "glob")) {
-        return executeGlobTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "grep")) {
-        return executeGrepTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "edit")) {
-        return executeEditTool(allocator, tool_call);
-    }
-    return error.UnsupportedTool;
 }
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
@@ -1060,7 +590,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         active_evaluator = PermissionEvaluator.init(allocator, eval_config);
         out("\x1b[2m[Permission] mode: {s}\x1b[0m\n", .{mode.toString()});
     }
+    tool_executors.setPermissionEvaluator(if (active_evaluator) |*ev| ev else null);
     defer {
+        tool_executors.setPermissionEvaluator(null);
         if (active_evaluator) |*ev| {
             ev.deinit();
             active_evaluator = null;
@@ -1077,7 +609,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     const merged_tool_schemas = try tool_loader.mergeToolSchemas(allocator, default_tool_schemas, user_tool_schemas);
     defer tool_loader.freeToolSchemas(allocator, merged_tool_schemas);
 
-    const builtin_tool_schemas = try collectSupportedToolSchemas(allocator, merged_tool_schemas);
+    const builtin_tool_schemas = try tool_executors.collectSupportedToolSchemas(allocator, merged_tool_schemas);
     defer allocator.free(builtin_tool_schemas);
 
     client.setTools(builtin_tool_schemas);
@@ -1151,7 +683,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         "src/graph/graph.zig",
         "src/graph/parser.zig",
         "src/streaming/session.zig",
-        "src/plugin/interface.zig",
+        "src/plugin/mod.zig",
         "src/tools/registry.zig",
     };
     var indexed_count: u32 = 0;
@@ -1209,7 +741,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var loop_config = agent_loop_mod.LoopConfig.init();
     loop_config.show_intermediate = false;
     agent_loop.setConfig(loop_config);
-    try registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
+    try tool_executors.registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
 
     // Conversation history
     var messages = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
@@ -1386,10 +918,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         defer bridge_ctx.request_arena.deinit();
 
         active_bridge_context = &bridge_ctx;
-        active_json_output = json_out;
+        tool_executors.setJsonOutput(json_out);
         active_streaming_enabled = args.stream;
         var loop_result = try agent_loop.run(sendInteractiveLoopMessages, user_message);
         active_bridge_context = null;
+        tool_executors.setJsonOutput(.{ .enabled = false });
         active_streaming_enabled = false;
         defer loop_result.deinit();
 
