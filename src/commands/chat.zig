@@ -848,8 +848,17 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
 /// Interactive chat mode with streaming support and conversation history
 fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.mem.Allocator) !void {
-    const provider_name = args.provider orelse config.default_provider;
-    const model_name = args.model orelse config.default_model;
+    // Load profile - use --profile flag if provided, otherwise load current
+    var profile_opt: ?Profile = null;
+    if (args.profile) |profile_name| {
+        profile_opt = profile_mod.loadProfileByName(allocator, profile_name) catch null;
+    } else {
+        profile_opt = profile_mod.loadCurrentProfile(allocator) catch null;
+    }
+    defer if (profile_opt) |*p| p.deinit();
+
+    const provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
+    const model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
 
     // Initialize registry
     var registry = registry_mod.ProviderRegistry.init(allocator);
@@ -861,13 +870,20 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         return error.ProviderNotFound;
     };
 
-    const api_key = config.getApiKey(provider_name) orelse "";
+    // Get API key - check profile first, then config
+    var api_key: []const u8 = "";
+    if (profile_opt) |*p| {
+        api_key = p.getApiKey(provider_name) orelse "";
+    }
+    if (api_key.len == 0) {
+        api_key = config.getApiKey(provider_name) orelse "";
+    }
 
     if (api_key.len == 0 and !std.mem.eql(u8, provider_name, "ollama") and
         !std.mem.eql(u8, provider_name, "lm_studio") and
         !std.mem.eql(u8, provider_name, "llama_cpp"))
     {
-        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml\n", .{provider_name});
+        std.debug.print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
         return error.MissingApiKey;
     }
 
@@ -875,8 +891,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var client = try core.AIClient.init(allocator, provider, model_name, api_key);
     defer client.deinit();
 
-    // Set system prompt from config if available
-    if (config.getSystemPrompt()) |sys_prompt| {
+    // Set system prompt from profile or config if available
+    if (profile_opt) |*p| {
+        if (p.system_prompt.len > 0) {
+            client.setSystemPrompt(p.system_prompt);
+        }
+    } else if (config.getSystemPrompt()) |sys_prompt| {
         client.setSystemPrompt(sys_prompt);
     }
 
