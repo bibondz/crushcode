@@ -77,6 +77,10 @@ pub const AIClient = struct {
     api_key: []const u8,
     system_prompt: ?[]const u8 = null,
     tools: []const ToolSchema = &.{},
+    /// Maximum tokens in AI response (default: 4096)
+    max_tokens: u32 = 4096,
+    /// Sampling temperature 0.0–2.0 (default: 0.7)
+    temperature: f32 = 0.7,
 
     pub fn init(allocator: std.mem.Allocator, provider: registry_mod.Provider, model: []const u8, api_key: []const u8) !AIClient {
         return AIClient{
@@ -85,6 +89,8 @@ pub const AIClient = struct {
             .model = model,
             .api_key = api_key,
             .system_prompt = null,
+            .max_tokens = 4096,
+            .temperature = 0.7,
         };
     }
 
@@ -404,8 +410,8 @@ pub const AIClient = struct {
         defer allocator.free(endpoint);
 
         const json_body = try std.fmt.allocPrint(allocator,
-            \\{{"model":"{s}","messages":[{{"role":"user","content":"{s}"}}],"max_tokens":2048,"temperature":0.7}}
-        , .{ self.getApiModelName(), user_message });
+            \\{{"model":"{s}","messages":[{{"role":"user","content":"{s}"}}],"max_tokens":{d},"temperature":{d:.2}}}
+        , .{ self.getApiModelName(), user_message, self.max_tokens, self.temperature });
         defer allocator.free(json_body);
         if (debug) std.log.debug("Body: {s}", .{json_body});
 
@@ -577,7 +583,7 @@ pub const AIClient = struct {
             try json_body.appendSlice("\"}");
         }
 
-        try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7}");
+        try json_body.writer().print("],\"max_tokens\":{d},\"temperature\":{d:.2}}}", .{ self.max_tokens, self.temperature });
 
         const json_body_slice = try json_body.toOwnedSlice();
         defer allocator.free(json_body_slice);
@@ -829,7 +835,7 @@ pub const AIClient = struct {
             needs_comma = true;
         }
 
-        try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7");
+        try json_body.writer().print("],\"max_tokens\":{d},\"temperature\":{d:.2}", .{ self.max_tokens, self.temperature });
         // Inject tools array for function calling
         if (self.tools.len > 0) {
             const tools_json = try self.buildToolsJson(allocator);
@@ -862,7 +868,7 @@ pub const AIClient = struct {
         const tools_json = try self.buildToolsJson(self.allocator);
         defer self.allocator.free(tools_json);
 
-        return streaming_parsers.buildStreamingBodyFromMessages(self.allocator, self.getApiModelName(), self.system_prompt, messages, tools_json, self.provider.name);
+        return streaming_parsers.buildStreamingBodyFromMessages(self.allocator, self.getApiModelName(), self.system_prompt, messages, tools_json, self.provider.name, self.max_tokens, self.temperature);
     }
 
     fn buildStreamingResponse(self: *AIClient, content_slice: []const u8, final_finish_reason: []const u8, usage: ?Usage, streaming_tool_calls: []const StreamingToolCall) !ChatResponse {
@@ -967,7 +973,7 @@ pub const AIClient = struct {
                 else => try json_body.append(c),
             }
         }
-        try json_body.appendSlice("\"}],\"max_tokens\":2048,\"temperature\":0.7,\"stream\":true}");
+        try json_body.writer().print("\"}}],\"max_tokens\":{d},\"temperature\":{d:.2},\"stream\":true}}", .{ self.max_tokens, self.temperature });
 
         return allocator.dupe(u8, json_body.items);
     }

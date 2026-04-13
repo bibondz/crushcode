@@ -27,6 +27,14 @@ pub const MCPServerDef = struct {
     }
 };
 
+pub const ProviderOverride = struct {
+    base_url: ?[]const u8 = null,
+
+    pub fn deinit(self: *ProviderOverride, allocator: std.mem.Allocator) void {
+        if (self.base_url) |u| allocator.free(u);
+    }
+};
+
 pub const Config = struct {
     allocator: std.mem.Allocator,
     default_provider: []const u8,
@@ -35,6 +43,14 @@ pub const Config = struct {
     api_keys: std.StringHashMap([]const u8),
     quantization: QuantizationConfig,
     mcp_servers: []MCPServerDef,
+    /// Model parameters — max_tokens per response (default: 4096)
+    max_tokens: u32 = 4096,
+    /// Model parameters — temperature 0.0–2.0 (default: 0.7)
+    temperature: f32 = 0.7,
+    /// Per-provider config overrides (base_url, etc.)
+    provider_overrides: std.StringHashMap(ProviderOverride),
+    /// OAuth callback port (default: 19876)
+    oauth_port: u16 = 19876,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -45,6 +61,10 @@ pub const Config = struct {
             .api_keys = std.StringHashMap([]const u8).init(allocator),
             .quantization = QuantizationConfig.init(allocator),
             .mcp_servers = &.{},
+            .max_tokens = 4096,
+            .temperature = 0.7,
+            .provider_overrides = std.StringHashMap(ProviderOverride).init(allocator),
+            .oauth_port = 19876,
         };
     }
 
@@ -63,6 +83,14 @@ pub const Config = struct {
             server.deinit(self.allocator);
         }
         self.allocator.free(self.mcp_servers);
+        {
+            var po_iter = self.provider_overrides.iterator();
+            while (po_iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                entry.value_ptr.*.deinit(self.allocator);
+            }
+            self.provider_overrides.deinit();
+        }
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -108,6 +136,8 @@ pub const Config = struct {
         var line_iter = std.mem.splitScalar(u8, content, '\n');
         var in_quantization_section = false;
         var in_mcp_section = false;
+        var in_model_section = false;
+        var in_provider_overrides_section = false;
         var mcp_servers = array_list_compat.ArrayList(MCPServerDef).init(self.allocator);
         errdefer {
             for (mcp_servers.items) |*s| s.deinit(self.allocator);
@@ -119,6 +149,8 @@ pub const Config = struct {
         var current_mcp_command: ?[]const u8 = null;
         var quantization_content = array_list_compat.ArrayList(u8).init(self.allocator);
         defer quantization_content.deinit();
+        var current_override_provider: ?[]const u8 = null;
+        var current_override_base_url: ?[]const u8 = null;
 
         while (line_iter.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r");
@@ -140,18 +172,42 @@ pub const Config = struct {
                     current_mcp_transport = null;
                     current_mcp_command = null;
                 }
+                // Save any in-progress provider override
+                if (in_provider_overrides_section) {
+                    try self.saveProviderOverride(current_override_provider, current_override_base_url);
+                    current_override_provider = null;
+                    current_override_base_url = null;
+                }
 
                 if (std.mem.eql(u8, trimmed, "[quantization]")) {
                     in_quantization_section = true;
                     in_mcp_section = false;
+                    in_model_section = false;
+                    in_provider_overrides_section = false;
+                    continue;
+                } else if (std.mem.eql(u8, trimmed, "[model]")) {
+                    in_model_section = true;
+                    in_quantization_section = false;
+                    in_mcp_section = false;
+                    in_provider_overrides_section = false;
                     continue;
                 } else if (std.mem.startsWith(u8, trimmed, "[[mcp_servers]]")) {
                     in_mcp_section = true;
                     in_quantization_section = false;
+                    in_model_section = false;
+                    in_provider_overrides_section = false;
+                    continue;
+                } else if (std.mem.startsWith(u8, trimmed, "[[provider_overrides]]")) {
+                    in_provider_overrides_section = true;
+                    in_quantization_section = false;
+                    in_model_section = false;
+                    in_mcp_section = false;
                     continue;
                 } else if (std.mem.startsWith(u8, trimmed, "[") and !std.mem.startsWith(u8, trimmed, "[[")) {
                     in_quantization_section = false;
                     in_mcp_section = false;
+                    in_model_section = false;
+                    in_provider_overrides_section = false;
                     continue;
                 }
                 continue;
@@ -175,6 +231,26 @@ pub const Config = struct {
                     } else if (std.mem.eql(u8, mcp_key, "command")) {
                         current_mcp_command = try self.allocator.dupe(u8, mcp_val);
                     }
+                } else if (in_model_section) {
+                    const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=').?;
+                    const model_key = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+                    const model_val = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t\"");
+
+                    if (std.mem.eql(u8, model_key, "max_tokens")) {
+                        self.max_tokens = std.fmt.parseInt(u32, model_val, 10) catch 4096;
+                    } else if (std.mem.eql(u8, model_key, "temperature")) {
+                        self.temperature = std.fmt.parseFloat(f32, model_val) catch 0.7;
+                    }
+                } else if (in_provider_overrides_section) {
+                    const eq_pos = std.mem.indexOfScalar(u8, trimmed, '=').?;
+                    const po_key = std.mem.trim(u8, trimmed[0..eq_pos], " \t");
+                    const po_val = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t\"");
+
+                    if (std.mem.eql(u8, po_key, "provider")) {
+                        current_override_provider = try self.allocator.dupe(u8, po_val);
+                    } else if (std.mem.eql(u8, po_key, "base_url")) {
+                        current_override_base_url = try self.allocator.dupe(u8, po_val);
+                    }
                 } else {
                     try parseKeyValue(self, trimmed);
                 }
@@ -196,6 +272,26 @@ pub const Config = struct {
             });
         }
         self.mcp_servers = try mcp_servers.toOwnedSlice();
+
+        // Save any trailing provider override
+        if (in_provider_overrides_section) {
+            try self.saveProviderOverride(current_override_provider, current_override_base_url);
+        }
+    }
+
+    fn saveProviderOverride(self: *Config, provider: ?[]const u8, base_url: ?[]const u8) !void {
+        const name = provider orelse return;
+        const key_copy = try self.allocator.dupe(u8, name);
+        const url_copy: ?[]const u8 = if (base_url) |u| try self.allocator.dupe(u8, u) else null;
+        try self.provider_overrides.put(key_copy, .{ .base_url = url_copy });
+    }
+
+    /// Get provider override base_url if configured, null otherwise.
+    pub fn getProviderOverrideUrl(self: *Config, provider_name: []const u8) ?[]const u8 {
+        if (self.provider_overrides.get(provider_name)) |override| {
+            return override.base_url;
+        }
+        return null;
     }
 
     fn parseKeyValue(self: *Config, line: []const u8) !void {
@@ -269,6 +365,16 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
         \\vercel_gateway = "your-vercel-api-key"
         \\opencode_zen = "your-opencode-zen-api-key"
         \\opencode_go = "your-opencode-go-api-key"
+        \\
+        \\# Model parameters
+        \\[model]
+        \\max_tokens = 4096
+        \\temperature = 0.7
+        \\
+        \\# Provider URL overrides (uncomment to customize)
+        \\#[[provider_overrides]]
+        \\#provider = "ollama"
+        \\#base_url = "http://localhost:11434/api"
     ;
 
     const quantization_section = default_config.quantization.defaultToml();

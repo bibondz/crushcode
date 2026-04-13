@@ -486,6 +486,16 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     var ai_client = try core.AIClient.init(allocator, provider, model_name, api_key);
     defer ai_client.deinit();
 
+    // Apply model parameters from config
+    ai_client.max_tokens = config.max_tokens;
+    ai_client.temperature = config.temperature;
+
+    // Apply provider URL override if configured
+    if (config.getProviderOverrideUrl(provider_name)) |override_url| {
+        allocator.free(ai_client.provider.config.base_url);
+        ai_client.provider.config.base_url = try allocator.dupe(u8, override_url);
+    }
+
     // Set system prompt from profile or config if available
     var chat_sys_prompt: ?[]const u8 = null;
     if (profile_opt) |*p| {
@@ -650,6 +660,16 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     // Initialize client
     var client = try core.AIClient.init(allocator, provider, current_model_name, api_key);
     defer client.deinit();
+
+    // Apply model parameters from config
+    client.max_tokens = config.max_tokens;
+    client.temperature = config.temperature;
+
+    // Apply provider URL override if configured
+    if (config.getProviderOverrideUrl(current_provider_name)) |override_url| {
+        allocator.free(client.provider.config.base_url);
+        client.provider.config.base_url = try allocator.dupe(u8, override_url);
+    }
 
     var hotswap = ModelHotSwap.init(allocator, current_provider_name, current_model_name) catch null;
     defer if (hotswap) |*hs| hs.deinit();

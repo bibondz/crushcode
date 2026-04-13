@@ -492,6 +492,8 @@ pub fn buildStreamingBodyFromMessages(
     messages: []const ChatMessage,
     tools_json: []const u8,
     provider_name: []const u8,
+    max_tokens: u32,
+    temperature: f32,
 ) ![]const u8 {
     var json_body = array_list_compat.ArrayList(u8).init(allocator);
     defer json_body.deinit();
@@ -518,7 +520,7 @@ pub fn buildStreamingBodyFromMessages(
         needs_comma = true;
     }
 
-    try json_body.appendSlice("],\"max_tokens\":2048,\"temperature\":0.7");
+    try json_body.writer().print("],\"max_tokens\":{d},\"temperature\":{d:.2}", .{ max_tokens, temperature });
     if (tools_json.len > 0) {
         try json_body.appendSlice(tools_json);
     }
