@@ -147,9 +147,32 @@ pub fn main() !void {
     // Skip config cleanup for now - see if basic commands work
     // defer config.deinit();
 
-    // Early Exit: No command provided - show help and exit
+    // No command provided — launch interactive chat by default
     if (!parsed_args.has_command) {
-        try commands.printHelp();
+        const interactive_args = args_mod.Args{
+            .command = try allocator.dupe(u8, "chat"),
+            .provider = null,
+            .model = null,
+            .profile = null,
+            .config_file = null,
+            .interactive = true,
+            .tui = false,
+            .json = false,
+            .color = null,
+            .checkpoint = null,
+            .restore = null,
+            .agents = null,
+            .max_agents = 5,
+            .memory = null,
+            .memory_limit = 100,
+            .stream = false,
+            .permission = null,
+            .intensity = null,
+            .remaining = &.{},
+            .has_command = true,
+        };
+        defer allocator.free(interactive_args.command);
+        try commands.handleChat(interactive_args, &config);
         return;
     }
 

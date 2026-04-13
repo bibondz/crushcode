@@ -114,8 +114,10 @@ pub const AIClient = struct {
         try writer.writeAll(",\"tools\":[");
         for (self.tools, 0..) |tool, i| {
             if (i > 0) try writer.writeAll(",");
+            // Note: tool.parameters is already a JSON string like {"type":"object",...}
+            // We inject it as a raw JSON object (not a string) per OpenAI function calling spec.
             try writer.print(
-                \\{{"type":"function","function":{{"name":"{s}","description":"{s}","parameters":"{s}"}}\}}
+                \\{{"type":"function","function":{{"name":"{s}","description":"{s}","parameters":{s}}}}}
             , .{ tool.name, tool.description, tool.parameters });
         }
         try writer.writeAll("]");
