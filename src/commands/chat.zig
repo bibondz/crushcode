@@ -451,8 +451,17 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
     defer if (profile_opt) |*p| p.deinit();
 
-    const provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
-    const model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
+    const provider_name = args.provider orelse
+        if (profile_opt) |*p| (if (p.default_provider.len > 0) p.default_provider else config.default_provider) else config.default_provider;
+    const model_name = args.model orelse
+        if (profile_opt) |*p| (if (p.default_model.len > 0) p.default_model else config.default_model) else config.default_model;
+
+    if (provider_name.len == 0) {
+        out("Error: No provider configured. Set one with:\n", .{});
+        out("  crushcode connect <provider>\n", .{});
+        out("  Or edit ~/.crushcode/config.toml\n", .{});
+        return error.ProviderNotFound;
+    }
 
     // Initialize registry and get provider
     var registry = registry_mod.ProviderRegistry.init(allocator);
@@ -625,8 +634,15 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     }
     defer if (profile_opt) |*p| p.deinit();
 
-    var current_provider_name = args.provider orelse if (profile_opt) |*p| p.default_provider else config.default_provider;
-    var current_model_name = args.model orelse if (profile_opt) |*p| p.default_model else config.default_model;
+    var current_provider_name = args.provider orelse
+        if (profile_opt) |*p| (if (p.default_provider.len > 0) p.default_provider else config.default_provider) else config.default_provider;
+    var current_model_name = args.model orelse
+        if (profile_opt) |*p| (if (p.default_model.len > 0) p.default_model else config.default_model) else config.default_model;
+
+    if (current_provider_name.len == 0) {
+        out("Error: No provider configured. Set one in ~/.crushcode/config.toml\n", .{});
+        return error.ProviderNotFound;
+    }
 
     // Initialize registry
     var registry = registry_mod.ProviderRegistry.init(allocator);

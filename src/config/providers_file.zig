@@ -59,7 +59,7 @@ pub fn createDefaultProvidersFile() !void {
 const default_providers_content =
     \\# Crushcode Provider Definitions
     \\# Edit this file to add/modify providers.
-    \\# Run `crushcode connect` to set up API keys.
+    \\# Run `crushcode connect <provider>` to set up API keys.
     \\#
     \\# Schema per provider:
     \\#   base_url    — API endpoint
@@ -68,54 +68,91 @@ const default_providers_content =
     \\#   api_format  — openai, anthropic, google, or ollama
     \\#   is_local    — true for local servers (no API key needed)
     \\#   keep_prefix — true if model IDs keep provider/ prefix in API calls
+    \\#
+    \\# FREE TIERS (no credit card needed):
+    \\#   groq (30 RPM, fast), gemini (100 req/day), cerebras (1M tok/day),
+    \\#   sambanova (free), deepseek (5M free tokens), openrouter (50 req/day free models)
     \\
-    \\[providers.openai]
-    \\base_url = "https://api.openai.com/v1"
-    \\description = "GPT-4, GPT-4o, GPT-3.5 models"
-    \\api_format = "openai"
-    \\models = ["gpt-4o", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
-    \\
-    \\[providers.anthropic]
-    \\base_url = "https://api.anthropic.com/v1"
-    \\description = "Claude 3.5 Sonnet, Claude 3 Opus"
-    \\api_format = "anthropic"
-    \\models = ["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-sonnet-20240229"]
-    \\
-    \\[providers.gemini]
-    \\base_url = "https://generativelanguage.googleapis.com/v1"
-    \\description = "Gemini Pro, Gemini Flash"
-    \\api_format = "google"
-    \\models = ["gemini-2.0-flash-exp", "gemini-1.5-pro", "gemini-1.5-flash"]
-    \\
-    \\[providers.xai]
-    \\base_url = "https://api.x.ai/v1"
-    \\description = "Grok models"
-    \\api_format = "openai"
-    \\models = ["grok-beta", "grok-2-1212"]
-    \\
-    \\[providers.mistral]
-    \\base_url = "https://api.mistral.ai/v1"
-    \\description = "Mistral Large, Mistral Small"
-    \\api_format = "openai"
-    \\models = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"]
+    \\# ── Free Tier Providers ──────────────────────────────────────────────
     \\
     \\[providers.groq]
     \\base_url = "https://api.groq.com/openai/v1"
-    \\description = "Fast inference with Llama, Mixtral"
+    \\description = "Fast inference — 30 RPM free tier (console.groq.com)"
     \\api_format = "openai"
-    \\models = ["llama-3.3-70b-versatile", "llama-3.3-8b-instant", "mixtral-8x7b-32768"]
+    \\models = ["llama-3.3-70b-versatile", "llama-4-scout-17b-16e-instruct", "qwen3-32b", "mixtral-8x7b-32768"]
+    \\
+    \\[providers.cerebras]
+    \\base_url = "https://api.cerebras.ai/v1"
+    \\description = "Ultra-fast inference — 1M tokens/day free (cloud.cerebras.ai)"
+    \\api_format = "openai"
+    \\models = ["llama-3.3-70b", "qwen3-32b", "qwen3-235b-a22b", "gpt-oss-120b"]
+    \\
+    \\[providers.sambanova]
+    \\base_url = "https://api.sambanova.ai/v1"
+    \\description = "Free tier — Llama 405B, Qwen 72B (cloud.sambanova.ai)"
+    \\api_format = "openai"
+    \\models = ["Meta-Llama-3.3-70B-Instruct", "Meta-Llama-3.1-405B-Instruct", "Qwen2.5-72B-Instruct"]
     \\
     \\[providers.deepseek]
     \\base_url = "https://api.deepseek.com/v1"
-    \\description = "DeepSeek Coder, DeepSeek Chat"
+    \\description = "5M free tokens on signup (platform.deepseek.com)"
     \\api_format = "openai"
-    \\models = ["deepseek-chat", "deepseek-coder"]
+    \\models = ["deepseek-chat", "deepseek-reasoner"]
+    \\
+    \\[providers.openrouter]
+    \\base_url = "https://openrouter.ai/api/v1"
+    \\description = "50 free req/day on free models (openrouter.ai)"
+    \\api_format = "openai"
+    \\keep_prefix = true
+    \\models = ["google/gemma-4-31b-it:free", "openai/gpt-oss-20b:free", "z-ai/glm-4.5-air:free", "deepseek/deepseek-chat", "openai/gpt-4o-mini", "z-ai/glm-5.1", "meta-llama/llama-3.1-8b-instruct"]
+    \\
+    \\[providers.xai]
+    \\base_url = "https://api.x.ai/v1"
+    \\description = "$25 signup credits (console.x.ai)"
+    \\api_format = "openai"
+    \\models = ["grok-3", "grok-3-fast", "grok-2-1212"]
+    \\
+    \\# ── Paid / Trial Credit Providers ───────────────────────────────────
+    \\
+    \\[providers.openai]
+    \\base_url = "https://api.openai.com/v1"
+    \\description = "GPT-4o, GPT-5 — pay per token"
+    \\api_format = "openai"
+    \\models = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
+    \\
+    \\[providers.anthropic]
+    \\base_url = "https://api.anthropic.com/v1"
+    \\description = "Claude 4 Opus/Sonnet — pay per token"
+    \\api_format = "anthropic"
+    \\models = ["claude-opus-4-20250514", "claude-sonnet-4-20250514", "claude-3-5-sonnet-20241022", "claude-3-haiku-20240307"]
+    \\
+    \\[providers.mistral]
+    \\base_url = "https://api.mistral.ai/v1"
+    \\description = "Mistral models — 1B tokens/month free tier"
+    \\api_format = "openai"
+    \\models = ["mistral-large-latest", "mistral-small-latest", "codestral-latest"]
     \\
     \\[providers.together]
     \\base_url = "https://api.together.xyz/v1"
-    \\description = "Llama, Mistral, Qwen models"
+    \\description = "100+ models — $5 signup credit"
     \\api_format = "openai"
-    \\models = ["meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1"]
+    \\models = ["meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo", "mistralai/Mixtral-8x7B-Instruct-v0.1", "deepseek-ai/DeepSeek-R1"]
+    \\
+    \\# ── Google ──────────────────────────────────────────────────────────
+    \\
+    \\[providers.gemini]
+    \\base_url = "https://generativelanguage.googleapis.com/v1beta"
+    \\description = "Gemini — 100 req/day free (ai.google.dev)"
+    \\api_format = "google"
+    \\models = ["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.0-flash"]
+    \\
+    \\[providers.vertexai]
+    \\base_url = "https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/YOUR_LOCATION/publishers/google/models"
+    \\description = "Google Vertex AI — requires GCP project"
+    \\api_format = "google"
+    \\models = ["gemini-2.0-flash-exp", "gemini-1.5-pro-001", "gemini-1.5-flash-001"]
+    \\
+    \\# ── Cloud / Enterprise ──────────────────────────────────────────────
     \\
     \\[providers.azure]
     \\base_url = "https://YOUR_RESOURCE.openai.azure.com/openai/deployments/YOUR_DEPLOYMENT"
@@ -123,71 +160,58 @@ const default_providers_content =
     \\api_format = "openai"
     \\models = ["gpt-4o", "gpt-4-turbo", "gpt-35-turbo"]
     \\
-    \\[providers.vertexai]
-    \\base_url = "https://aiplatform.googleapis.com/v1/projects/YOUR_PROJECT/locations/YOUR_LOCATION/publishers/google/models"
-    \\description = "Google Vertex AI"
-    \\api_format = "google"
-    \\models = ["gemini-2.0-flash-exp", "gemini-1.5-pro-001", "gemini-1.5-flash-001"]
-    \\
     \\[providers.bedrock]
     \\base_url = "https://bedrock-runtime.us-east-1.amazonaws.com"
     \\description = "AWS Bedrock"
     \\api_format = "anthropic"
     \\models = ["anthropic.claude-3-5-sonnet-20241022-v2:0", "us.anthropic.claude-3-5-haiku-20241022-v1:0"]
     \\
+    \\# ── Local Providers ─────────────────────────────────────────────────
+    \\
     \\[providers.ollama]
     \\base_url = "http://localhost:11434/api"
-    \\description = "Local models (llama2, mistral, etc.)"
+    \\description = "Local models — no API key needed"
     \\api_format = "ollama"
     \\is_local = true
-    \\models = ["gemma4:31b-cloud", "phi3.5:3.8b-mini-instruct-q5_K_M"]
+    \\models = ["llama3.1", "mistral", "qwen2.5-coder", "deepseek-coder-v2"]
     \\
     \\[providers.lm-studio]
     \\base_url = "http://localhost:1234/v1"
     \\description = "LM Studio local models"
     \\api_format = "openai"
     \\is_local = true
-    \\models = ["local-model", "your-model-name"]
+    \\models = ["local-model"]
     \\
     \\[providers.llama-cpp]
     \\base_url = "http://localhost:8080/v1"
     \\description = "llama.cpp server"
     \\api_format = "openai"
     \\is_local = true
-    \\models = ["default", "your-model"]
+    \\models = ["default"]
     \\
-    \\[providers.openrouter]
-    \\base_url = "https://openrouter.ai/api/v1"
-    \\description = "Access to 100+ models"
-    \\api_format = "openai"
-    \\keep_prefix = true
-    \\models = ["google/gemma-4-31b-it:free", "google/gemma-4-26b-a4b-it:free", "openai/gpt-oss-20b:free", "z-ai/glm-4.5-air:free", "anthropic/claude-opus-4.6", "anthropic/claude-sonnet-4.6", "anthropic/claude-haiku-4.5", "anthropic/claude-3-haiku", "deepseek/deepseek-chat", "deepseek/deepseek-v3.2", "deepseek/deepseek-r1", "openai/gpt-5.2", "openai/gpt-4o", "openai/gpt-4o-mini", "google/gemini-2.0-flash-001", "google/gemini-2.0-flash", "meta-llama/llama-3.1-8b-instruct", "z-ai/glm-5.1", "z-ai/glm-4.5-air"]
+    \\# ── Z.AI (Coding Plan) ─────────────────────────────────────────────
     \\
     \\[providers.zai]
     \\base_url = "https://api.z.ai/api/coding/paas/v4"
-    \\description = "GLM models from Z.AI (Coding Plan)"
+    \\description = "GLM Coding Plan — subscription only (z.ai/subscribe)"
     \\api_format = "openai"
     \\models = ["glm-4.5-air", "glm-4.7", "glm-5-turbo", "glm-5", "glm-5.1"]
     \\
-    \\[providers.vercel-gateway]
-    \\base_url = "https://api.vercel.ai/v1"
-    \\description = "Vercel AI Gateway"
-    \\api_format = "openai"
-    \\models = ["your-provider-model"]
+    \\# ── Aggregators ────────────────────────────────────────────────────
     \\
     \\[providers.opencode-zen]
     \\base_url = "https://opencode.ai/zen/v1"
-    \\description = "Tested and verified models"
+    \\description = "OpenCode Zen — multi-provider"
     \\api_format = "openai"
     \\is_local = true
-    \\models = ["opencode/minimax-m2.5-free", "opencode/big-pickle", "opencode/qwen3.6-plus-free", "opencode/nemotron-3-super-free", "opencode/gpt-5.4", "opencode/gpt-5.3-codex", "opencode/gpt-5.2", "opencode/gpt-5.1-codex", "opencode/gpt-5-nano", "opencode/claude-opus-4-6", "opencode/claude-sonnet-4-6", "opencode/claude-haiku-4-5", "opencode/gemini-3.1-pro", "opencode/gemini-3-flash", "opencode/minimax-m2.5", "opencode/glm-5.1", "opencode/glm-5", "opencode/kimi-k2.5"]
+    \\models = ["opencode/big-pickle", "opencode/glm-5.1", "opencode/claude-sonnet-4-6", "opencode/gemini-3-flash"]
     \\
     \\[providers.opencode-go]
     \\base_url = "https://opencode.ai/zen/go/v1"
-    \\description = "Low-cost subscription models"
+    \\description = "OpenCode Go — low-cost subscription"
     \\api_format = "openai"
     \\is_local = true
-    \\models = ["glm-5.1", "glm-5", "kimi-k2.5", "mimo-v2-pro", "mimo-v2-omni", "minimax-m2.7", "minimax-m2.5"]
+    \\models = ["glm-5.1", "glm-5", "kimi-k2.5", "mimo-v2-pro", "minimax-m2.5"]
 ;
 
 /// Load provider definitions from ~/.crushcode/providers.toml
