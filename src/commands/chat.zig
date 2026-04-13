@@ -16,6 +16,7 @@ const mcp_bridge_mod = @import("mcp_bridge");
 const agent_loop_mod = @import("agent_loop");
 const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
+const skills_loader_mod = @import("skills_loader");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
@@ -807,7 +808,31 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     if (chat_sys_prompt == null) {
         chat_sys_prompt = config.getSystemPrompt();
     }
-    if (chat_sys_prompt) |sp| {
+
+    // Load skills from skills/ directory and append to system prompt
+    var skill_xml: ?[]const u8 = null;
+    {
+        var skill_loader = skills_loader_mod.SkillLoader.init(allocator);
+        defer skill_loader.deinit();
+
+        // Load skills from default directory, silently skip if not found
+        skill_loader.loadFromDirectory("skills") catch {};
+        const skills = skill_loader.getSkills();
+        if (skills.len > 0) {
+            skill_xml = try skill_loader.toPromptXml(allocator);
+        }
+    }
+
+    // Append skill XML to system prompt if skills were loaded
+    if (skill_xml) |xml| {
+        defer allocator.free(xml);
+        if (chat_sys_prompt) |existing| {
+            const combined = try std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ existing, xml });
+            ai_client.setSystemPrompt(combined);
+        } else {
+            ai_client.setSystemPrompt(xml);
+        }
+    } else if (chat_sys_prompt) |sp| {
         ai_client.setSystemPrompt(sp);
     }
 

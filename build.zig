@@ -570,6 +570,7 @@ pub fn build(b: *std.Build) !void {
     chat_mod.addImport("mcp_bridge", mcp_bridge_mod);
     chat_mod.addImport("agent_loop", agent_loop_mod);
     chat_mod.addImport("tools", tools_mod);
+    chat_mod.addImport("skills_loader", skills_loader_mod);
     chat_mod.addImport("streaming_types", streaming_types_mod);
 
     for (&[_]*std.Build.Module{
