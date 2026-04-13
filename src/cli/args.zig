@@ -16,6 +16,7 @@ pub const Args = struct {
     max_agents: u32 = 5, // max concurrent agents
     memory: ?[]const u8 = null, // session memory/history (file path or "auto")
     memory_limit: u32 = 100, // max messages to remember
+    stream: bool = false, // enable streaming output
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -121,6 +122,8 @@ pub const Args = struct {
                 } else if (std.mem.startsWith(u8, arg, "--memory-limit=")) {
                     const val = arg[15..];
                     result.memory_limit = std.fmt.parseInt(u32, val, 10) catch 100;
+                } else if (std.mem.eql(u8, arg, "--stream") or std.mem.eql(u8, arg, "-s")) {
+                    result.stream = true;
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -150,6 +153,7 @@ pub const Args = struct {
             .max_agents = result.max_agents,
             .memory = if (result.memory) |m| try allocator.dupe(u8, m) else null,
             .memory_limit = result.memory_limit,
+            .stream = result.stream,
             .remaining = remaining,
             .has_command = has_command,
         };

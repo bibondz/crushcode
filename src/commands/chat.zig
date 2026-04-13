@@ -874,23 +874,54 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     // JSON: emit session start
     json_out.emitSessionStart(provider_name, model_name);
 
-    const response = ai_client.sendChat(message) catch |err| {
-        std.debug.print("\nError sending request: {}\n", .{err});
-        json_out.emitError(@errorName(err));
-        return err;
-    };
-
-    // Safety check - ensure we have a valid response
-    if (response.choices.len == 0) {
-        std.debug.print("\nError: Empty response from AI\n", .{});
-        return error.EmptyResponse;
-    }
-
-    // Simple content extraction with inline null check
+    var response: core.ChatResponse = undefined;
     var content_slice: []const u8 = "";
-    const choice = response.choices[0];
-    if (choice.message.content) |c| {
-        content_slice = c;
+
+    if (args.stream) {
+        // Streaming mode
+        var full_content = array_list_compat.ArrayList(u8).init(allocator);
+        defer full_content.deinit();
+
+        response = ai_client.sendChatStreaming(&[_]core.ChatMessage{.{
+            .role = try allocator.dupe(u8, "user"),
+            .content = try allocator.dupe(u8, message),
+        }}, struct {
+            pub fn callback(token: []const u8, done: bool) void {
+                _ = done;
+                if (token.len > 0) {
+                    // Display token in real-time
+                    const stdout = file_compat.File.stdout().writer();
+                    stdout.print("{s}", .{token}) catch {};
+                }
+            }
+        }.callback) catch |err| {
+            std.debug.print("\nError sending streaming request: {}\n", .{err});
+            json_out.emitError(@errorName(err));
+            return err;
+        };
+
+        std.debug.print("\n", .{});
+        content_slice = "";
+    } else {
+        // Non-streaming mode (default)
+        response = ai_client.sendChat(message) catch |err| {
+            std.debug.print("\nError sending request: {}\n", .{err});
+            json_out.emitError(@errorName(err));
+            return err;
+        };
+
+        // Safety check - ensure we have a valid response
+        if (response.choices.len == 0) {
+            std.debug.print("\nError: Empty response from AI\n", .{});
+            return error.EmptyResponse;
+        }
+
+        // Simple content extraction with inline null check
+        const choice = response.choices[0];
+        if (choice.message.content) |c| {
+            content_slice = c;
+        }
+        std.debug.print("{s}\n\n", .{content_slice});
     }
     std.debug.print("\n{s}\n\n", .{content_slice});
     std.debug.print("---\n", .{});
