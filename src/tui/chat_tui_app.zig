@@ -639,6 +639,178 @@ const FilesWidget = struct {
     }
 };
 
+const SidebarWidget = struct {
+    model: *const Model,
+    width: u16,
+
+    fn widget(self: *const SidebarWidget) vxfw.Widget {
+        return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const SidebarWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const SidebarWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const height = ctx.max.height orelse 30;
+        const width = self.width;
+        const theme = self.model.current_theme;
+        const w = width - 2;
+
+        var child_idx: usize = 0;
+        var children = try ctx.arena.alloc(vxfw.SubSurface, 20);
+        var row: u16 = 1;
+
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "Files", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const files = self.model.recent_files.items;
+        for (files, 0..) |file, idx| {
+            if (idx >= 5) break;
+            const truncated = if (file.len > w) file[0..w] else file;
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, truncated, self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        }
+        if (files.len > 5) {
+            const txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{files.len - 5});
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, txt, self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        }
+        if (files.len == 0) {
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, "(none)", self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        }
+
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "Session", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const turns_txt = try std.fmt.allocPrint(ctx.arena, "turns: {d}", .{self.model.request_count});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, turns_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const tokens_txt = try std.fmt.allocPrint(ctx.arena, "tokens: {d}", .{self.model.total_input_tokens + self.model.total_output_tokens});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, tokens_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const cost_txt = try std.fmt.allocPrint(ctx.arena, "cost: ${d:.4}", .{self.model.estimatedCostUsd()});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, cost_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const time_txt = try std.fmt.allocPrint(ctx.arena, "{d}m{d}s", .{ self.model.sessionMinutes(), self.model.sessionSecondsPart() });
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, time_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "Theme", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, self.model.current_theme.name, self.width - 2, .{ .fg = theme.accent }),
+        };
+        child_idx += 1;
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme dark", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme light", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme mono", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{ .bg = theme.header_bg } });
+        drawBorder(&surface, .{ .fg = theme.border });
+
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children[0..child_idx],
+        };
+    }
+
+    fn buildSectionTitle(_: *const SidebarWidget, ctx: vxfw.DrawContext, title: []const u8, width: u16, theme: *const theme_mod.Theme) std.mem.Allocator.Error!vxfw.Surface {
+        var line = std.ArrayList(u8).empty;
+        try line.appendSlice(ctx.arena, title);
+        try line.appendSlice(ctx.arena, " ");
+        const missing: u16 = if (line.items.len >= width) 0 else width - @as(u16, @intCast(line.items.len));
+        var i: u16 = 0;
+        while (i < missing) : (i += 1) {
+            try line.append(ctx.arena, '-');
+        }
+        const text = vxfw.Text{
+            .text = line.items,
+            .style = .{ .fg = theme.dimmed, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+    }
+
+    fn buildText(_: *const SidebarWidget, ctx: vxfw.DrawContext, text_content: []const u8, width: u16, style: vaxis.Style) std.mem.Allocator.Error!vxfw.Surface {
+        const text = vxfw.Text{
+            .text = text_content,
+            .style = style,
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+    }
+};
+
 const InputWidget = struct {
     prompt: []const u8,
     field: *vxfw.TextField,
@@ -1360,6 +1532,7 @@ pub const Model = struct {
     session_list_selected: usize,
     resume_prompt_session: ?session_mod.Session,
     resume_prompt_path: ?[]const u8,
+    sidebar_visible: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -1437,6 +1610,7 @@ pub const Model = struct {
             .session_list_selected = 0,
             .resume_prompt_session = null,
             .resume_prompt_path = null,
+            .sidebar_visible = false,
         };
         errdefer model.destroy();
 
@@ -2220,6 +2394,13 @@ pub const Model = struct {
                     return;
                 }
 
+                if (key.matches('b', .{ .ctrl = true })) {
+                    self.sidebar_visible = !self.sidebar_visible;
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
                 if (self.setup_phase == 1) {
                     if (key.matches(vaxis.Key.up, .{})) {
                         self.moveSetupProviderSelection(-1);
@@ -2263,6 +2444,8 @@ pub const Model = struct {
         defer self.lock.unlock();
 
         const max = ctx.max.size();
+        const sidebar_width: u16 = 30;
+        const main_width: u16 = if (self.sidebar_visible) max.width -| sidebar_width else max.width;
         const header_height: u16 = 2;
         const files_height: u16 = if (self.recent_files.items.len > 0) 1 else 0;
         const status_height: u16 = 1;
@@ -2283,16 +2466,16 @@ pub const Model = struct {
 
         const header = HeaderWidget{ .title = full_title, .theme = self.current_theme };
         const header_surface = try header.draw(ctx.withConstraints(
-            .{ .width = max.width, .height = header_height },
-            .{ .width = max.width, .height = header_height },
+            .{ .width = main_width, .height = header_height },
+            .{ .width = main_width, .height = header_height },
         ));
 
         const body_surface = blk: {
             if (self.setup_phase != 0) {
                 const wizard = SetupWizardWidget{ .model = self };
                 break :blk try wizard.draw(ctx.withConstraints(
-                    .{ .width = max.width, .height = body_height },
-                    .{ .width = max.width, .height = body_height },
+                    .{ .width = main_width, .height = body_height },
+                    .{ .width = main_width, .height = body_height },
                 ));
             } else {
                 var message_widgets = std.ArrayList(vxfw.Widget).empty;
@@ -2327,8 +2510,8 @@ pub const Model = struct {
                 self.scroll_bars.estimated_content_height = estimateContentHeight(self);
 
                 const surface = try self.scroll_bars.draw(ctx.withConstraints(
-                    .{ .width = max.width, .height = body_height },
-                    .{ .width = max.width, .height = body_height },
+                    .{ .width = main_width, .height = body_height },
+                    .{ .width = main_width, .height = body_height },
                 ));
                 self.scroll_view = self.scroll_bars.scroll_view;
                 break :blk surface;
@@ -2382,6 +2565,16 @@ pub const Model = struct {
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = body_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height), .col = 0 }, .surface = status_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height + status_height), .col = 0 }, .surface = input_surface });
+
+        if (self.sidebar_visible) {
+            const sidebar = SidebarWidget{ .model = self, .width = sidebar_width };
+            const sidebar_height: u16 = header_height + body_height;
+            const sidebar_surface = try sidebar.draw(ctx.withConstraints(
+                .{ .width = sidebar_width, .height = sidebar_height },
+                .{ .width = sidebar_width, .height = sidebar_height },
+            ));
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(main_width) }, .surface = sidebar_surface });
+        }
 
         if (self.show_palette) {
             const palette = CommandPaletteWidget{
@@ -2457,8 +2650,8 @@ pub const Model = struct {
             const visible_files = recentFilesVisibleCount(self.recent_files.items);
             const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files], .theme = self.current_theme };
             const files_surface = try files_widget.draw(ctx.withConstraints(
-                .{ .width = max.width, .height = 1 },
-                .{ .width = max.width, .height = 1 },
+                .{ .width = main_width, .height = 1 },
+                .{ .width = main_width, .height = 1 },
             ));
             try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = files_surface });
         }
@@ -3136,7 +3329,7 @@ pub const Model = struct {
         self.appendToMessageUnlocked(index, token) catch {};
     }
 
-    fn estimatedCostUsd(self: *Model) f64 {
+    fn estimatedCostUsd(self: *const Model) f64 {
         const input_tokens: u32 = @intCast(@min(self.total_input_tokens, std.math.maxInt(u32)));
         const output_tokens: u32 = @intCast(@min(self.total_output_tokens, std.math.maxInt(u32)));
         return self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), input_tokens, output_tokens);
@@ -3594,7 +3787,7 @@ fn contentSurfaceWidget(allocator: std.mem.Allocator, surface: vxfw.Surface) !vx
     return widget_holder.widget();
 }
 
-fn resolvedPricingModel(model: *Model) []const u8 {
+fn resolvedPricingModel(model: *const Model) []const u8 {
     if (model.pricing_table.getPrice(model.provider_name, model.model_name) != null) {
         return model.model_name;
     }

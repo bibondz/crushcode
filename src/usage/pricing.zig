@@ -26,14 +26,14 @@ pub const PricingTable = struct {
     }
 
     /// Get pricing for a specific provider+model combination
-    pub fn getPrice(self: *PricingTable, provider: []const u8, model: []const u8) ?ModelPricing {
+    pub fn getPrice(self: *const PricingTable, provider: []const u8, model: []const u8) ?ModelPricing {
         const key = std.fmt.allocPrint(self.allocator, "{s}:{s}", .{ provider, model }) catch return null;
         defer self.allocator.free(key);
         return self.entries.get(key);
     }
 
     /// Estimate cost for a given token usage
-    pub fn estimateCost(self: *PricingTable, provider: []const u8, model: []const u8, input_tokens: u32, output_tokens: u32, cache_read: u32, cache_write: u32) f64 {
+    pub fn estimateCost(self: *const PricingTable, provider: []const u8, model: []const u8, input_tokens: u32, output_tokens: u32, cache_read: u32, cache_write: u32) f64 {
         const pricing = self.getPrice(provider, model) orelse return 0.0;
 
         const input_cost = @as(f64, @floatFromInt(input_tokens)) / 1_000_000.0 * pricing.input_price_per_1m;
@@ -51,7 +51,7 @@ pub const PricingTable = struct {
     }
 
     /// Quick cost estimate with just input/output tokens
-    pub fn estimateCostSimple(self: *PricingTable, provider: []const u8, model: []const u8, input_tokens: u32, output_tokens: u32) f64 {
+    pub fn estimateCostSimple(self: *const PricingTable, provider: []const u8, model: []const u8, input_tokens: u32, output_tokens: u32) f64 {
         return self.estimateCost(provider, model, input_tokens, output_tokens, 0, 0);
     }
 
