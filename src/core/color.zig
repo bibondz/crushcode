@@ -61,17 +61,17 @@ pub const Style = struct {
     underline: bool = false,
 
     /// Predefined styles for common CLI output patterns
-    pub const success = Style{ .fg = .green, .bold = true };
-    pub const err = Style{ .fg = .red, .bold = true };
-    pub const warning = Style{ .fg = .yellow };
-    pub const info = Style{ .fg = .cyan };
-    pub const dimmed = Style{ .dim = true };
-    pub const heading = Style{ .fg = .cyan, .bold = true };
+    pub const success = Style{ .fg = .bright_green, .bold = true };
+    pub const err = Style{ .fg = .bright_red, .bold = true };
+    pub const warning = Style{ .fg = .bright_yellow };
+    pub const info = Style{ .fg = .bright_blue };
+    pub const dimmed = Style{ .fg = .bright_black };
+    pub const heading = Style{ .fg = .bright_cyan, .bold = true };
     pub const muted = Style{ .fg = .bright_black };
-    pub const accent = Style{ .fg = .magenta };
-    pub const highlight = Style{ .fg = .yellow, .bold = true };
-    pub const prompt_user = Style{ .fg = .green };
-    pub const prompt_assistant = Style{ .fg = .cyan };
+    pub const accent = Style{ .fg = .bright_magenta };
+    pub const highlight = Style{ .fg = .bright_yellow, .bold = true };
+    pub const prompt_user = Style{ .fg = .bright_cyan, .bold = true };
+    pub const prompt_assistant = Style{ .fg = .bright_green, .bold = true };
     pub const permission_denied = Style{ .fg = .red };
     pub const permission_request = Style{ .fg = .yellow };
     pub const permission_allowed = Style{ .dim = true };

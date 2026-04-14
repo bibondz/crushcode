@@ -97,7 +97,7 @@ pub fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: 
 
     spinner_mod.StreamingSpinner.showStatic("Thinking");
 
-    out("\n{s}Assistant:{s} ", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
+    out("\n{s}✦ {s}", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
 
     var response: core.ChatResponse = undefined;
     if (active_streaming_enabled) {

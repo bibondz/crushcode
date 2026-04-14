@@ -380,7 +380,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
                 }
             }
         }.callback) catch |err| {
-            out("\nError sending streaming request: {}\n", .{err});
+            out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
             json_out.emitError(@errorName(err));
             return err;
         };
@@ -406,13 +406,12 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     }
     markdown_mod.MarkdownRenderer.render(content_slice);
     out("\n", .{});
-    out("---\n", .{});
-    out("Provider: {s}\n", .{provider_name});
-    out("Model: {s}\n", .{model_name});
+    out("{s}---{s}\n", .{ Style.dimmed.start(), Style.dimmed.reset() });
+    out("{s}Provider:{s} {s}  {s}Model:{s} {s}\n", .{ Style.muted.start(), Style.muted.reset(), provider_name, Style.muted.start(), Style.muted.reset(), model_name });
     if (response.usage) |usage| {
-        out("Tokens used: {d} prompt + {d} completion = {d} total\n", .{
-            usage.prompt_tokens,
-            usage.completion_tokens,
+        out("{s}Tokens:{s} {d} in + {d} out = {d} total\n", .{
+            Style.muted.start(), Style.muted.reset(),
+            usage.prompt_tokens, usage.completion_tokens,
             usage.total_tokens,
         });
         const ext = ai_client.extractExtendedUsage(&response);
@@ -697,13 +696,16 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer compactor.deinit();
     compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
 
-    out("=== Interactive Chat Mode (Streaming) ===\n", .{});
-    out("Provider: {s} | Model: {s}\n", .{ current_provider_name, current_model_name });
-    out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    out("Commands: /help /clear /model /thinking /cost /compact /commands /revise /lint /sources /exit\n", .{});
-    out("Shortcuts: /h /c /m /q\n", .{});
-    out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
-    out("--------------------------------------------\n\n", .{});
+    out(Style.dimmed.start() ++ "── " ++ Style.heading.start() ++ "Crushcode" ++ Style.heading.reset() ++ " " ++ Style.muted.start(), .{});
+    out("{s}/{s}" ++ Style.muted.reset() ++ " " ++ Style.dimmed.start() ++ "──" ++ Style.dimmed.reset() ++ "\n", .{
+        current_provider_name,
+        current_model_name,
+    });
+    if (stream_options.show_thinking) {
+        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start() ++ "on" ++ Style.info.reset() ++ " · /help /clear /model /compact /revise /lint /sources /exit" ++ Style.dimmed.reset() ++ "\n\n", .{});
+    } else {
+        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.muted.start() ++ "off" ++ Style.muted.reset() ++ " · /help /clear /model /compact /revise /lint /sources /exit" ++ Style.dimmed.reset() ++ "\n\n", .{});
+    }
 
     json_out.emitSessionStart(current_provider_name, current_model_name);
 
@@ -711,7 +713,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     const stdin_reader = stdin.reader();
 
     while (true) {
-        out("\n{s}You:{s} ", .{ Style.prompt_user.start(), Style.prompt_user.reset() });
+        out("\n{s}❯ {s}", .{ Style.prompt_user.start(), Style.prompt_user.reset() });
 
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
             out("\nError reading input\n", .{});

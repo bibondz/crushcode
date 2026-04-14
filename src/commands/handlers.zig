@@ -51,6 +51,10 @@ pub fn tryHandlePluginCommand(command: []const u8) !bool {
 }
 
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
+    if (args.tui) {
+        try ai_handlers.handleTUI(args, config);
+        return;
+    }
     try chat_mod.handleChat(args, config);
 }
 

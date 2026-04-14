@@ -37,6 +37,7 @@ fn createMod(
 pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
+    const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
 
     const compat_array_list_mod = simpleMod(b, "src/compat/array_list.zig", target, optimize);
     const compat_file_mod = simpleMod(b, "src/compat/file.zig", target, optimize);
@@ -111,6 +112,7 @@ pub fn build(b: *std.Build) !void {
     const git_mod = createMod(b, "src/commands/git.zig", target, optimize, &.{imp("shell", shell_mod)});
     const skills_mod = createMod(b, "src/commands/builtins.zig", target, optimize, &.{imp("shell", shell_mod)});
     const tui_mod = simpleMod(b, "src/tui/mod.zig", target, optimize);
+    addImports(tui_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     addImports(chat_mod, &.{imp("tui", tui_mod)});
 
     const install_mod = createMod(b, "src/commands/install.zig", target, optimize, &.{
@@ -175,7 +177,7 @@ pub fn build(b: *std.Build) !void {
     addImports(chat_mod, &.{
         imp("spinner", spinner_mod), imp("markdown_renderer", markdown_renderer_mod), imp("error_display", error_display_mod),
     });
-    addImports(tui_mod, &.{ imp("core_api", core_api_mod), imp("markdown_renderer", markdown_renderer_mod), imp("color", color_mod) });
+    addImports(tui_mod, &.{ imp("core_api", core_api_mod), imp("markdown_renderer", markdown_renderer_mod), imp("color", color_mod), imp("registry", registry_mod) });
     addImports(chat_mod, &.{ imp("streaming", streaming_session_mod), imp("core_api", core_api_mod) });
 
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);

@@ -53,6 +53,12 @@ pub const Args = struct {
                 continue;
             }
 
+            if (std.mem.eql(u8, arg, "--version") or std.mem.eql(u8, arg, "-v") or std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+                result.command = arg;
+                command_found = true;
+                continue;
+            }
+
             // After command is found, or if it's a flag, parse options
             if (std.mem.startsWith(u8, arg, "-")) {
                 // Parse flags with = or space

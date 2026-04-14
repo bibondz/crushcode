@@ -40,21 +40,6 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         break :blk config.default_model;
     };
 
-    if (provider_name.len == 0) {
-        try runFirstTimeSetup(allocator, config);
-        return;
-    }
-
-    var registry = registry_mod.ProviderRegistry.init(allocator);
-    defer registry.deinit();
-    try registry.registerAllProviders();
-
-    const provider = registry.getProvider(provider_name) orelse {
-        stdout_print("Error: Provider '{s}' not found\n", .{provider_name});
-        stdout_print("Run 'crushcode list --providers' to see available providers.\n", .{});
-        return error.ProviderNotFound;
-    };
-
     var api_key: []const u8 = "";
     if (profile_opt) |*p| {
         api_key = p.getApiKey(provider_name) orelse "";
@@ -63,23 +48,22 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         api_key = config.getApiKey(provider_name) orelse "";
     }
 
-    if (api_key.len == 0) {
-        stdout_print("Error: No API key for provider '{s}'. Add to ~/.crushcode/config.toml or profile\n", .{provider_name});
-        return error.MissingApiKey;
-    }
-
-    var client = try core_api.AIClient.init(allocator, provider, model_name, api_key);
-    defer client.deinit();
-
-    if (profile_opt) |*p| {
-        if (p.system_prompt.len > 0) {
-            client.setSystemPrompt(p.system_prompt);
+    const system_prompt = blk: {
+        if (profile_opt) |*p| {
+            if (p.system_prompt.len > 0) break :blk p.system_prompt;
         }
-    } else if (config.getSystemPrompt()) |sys_prompt| {
-        client.setSystemPrompt(sys_prompt);
-    }
+        break :blk config.getSystemPrompt();
+    };
 
-    tui_mod.runTUIWithClient(allocator, &client) catch |err| switch (err) {
+    tui_mod.chat_tui_app.runWithOptions(allocator, .{
+        .provider_name = provider_name,
+        .model_name = model_name,
+        .api_key = api_key,
+        .system_prompt = system_prompt,
+        .max_tokens = config.max_tokens,
+        .temperature = config.temperature,
+        .override_url = config.getProviderOverrideUrl(provider_name),
+    }) catch |err| switch (err) {
         error.NotATerminal => {
             stdout_print("Terminal UI not available (no TTY). Falling back to interactive chat.\n\n", .{});
             const fallback_args = args_mod.Args{
@@ -406,12 +390,13 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
             try config.setApiKey(provider_name, api_key);
         }
 
-        var default_model: []const u8 = "";
-        default_model = blk: {
+        var default_model_buf: [256]u8 = undefined;
+        var default_model_len: usize = 0;
+        default_model_len = blk: {
             stdout_print("\nFetching models from {s}...\n", .{provider_name});
             const models = registry.fetchModels(provider_name, api_key) catch {
                 stdout_print("Could not fetch models — skipping model selection.\n", .{});
-                break :blk "";
+                break :blk 0;
             };
             defer {
                 for (models) |m| allocator.free(m);
@@ -424,29 +409,34 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
                 }
                 stdout_print("\nChoose model [1-{d}] or press Enter for first: ", .{models.len});
                 const model_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256) catch {
-                    break :blk models[0];
+                    @memcpy(default_model_buf[0..models[0].len], models[0]);
+                    break :blk models[0].len;
                 };
                 if (model_input) |mi| {
                     defer allocator.free(mi);
                     const trimmed = std.mem.trim(u8, mi, " \t\r\n");
                     if (trimmed.len == 0) {
-                        break :blk models[0];
+                        @memcpy(default_model_buf[0..models[0].len], models[0]);
+                        break :blk models[0].len;
                     }
                     const num = std.fmt.parseInt(usize, trimmed, 10) catch 0;
-                    if (num >= 1 and num <= models.len) {
-                        break :blk models[num - 1];
-                    } else {
-                        break :blk models[0];
-                    }
+                    const chosen = if (num >= 1 and num <= models.len) models[num - 1] else models[0];
+                    @memcpy(default_model_buf[0..chosen.len], chosen);
+                    break :blk chosen.len;
                 } else {
-                    break :blk models[0];
+                    @memcpy(default_model_buf[0..models[0].len], models[0]);
+                    break :blk models[0].len;
                 }
             }
-            break :blk "";
+            break :blk 0;
         };
 
         config.default_provider = try allocator.dupe(u8, provider_name);
-        config.default_model = try allocator.dupe(u8, default_model);
+        if (default_model_len > 0) {
+            config.default_model = try allocator.dupe(u8, default_model_buf[0..default_model_len]);
+        } else {
+            config.default_model = try allocator.dupe(u8, "");
+        }
 
         const config_path = config_mod.getConfigPath(allocator) catch {
             stdout_print("\nConfigured {s} as default provider.\n", .{provider_name});
@@ -467,7 +457,17 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
 
         var key_iter = config.api_keys.iterator();
         while (key_iter.next()) |entry| {
-            try w.print("{s} = \"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+            const key = entry.key_ptr.*;
+            if (key.len == 0) continue;
+            var is_valid = true;
+            for (key) |ch| {
+                if (!std.ascii.isAlphanumeric(ch) and ch != '_' and ch != '-') {
+                    is_valid = false;
+                    break;
+                }
+            }
+            if (!is_valid) continue;
+            try w.print("{s} = \"{s}\"\n", .{ key, entry.value_ptr.* });
         }
 
         const config_dir = std.fs.path.dirname(config_path) orelse "";
