@@ -5,7 +5,9 @@ const config_mod = @import("config");
 const fallback_mod = @import("fallback");
 const graph_mod = @import("graph");
 const registry_mod = @import("registry");
+const diff = @import("diff");
 const markdown = @import("markdown");
+const theme_mod = @import("theme");
 const usage_pricing = @import("usage_pricing");
 
 const vxfw = vaxis.vxfw;
@@ -51,6 +53,7 @@ const ToolCallStatus = enum {
 
 const recent_files_max = 5;
 const recent_files_display_max = 3;
+const tool_diff_max_lines: usize = 80;
 const recent_file_tool_names = [_][]const u8{ "read_file", "write_file", "edit", "glob" };
 const context_source_files = [_][]const u8{
     "build.zig",
@@ -135,6 +138,7 @@ const FallbackProvider = struct {
 const RoleLabelWidget = struct {
     label: []const u8,
     style: vaxis.Style,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const RoleLabelWidget) vxfw.Widget {
         return .{
@@ -152,7 +156,7 @@ const RoleLabelWidget = struct {
         const rich: vxfw.RichText = .{
             .text = &.{
                 .{ .text = self.label, .style = self.style },
-                .{ .text = ": ", .style = .{ .fg = .{ .index = 8 }, .dim = true } },
+                .{ .text = ": ", .style = .{ .fg = self.theme.dimmed, .dim = true } },
             },
             .softwrap = false,
             .width_basis = .longest_line,
@@ -163,6 +167,7 @@ const RoleLabelWidget = struct {
 
 const MessageContentWidget = struct {
     message: *const Message,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const MessageContentWidget) vxfw.Widget {
         return .{
@@ -177,9 +182,9 @@ const MessageContentWidget = struct {
     }
 
     fn draw(self: *const MessageContentWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const role_style = messageRoleStyle(self.message.role);
-        const body_style = messageBodyStyle(self.message.role);
-        const role_label: RoleLabelWidget = .{ .label = messageRoleLabel(self.message.role), .style = role_style };
+        const role_style = messageRoleStyle(self.theme, self.message.role);
+        const body_style = messageBodyStyle(self.theme, self.message.role);
+        const role_label: RoleLabelWidget = .{ .label = messageRoleLabel(self.theme, self.message.role), .style = role_style, .theme = self.theme };
         const content_surface = if (std.mem.eql(u8, self.message.role, "assistant")) blk: {
             const segments = try markdown.parseMarkdown(ctx.arena, self.message.content);
             const content = vxfw.RichText{
@@ -218,6 +223,7 @@ const ToolCallWidget = struct {
     tool_call: core.client.ToolCallInfo,
     status: ToolCallStatus,
     output: ?[]const u8,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const ToolCallWidget) vxfw.Widget {
         return .{
@@ -235,11 +241,11 @@ const ToolCallWidget = struct {
         const max = ctx.max.size();
         const header = vxfw.RichText{
             .text = &.{
-                .{ .text = toolCallStatusIcon(self.status), .style = toolCallStatusStyle(self.status) },
+                .{ .text = toolCallStatusIcon(self.status), .style = toolCallStatusStyle(self.theme, self.status) },
                 .{ .text = " ", .style = .{} },
-                .{ .text = self.tool_call.name, .style = .{ .fg = .{ .index = 15 }, .bold = true } },
+                .{ .text = self.tool_call.name, .style = .{ .fg = self.theme.header_fg, .bold = true } },
                 .{ .text = if (self.tool_call.arguments.len > 0) " " else "", .style = .{} },
-                .{ .text = self.tool_call.arguments, .style = .{ .fg = .{ .index = 8 }, .dim = true } },
+                .{ .text = self.tool_call.arguments, .style = .{ .fg = self.theme.dimmed, .dim = true } },
             },
             .softwrap = true,
             .width_basis = .parent,
@@ -249,6 +255,37 @@ const ToolCallWidget = struct {
             .{ .width = max.width, .height = max.height },
         ));
 
+        const diff_text = if (isDiffRenderableTool(self.tool_call.name) and self.output != null)
+            extractToolDiffText(self.output.?)
+        else
+            null;
+        if (diff_text) |text| {
+            const diff_widget = DiffWidget{
+                .file_path = extractToolFilePath(self.tool_call.arguments) orelse self.tool_call.name,
+                .diff_text = text,
+                .theme = self.theme,
+            };
+            const diff_surface = try diff_widget.draw(ctx.withConstraints(
+                .{ .width = max.width, .height = 0 },
+                .{ .width = max.width, .height = max.height },
+            ));
+
+            const height = header_surface.size.height + diff_surface.size.height;
+            const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
+            @memset(surface.buffer, .{ .style = .{} });
+
+            const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface };
+            children[1] = .{ .origin = .{ .row = @intCast(header_surface.size.height), .col = 0 }, .surface = diff_surface };
+
+            return .{
+                .size = surface.size,
+                .widget = self.widget(),
+                .buffer = surface.buffer,
+                .children = children,
+            };
+        }
+
         const output_text = try toolCallOutputText(ctx.arena, self.output, self.status);
         if (output_text.len == 0) {
             return header_surface;
@@ -256,7 +293,7 @@ const ToolCallWidget = struct {
 
         const output_widget = vxfw.Text{
             .text = output_text,
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.theme.dimmed, .dim = true },
             .softwrap = true,
             .width_basis = .parent,
         };
@@ -272,6 +309,69 @@ const ToolCallWidget = struct {
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface };
         children[1] = .{ .origin = .{ .row = @intCast(header_surface.size.height), .col = 0 }, .surface = output_surface };
+
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
+const DiffWidget = struct {
+    file_path: []const u8,
+    diff_text: []const u8,
+    theme: *const theme_mod.Theme,
+
+    fn widget(self: *const DiffWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const DiffWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const DiffWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        const width = max.width;
+        const inner_width = width -| 4;
+
+        const title_line = try std.fmt.allocPrint(ctx.arena, "Diff: {s}", .{self.file_path});
+        const title = vxfw.Text{
+            .text = title_line,
+            .style = .{ .fg = self.theme.accent, .bold = true },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const title_surface = try title.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 0 },
+            .{ .width = inner_width, .height = null },
+        ));
+
+        const diff_segments = try diff.parseDiff(ctx.arena, self.diff_text, tool_diff_max_lines);
+        const diff_text_widget = vxfw.RichText{
+            .text = diff_segments,
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const diff_surface = try diff_text_widget.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 0 },
+            .{ .width = inner_width, .height = null },
+        ));
+
+        const height = 2 + title_surface.size.height + diff_surface.size.height;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{ .bg = self.theme.header_bg } });
+        drawBorder(&surface, .{ .fg = self.theme.accent, .dim = true });
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface };
+        children[1] = .{ .origin = .{ .row = @intCast(1 + title_surface.size.height), .col = 2 }, .surface = diff_surface };
 
         return .{
             .size = surface.size,
@@ -309,8 +409,8 @@ const MessageWidget = struct {
 
         var current_row: u16 = 0;
         if (shouldRenderMessageContent(message)) {
-            const content_widget: MessageContentWidget = .{ .message = message };
-            const content_surface = try content_widget.draw(ctx.withConstraints(
+            const theme = self.model.current_theme;
+            const content_surface = try (MessageContentWidget{ .message = message, .theme = theme }).draw(ctx.withConstraints(
                 .{ .width = content_width, .height = 0 },
                 .{ .width = content_width, .height = null },
             ));
@@ -331,6 +431,7 @@ const MessageWidget = struct {
                     .tool_call = tool_call,
                     .status = toolCallStatusForMessage(tool_result),
                     .output = if (tool_result) |result| result.content else null,
+                    .theme = self.model.current_theme,
                 };
                 const tool_surface = try tool_widget.draw(ctx.withConstraints(
                     .{ .width = content_width, .height = 0 },
@@ -351,7 +452,7 @@ const MessageWidget = struct {
         if (border_width > 0) {
             const border_cell: vaxis.Cell = .{
                 .char = .{ .grapheme = "▌", .width = 1 },
-                .style = .{ .fg = .{ .index = 39 } },
+                .style = .{ .fg = self.model.current_theme.border },
             };
             for (0..height) |row| {
                 surface.writeCell(0, @intCast(row), border_cell);
@@ -392,6 +493,8 @@ const MessageGapWidget = struct {
 };
 
 const SeparatorWidget = struct {
+    theme: *const theme_mod.Theme,
+
     fn widget(self: *const SeparatorWidget) vxfw.Widget {
         return .{
             .userdata = @constCast(self),
@@ -405,7 +508,6 @@ const SeparatorWidget = struct {
     }
 
     fn draw(self: *const SeparatorWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        _ = self;
         const width = ctx.max.width orelse ctx.min.width;
         const line_width: u16 = @max(@min(width, @as(u16, 40)), @as(u16, 2));
         const line = if (line_width <= 3)
@@ -414,7 +516,7 @@ const SeparatorWidget = struct {
             try std.fmt.allocPrint(ctx.arena, "╶{s}╴", .{try repeated(ctx.arena, "─", line_width - 2)});
         const text: vxfw.Text = .{
             .text = line,
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.theme.border, .dim = true },
             .softwrap = false,
             .width_basis = .longest_line,
         };
@@ -424,6 +526,7 @@ const SeparatorWidget = struct {
 
 const HeaderWidget = struct {
     title: []const u8,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const HeaderWidget) vxfw.Widget {
         return .{
@@ -439,8 +542,9 @@ const HeaderWidget = struct {
 
     fn draw(self: *const HeaderWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const width = ctx.max.width orelse ctx.min.width;
+        const bg_style: vaxis.Style = .{ .fg = self.theme.header_fg, .bg = self.theme.header_bg };
         const title = vxfw.RichText{
-            .text = &.{.{ .text = self.title, .style = .{ .fg = .{ .index = 15 }, .bold = true } }},
+            .text = &.{.{ .text = self.title, .style = .{ .fg = self.theme.header_fg, .bg = self.theme.header_bg, .bold = true } }},
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -449,20 +553,23 @@ const HeaderWidget = struct {
         const line = try repeated(ctx.arena, "─", width);
         const separator = vxfw.Text{
             .text = line,
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.theme.border, .bg = self.theme.header_bg, .dim = true },
             .softwrap = false,
             .width_basis = .parent,
         };
         const separator_surface = try separator.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 2 });
+        @memset(surface.buffer, .{ .style = bg_style });
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = title_surface };
         children[1] = .{ .origin = .{ .row = 1, .col = 0 }, .surface = separator_surface };
 
         return .{
-            .size = .{ .width = width, .height = 2 },
+            .size = surface.size,
             .widget = self.widget(),
-            .buffer = &.{},
+            .buffer = surface.buffer,
             .children = children,
         };
     }
@@ -487,6 +594,7 @@ const SurfaceWidget = struct {
 
 const FilesWidget = struct {
     files: []const []const u8,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const FilesWidget) vxfw.Widget {
         return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
@@ -513,7 +621,7 @@ const FilesWidget = struct {
 
         const text = vxfw.Text{
             .text = try buffer.toOwnedSlice(ctx.arena),
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.theme.dimmed, .dim = true },
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -527,6 +635,7 @@ const FilesWidget = struct {
 const InputWidget = struct {
     prompt: []const u8,
     field: *vxfw.TextField,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const InputWidget) vxfw.Widget {
         return .{
@@ -543,7 +652,7 @@ const InputWidget = struct {
     fn draw(self: *const InputWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const prompt_text = vxfw.Text{
             .text = self.prompt,
-            .style = .{ .fg = .{ .index = 39 }, .bold = true },
+            .style = .{ .fg = self.theme.accent, .bold = true },
             .softwrap = false,
             .width_basis = .longest_line,
         };
@@ -570,12 +679,16 @@ const palette_command_data = [_]Command{
     .{ .name = "/model", .description = "Show current model", .shortcut = "m" },
     .{ .name = "/thinking", .description = "Toggle thinking mode", .shortcut = "t" },
     .{ .name = "/compact", .description = "Compact conversation context", .shortcut = "c" },
+    .{ .name = "/theme dark", .description = "Switch to dark theme", .shortcut = "td" },
+    .{ .name = "/theme light", .description = "Switch to light theme", .shortcut = "tl" },
+    .{ .name = "/theme mono", .description = "Switch to monochrome theme", .shortcut = "tm" },
     .{ .name = "/help", .description = "Show available commands", .shortcut = "h" },
 };
 
 const CommandRowWidget = struct {
     command: Command,
     selected: bool,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const CommandRowWidget) vxfw.Widget {
         return .{
@@ -603,11 +716,11 @@ const CommandRowWidget = struct {
         const name_style: vaxis.Style = if (self.selected)
             .{ .bold = true, .reverse = true }
         else
-            .{ .fg = .{ .index = 39 }, .bold = true };
+            .{ .fg = self.theme.accent, .bold = true };
         const description_style: vaxis.Style = if (self.selected)
             .{ .dim = true, .reverse = true }
         else
-            .{ .fg = .{ .index = 8 }, .dim = true };
+            .{ .fg = self.theme.dimmed, .dim = true };
 
         const content = vxfw.RichText{
             .text = &.{
@@ -641,6 +754,7 @@ const CommandPaletteWidget = struct {
     commands: []const Command,
     filter: []const u8,
     selected: usize,
+    theme: *const theme_mod.Theme,
 
     fn widget(self: *const CommandPaletteWidget) vxfw.Widget {
         return .{
@@ -668,15 +782,15 @@ const CommandPaletteWidget = struct {
         const height = 4 + list_height;
 
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
-        @memset(surface.buffer, .{ .style = .{ .bg = .{ .index = 0 } } });
-        drawBorder(&surface, .{ .fg = .{ .index = 8 } });
+        @memset(surface.buffer, .{ .style = .{ .bg = self.theme.code_bg } });
+        drawBorder(&surface, .{ .fg = self.theme.border });
 
         var child_list = std.ArrayList(vxfw.SubSurface).empty;
         defer child_list.deinit(ctx.arena);
 
         const title_text = vxfw.Text{
             .text = "Commands (↑↓ navigate, Enter select, Esc close)",
-            .style = .{ .fg = .{ .index = 15 }, .bold = true },
+            .style = .{ .fg = self.theme.header_fg, .bold = true },
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -686,7 +800,7 @@ const CommandPaletteWidget = struct {
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface });
 
-        const input_widget = InputWidget{ .prompt = "Filter: ", .field = self.field };
+        const input_widget = InputWidget{ .prompt = "Filter: ", .field = self.field, .theme = self.theme };
         const input_surface = try input_widget.draw(ctx.withConstraints(
             .{ .width = inner_width, .height = 1 },
             .{ .width = inner_width, .height = 1 },
@@ -696,7 +810,7 @@ const CommandPaletteWidget = struct {
         if (filtered_count == 0) {
             const empty_text = vxfw.Text{
                 .text = "No commands match.",
-                .style = .{ .fg = .{ .index = 8 }, .dim = true },
+                .style = .{ .fg = self.theme.dimmed, .dim = true },
                 .softwrap = false,
                 .width_basis = .parent,
             };
@@ -710,7 +824,7 @@ const CommandPaletteWidget = struct {
             const visible_end = @min(visible_start + list_height, filtered_count);
             for (visible_start..visible_end, 0..) |filtered_index, row_index| {
                 const command = self.commands[filtered_indices[filtered_index]];
-                const row = CommandRowWidget{ .command = command, .selected = filtered_index == self.selected };
+                const row = CommandRowWidget{ .command = command, .selected = filtered_index == self.selected, .theme = self.theme };
                 const row_surface = try row.draw(ctx.withConstraints(
                     .{ .width = inner_width, .height = 1 },
                     .{ .width = inner_width, .height = 1 },
@@ -762,7 +876,7 @@ const PermissionDialogWidget = struct {
 
         const title = vxfw.Text{
             .text = "Tool permission required",
-            .style = .{ .fg = .{ .index = 15 }, .bold = true },
+            .style = .{ .fg = self.model.current_theme.header_fg, .bold = true },
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -775,7 +889,7 @@ const PermissionDialogWidget = struct {
         const tool_line = try std.fmt.allocPrint(ctx.arena, "Allow {s}?", .{pending.tool_name});
         const tool_text = vxfw.Text{
             .text = tool_line,
-            .style = .{ .fg = .{ .index = 11 }, .bold = true },
+            .style = .{ .fg = self.model.current_theme.tool_pending, .bold = true },
             .softwrap = true,
             .width_basis = .parent,
         };
@@ -787,7 +901,7 @@ const PermissionDialogWidget = struct {
 
         const args_text = vxfw.Text{
             .text = pending.arguments,
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.model.current_theme.dimmed, .dim = true },
             .softwrap = true,
             .width_basis = .parent,
         };
@@ -800,7 +914,7 @@ const PermissionDialogWidget = struct {
         const footer_line = "[y] yes   [n] no   [a] always";
         const footer = vxfw.Text{
             .text = footer_line,
-            .style = .{ .fg = .{ .index = 10 }, .bold = true },
+            .style = .{ .fg = self.model.current_theme.tool_success, .bold = true },
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -813,8 +927,8 @@ const PermissionDialogWidget = struct {
 
         const height: u16 = footer_row + 2;
         var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
-        @memset(surface.buffer, .{ .style = .{ .bg = .{ .index = 0 } } });
-        drawBorder(&surface, .{ .fg = .{ .index = 11 } });
+        @memset(surface.buffer, .{ .style = .{ .bg = self.model.current_theme.code_bg } });
+        drawBorder(&surface, .{ .fg = self.model.current_theme.tool_pending });
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
         @memcpy(children, child_list.items);
@@ -991,6 +1105,7 @@ pub const Model = struct {
     permission_condition: std.Thread.Condition,
     permission_decision: ?PermissionDecision,
     status_message: []const u8,
+    current_theme: *const theme_mod.Theme,
     lock: std.Thread.Mutex,
     worker: ?std.Thread,
     request_active: bool,
@@ -1059,6 +1174,7 @@ pub const Model = struct {
             .permission_condition = .{},
             .permission_decision = null,
             .status_message = "",
+            .current_theme = theme_mod.defaultTheme(),
             .lock = .{},
             .worker = null,
             .request_active = false,
@@ -1082,21 +1198,12 @@ pub const Model = struct {
         model.history = try std.ArrayList(core.ChatMessage).initCapacity(allocator, 8);
         model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
         model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
-        model.input.style = .{ .fg = .{ .index = 15 } };
+        model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
-        model.palette_input.style = .{ .fg = .{ .index = 15 } };
         model.palette_input.userdata = model;
         model.palette_input.onChange = onPaletteChange;
         model.palette_input.onSubmit = onPaletteSubmit;
-        model.scroll_bars = .{
-            .scroll_view = model.scroll_view,
-            .draw_horizontal_scrollbar = false,
-            .draw_vertical_scrollbar = true,
-            .vertical_scrollbar_thumb = .{ .char = .{ .grapheme = "▐", .width = 1 }, .style = .{ .fg = .{ .index = 8 }, .dim = true } },
-            .vertical_scrollbar_hover_thumb = .{ .char = .{ .grapheme = "█", .width = 1 }, .style = .{ .fg = .{ .index = 8 } } },
-            .vertical_scrollbar_drag_thumb = .{ .char = .{ .grapheme = "█", .width = 1 }, .style = .{ .fg = .{ .index = 39 } } },
-        };
 
         try model.registry.registerAllProviders();
         try model.buildCodebaseContext();
@@ -1341,6 +1448,19 @@ pub const Model = struct {
         self.status_message = "";
     }
 
+    fn applyThemeStyles(self: *Model) void {
+        self.input.style = .{ .fg = self.current_theme.header_fg };
+        self.palette_input.style = .{ .fg = self.current_theme.header_fg };
+        self.scroll_bars = .{
+            .scroll_view = self.scroll_view,
+            .draw_horizontal_scrollbar = false,
+            .draw_vertical_scrollbar = true,
+            .vertical_scrollbar_thumb = .{ .char = .{ .grapheme = "▐", .width = 1 }, .style = .{ .fg = self.current_theme.dimmed, .dim = true } },
+            .vertical_scrollbar_hover_thumb = .{ .char = .{ .grapheme = "█", .width = 1 }, .style = .{ .fg = self.current_theme.border } },
+            .vertical_scrollbar_drag_thumb = .{ .char = .{ .grapheme = "█", .width = 1 }, .style = .{ .fg = self.current_theme.accent } },
+        };
+    }
+
     fn resolvePendingPermission(self: *Model, decision: PermissionDecision) void {
         self.permission_mutex.lock();
         self.permission_decision = decision;
@@ -1536,7 +1656,7 @@ pub const Model = struct {
                 self.contextPercent(),
             });
 
-        const header = HeaderWidget{ .title = full_title };
+        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme };
         const header_surface = try header.draw(ctx.withConstraints(
             .{ .width = max.width, .height = header_height },
             .{ .width = max.width, .height = header_height },
@@ -1564,7 +1684,7 @@ pub const Model = struct {
                     if (visible_count < visibleMessageCount(self.messages.items)) {
                         const gap = MessageGapWidget{};
                         try message_widgets.append(ctx.arena, gap.widget());
-                        const separator = SeparatorWidget{};
+                        const separator = SeparatorWidget{ .theme = self.current_theme };
                         try message_widgets.append(ctx.arena, separator.widget());
                     }
                 }
@@ -1616,7 +1736,7 @@ pub const Model = struct {
             });
         const status_widget = vxfw.Text{
             .text = status_text,
-            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .style = .{ .fg = self.current_theme.status_fg, .bg = self.current_theme.status_bg, .dim = true },
             .softwrap = false,
             .width_basis = .parent,
         };
@@ -1625,7 +1745,7 @@ pub const Model = struct {
             .{ .width = max.width, .height = status_height },
         ));
 
-        const input_widget = InputWidget{ .prompt = self.currentInputPrompt(), .field = &self.input };
+        const input_widget = InputWidget{ .prompt = self.currentInputPrompt(), .field = &self.input, .theme = self.current_theme };
         const input_surface = try input_widget.draw(ctx.withConstraints(
             .{ .width = max.width, .height = input_height },
             .{ .width = max.width, .height = input_height },
@@ -1644,6 +1764,7 @@ pub const Model = struct {
                 .commands = self.palette_commands,
                 .filter = self.palette_filter,
                 .selected = self.palette_selected,
+                .theme = self.current_theme,
             };
             const palette_surface = try palette.draw(ctx.withConstraints(
                 .{ .width = 0, .height = 0 },
@@ -1675,7 +1796,7 @@ pub const Model = struct {
 
         if (self.recent_files.items.len > 0) {
             const visible_files = recentFilesVisibleCount(self.recent_files.items);
-            const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files] };
+            const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files], .theme = self.current_theme };
             const files_surface = try files_widget.draw(ctx.withConstraints(
                 .{ .width = max.width, .height = 1 },
                 .{ .width = max.width, .height = 1 },
@@ -1708,6 +1829,10 @@ pub const Model = struct {
             self.resolvePendingPermission(.no);
             self.should_quit = true;
             ctx.quit = true;
+            return;
+        }
+        if (isSupportedSlashCommand(trimmed)) {
+            try self.executePaletteCommand(trimmed, ctx);
             return;
         }
 
@@ -1746,7 +1871,7 @@ pub const Model = struct {
     fn resetInputField(self: *Model) void {
         self.input.deinit();
         self.input = vxfw.TextField.init(self.allocator);
-        self.input.style = .{ .fg = .{ .index = 15 } };
+        self.input.style = .{ .fg = self.current_theme.header_fg };
         self.input.userdata = self;
         self.input.onSubmit = onSubmit;
     }
@@ -1859,7 +1984,7 @@ pub const Model = struct {
     fn resetPaletteInputField(self: *Model) void {
         self.palette_input.deinit();
         self.palette_input = vxfw.TextField.init(self.allocator);
-        self.palette_input.style = .{ .fg = .{ .index = 15 } };
+        self.palette_input.style = .{ .fg = self.current_theme.header_fg };
         self.palette_input.userdata = self;
         self.palette_input.onChange = onPaletteChange;
         self.palette_input.onSubmit = onPaletteSubmit;
@@ -1946,6 +2071,11 @@ pub const Model = struct {
         self.lock.lock();
         defer self.lock.unlock();
 
+        if (try self.handleThemeCommandUnlocked(name)) {
+            ctx.redraw = true;
+            return;
+        }
+
         if (std.mem.eql(u8, name, "/clear")) {
             if (self.request_active) {
                 try self.addMessageUnlocked("error", "Cannot clear the chat while a response is still streaming.");
@@ -1960,7 +2090,7 @@ pub const Model = struct {
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.addMessageUnlocked("assistant", "/compact is not yet implemented.");
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -1970,6 +2100,30 @@ pub const Model = struct {
         }
 
         ctx.redraw = true;
+    }
+
+    fn handleThemeCommandUnlocked(self: *Model, name: []const u8) !bool {
+        if (!std.mem.startsWith(u8, name, "/theme")) return false;
+
+        const rest = std.mem.trim(u8, name[6..], " \t\r\n");
+        if (rest.len == 0) {
+            try self.addMessageUnlocked("system", "Available themes: dark, light, mono");
+            return true;
+        }
+
+        if (theme_mod.getTheme(rest)) |theme| {
+            self.current_theme = theme;
+            self.applyThemeStyles();
+            const text = try std.fmt.allocPrint(self.allocator, "Theme switched to {s}.", .{theme.name});
+            defer self.allocator.free(text);
+            try self.addMessageUnlocked("system", text);
+            return true;
+        }
+
+        const text = try std.fmt.allocPrint(self.allocator, "Unknown theme: {s}", .{rest});
+        defer self.allocator.free(text);
+        try self.addMessageUnlocked("system", text);
+        return true;
     }
 
     fn reapWorkerIfDone(self: *Model) void {
@@ -2406,11 +2560,11 @@ fn toolCallStatusIcon(status: ToolCallStatus) []const u8 {
     };
 }
 
-fn toolCallStatusStyle(status: ToolCallStatus) vaxis.Style {
+fn toolCallStatusStyle(theme: *const theme_mod.Theme, status: ToolCallStatus) vaxis.Style {
     return switch (status) {
-        .pending => .{ .fg = .{ .index = 11 }, .bold = true },
-        .success => .{ .fg = .{ .index = 10 }, .bold = true },
-        .failed => .{ .fg = .{ .index = 1 }, .bold = true },
+        .pending => .{ .fg = theme.tool_pending, .bold = true },
+        .success => .{ .fg = theme.tool_success, .bold = true },
+        .failed => .{ .fg = theme.tool_error, .bold = true },
     };
 }
 
@@ -2489,51 +2643,60 @@ fn visibleMessageCount(messages: []const Message) usize {
     return count;
 }
 
-fn messageRoleStyle(role: []const u8) vaxis.Style {
+fn messageRoleStyle(theme: *const theme_mod.Theme, role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "user")) {
-        return .{ .fg = .{ .index = 39 }, .bold = true };
+        return .{ .fg = theme.user_fg, .bold = true };
     }
     if (std.mem.eql(u8, role, "error")) {
-        return .{ .fg = .{ .index = 1 }, .bold = true };
+        return .{ .fg = theme.error_fg, .bold = true };
     }
     if (std.mem.eql(u8, role, "assistant")) {
-        return .{ .fg = .{ .index = 10 }, .bold = true };
+        return .{ .fg = theme.assistant_fg, .bold = true };
     }
     if (std.mem.eql(u8, role, "system")) {
-        return .{ .fg = .{ .index = 11 }, .bold = true };
+        return .{ .fg = theme.tool_pending, .bold = true };
     }
     if (std.mem.eql(u8, role, "tool")) {
-        return .{ .fg = .{ .index = 14 }, .bold = true };
+        return .{ .fg = theme.accent, .bold = true };
     }
-    return .{ .fg = .{ .index = 8 }, .bold = true };
+    return .{ .fg = theme.dimmed, .bold = true };
 }
 
-fn messageBodyStyle(role: []const u8) vaxis.Style {
+fn messageBodyStyle(theme: *const theme_mod.Theme, role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "assistant")) {
-        return .{ .fg = .{ .index = 15 } };
+        return .{ .fg = theme.header_fg };
     }
     if (std.mem.eql(u8, role, "user")) {
-        return .{ .fg = .{ .index = 39 } };
+        return .{ .fg = theme.user_fg };
     }
     if (std.mem.eql(u8, role, "error")) {
-        return .{ .fg = .{ .index = 1 } };
+        return .{ .fg = theme.error_fg };
     }
     if (std.mem.eql(u8, role, "system")) {
-        return .{ .fg = .{ .index = 11 }, .dim = true };
+        return .{ .fg = theme.tool_pending, .dim = true };
     }
     if (std.mem.eql(u8, role, "tool")) {
-        return .{ .fg = .{ .index = 14 }, .dim = true };
+        return .{ .fg = theme.accent, .dim = true };
     }
-    return .{ .fg = .{ .index = 8 }, .dim = true };
+    return .{ .fg = theme.dimmed, .dim = true };
 }
 
-fn messageRoleLabel(role: []const u8) []const u8 {
-    if (std.mem.eql(u8, role, "user")) return "You";
-    if (std.mem.eql(u8, role, "assistant")) return "Assistant";
+fn messageRoleLabel(theme: *const theme_mod.Theme, role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "user")) return theme.user_label;
+    if (std.mem.eql(u8, role, "assistant")) return theme.assistant_label;
     if (std.mem.eql(u8, role, "error")) return "Error";
     if (std.mem.eql(u8, role, "system")) return "System";
     if (std.mem.eql(u8, role, "tool")) return "Tool";
     return role;
+}
+
+fn isSupportedSlashCommand(value: []const u8) bool {
+    return std.mem.eql(u8, value, "/clear") or
+        std.mem.eql(u8, value, "/model") or
+        std.mem.eql(u8, value, "/thinking") or
+        std.mem.eql(u8, value, "/compact") or
+        std.mem.eql(u8, value, "/help") or
+        std.mem.startsWith(u8, value, "/theme");
 }
 
 fn estimateContentHeight(model: *const Model) ?u32 {
@@ -2554,7 +2717,9 @@ fn estimateContentHeight(model: *const Model) ?u32 {
                 const result = findToolResultMessageAfter(messages, idx, tool_call.id);
                 const output = result orelse null;
                 const output_text = if (output) |message_result| message_result.content else if (toolCallStatusForMessage(result) == .pending) "running..." else "";
-                if (output_text.len > 0) {
+                if (isDiffRenderableTool(tool_call.name) and extractToolDiffText(output_text) != null) {
+                    total += @as(u32, @intCast(@min(std.mem.count(u8, output_text, "\n") + 4, tool_diff_max_lines + 4)));
+                } else if (output_text.len > 0) {
                     total += @intCast(@min(std.mem.count(u8, output_text, "\n") + 1, 6));
                 }
             }
@@ -2685,6 +2850,18 @@ fn isRecentFileTool(name: []const u8) bool {
         if (std.mem.eql(u8, candidate, name)) return true;
     }
     return false;
+}
+
+fn isDiffRenderableTool(name: []const u8) bool {
+    return std.mem.eql(u8, name, "write_file") or std.mem.eql(u8, name, "edit");
+}
+
+fn extractToolDiffText(output: []const u8) ?[]const u8 {
+    const trimmed = std.mem.trim(u8, output, " \t\r\n");
+    if (trimmed.len == 0) return null;
+    if (std.mem.startsWith(u8, trimmed, "```diff")) return trimmed;
+    if (std.mem.startsWith(u8, trimmed, "---") or std.mem.startsWith(u8, trimmed, "@@")) return trimmed;
+    return null;
 }
 
 fn extractToolFilePath(arguments: []const u8) ?[]const u8 {

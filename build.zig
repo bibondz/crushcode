@@ -113,9 +113,13 @@ pub fn build(b: *std.Build) !void {
     const skills_mod = createMod(b, "src/commands/builtins.zig", target, optimize, &.{imp("shell", shell_mod)});
     const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
     const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
+    const diff_mod = simpleMod(b, "src/tui/diff.zig", target, optimize);
+    addImports(diff_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
+    const theme_mod = simpleMod(b, "src/tui/theme.zig", target, optimize);
+    addImports(theme_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const tui_mod = simpleMod(b, "src/tui/mod.zig", target, optimize);
     addImports(tui_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
-    addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("usage_pricing", usage_pricing_mod) });
+    addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("diff", diff_mod), imp("usage_pricing", usage_pricing_mod), imp("theme", theme_mod) });
     addImports(chat_mod, &.{imp("tui", tui_mod)});
 
     const install_mod = createMod(b, "src/commands/install.zig", target, optimize, &.{
@@ -188,9 +192,9 @@ pub fn build(b: *std.Build) !void {
 
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
     const permission_evaluate_mod = simpleMod(b, "src/permission/evaluate.zig", target, optimize);
-    const theme_mod = simpleMod(b, "src/theme/mod.zig", target, optimize);
+    const app_theme_mod = simpleMod(b, "src/theme/mod.zig", target, optimize);
     addImports(chat_mod, &.{
-        imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("theme", theme_mod),
+        imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("theme", app_theme_mod),
     });
 
     const usage_tracker_mod = createMod(b, "src/usage/tracker.zig", target, optimize, &.{imp("streaming_types", streaming_types_mod)});
@@ -239,8 +243,8 @@ pub fn build(b: *std.Build) !void {
         imp("experimental_handlers", experimental_handlers_mod),
     });
 
-    const diff_mod = simpleMod(b, "src/diff/visualizer.zig", target, optimize);
-    addImports(system_handlers_mod, &.{imp("diff", diff_mod)});
+    const diff_visualizer_mod = simpleMod(b, "src/diff/visualizer.zig", target, optimize);
+    addImports(system_handlers_mod, &.{imp("diff", diff_visualizer_mod)});
     const custom_commands_mod = simpleMod(b, "src/commands/custom_commands.zig", target, optimize);
 
     const backup_mod = simpleMod(b, "src/config/backup.zig", target, optimize);
@@ -335,18 +339,18 @@ pub fn build(b: *std.Build) !void {
     addImports(chat_mod, &.{ imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod) });
 
     for (&[_]*std.Build.Module{
-        cli_mod,                 env_mod,               http_client_mod,           registry_mod,             ai_types_mod,               tool_types_mod,         tool_loader_mod,           client_mod,            config_mod,
-        provider_config_mod,     toml_mod,              fileops_mod,               pty_plugin_mod,           table_formatter_plugin_mod, notifier_plugin_mod,    shell_strategy_plugin_mod, plugin_mod,            read_mod,
-        chat_tool_executors_mod, chat_helpers_mod,      chat_bridge_mod,           chat_mod,                 plugin_command_mod,         default_commands_mod,   shell_mod,                 write_mod,             git_mod,
-        skills_mod,              tui_mod,               install_mod,               jobs_mod,                 skills_loader_mod,          tools_mod,              diff_mod,                  backup_mod,            streaming_types_mod,
-        streaming_buffer_mod,    streaming_display_mod, ndjson_mod,                sse_mod,                  streaming_session_mod,      core_api_mod,           usage_tracker_mod,         usage_pricing_mod,     usage_budget_mod,
-        usage_report_mod,        hashline_mod,          hash_index_mod,            conflict_mod,             validated_edit_mod,         ast_grep_mod,           lsp_handler_mod,           mcp_handler_mod,       ai_handlers_mod,
-        tool_handlers_mod,       system_handlers_mod,   experimental_handlers_mod, handlers_mod,             main_mod,                   fallback_mod,           parallel_mod,              skill_import_mod,      worktree_mod,
-        lifecycle_hooks_mod,     intent_gate_mod,       graph_types_mod,           graph_parser_mod,         graph_mod,                  agent_loop_mod,         workflow_mod,              compaction_mod,        capability_catalog_mod,
-        intensity_mod,           tiered_loader_mod,     revision_loop_mod,         session_summarizer_mod,   model_hotswap_mod,          adversarial_review_mod, spinner_mod,               markdown_renderer_mod, error_display_mod,
-        convergence_mod,         color_mod,             source_tracker_mod,        knowledge_lint_mod,       slash_commands_mod,         scaffold_mod,           mcp_transport_mod,         mcp_oauth_mod,         mcp_client_mod,
-        mcp_discovery_mod,       mcp_bridge_mod,        auth_mod,                  profile_mod,              connect_mod,                json_output_mod,        permission_evaluate_mod,   theme_mod,             checkpoint_mod,
-        memory_mod,              lsp_mod,               json_extract_mod,          ai_streaming_parsers_mod,
+        cli_mod,                 env_mod,              http_client_mod,       registry_mod,              ai_types_mod,               tool_types_mod,           tool_loader_mod,           client_mod,              config_mod,
+        provider_config_mod,     toml_mod,             fileops_mod,           pty_plugin_mod,            table_formatter_plugin_mod, notifier_plugin_mod,      shell_strategy_plugin_mod, plugin_mod,              read_mod,
+        chat_tool_executors_mod, chat_helpers_mod,     chat_bridge_mod,       chat_mod,                  plugin_command_mod,         default_commands_mod,     shell_mod,                 write_mod,               git_mod,
+        skills_mod,              tui_mod,              install_mod,           jobs_mod,                  skills_loader_mod,          tools_mod,                diff_mod,                  diff_visualizer_mod,     backup_mod,
+        streaming_types_mod,     streaming_buffer_mod, streaming_display_mod, ndjson_mod,                sse_mod,                    streaming_session_mod,    core_api_mod,              usage_tracker_mod,       usage_pricing_mod,
+        usage_budget_mod,        usage_report_mod,     hashline_mod,          hash_index_mod,            conflict_mod,               validated_edit_mod,       ast_grep_mod,              lsp_handler_mod,         mcp_handler_mod,
+        ai_handlers_mod,         tool_handlers_mod,    system_handlers_mod,   experimental_handlers_mod, handlers_mod,               main_mod,                 fallback_mod,              parallel_mod,            skill_import_mod,
+        worktree_mod,            lifecycle_hooks_mod,  intent_gate_mod,       graph_types_mod,           graph_parser_mod,           graph_mod,                agent_loop_mod,            workflow_mod,            compaction_mod,
+        capability_catalog_mod,  intensity_mod,        tiered_loader_mod,     revision_loop_mod,         session_summarizer_mod,     model_hotswap_mod,        adversarial_review_mod,    spinner_mod,             markdown_renderer_mod,
+        error_display_mod,       convergence_mod,      color_mod,             source_tracker_mod,        knowledge_lint_mod,         slash_commands_mod,       scaffold_mod,              mcp_transport_mod,       mcp_oauth_mod,
+        mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
+        theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
