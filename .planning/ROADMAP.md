@@ -142,13 +142,10 @@ Plans:
 - [ ] 11-01-PLAN.md — LSPManager module + TUI sidebar diagnostics integration
 
 ### Phase 12: Multi-Agent Threading
-**ปัญหา**: WorkerItem struct มีแต่ไม่มี real thread spawning
-**ทำ**:
-- std.Thread.spawn() สำหรับ worker threads
-- Thread-safe queue (std.Thread.Mutex + ArrayList) สำหรับ task/result
-- Real AI request ใน background thread → result กลับมา main thread
-- WorkerItem status update จาก thread (pending → running → done/error)
-- ไฟล์: แก้ src/agent/parallel.zig — เพิ่ม real threading
+**Goal:** Replace polling/sleep-based ParallelExecutor with real std.Thread.spawn() worker threads for concurrent multi-agent execution
+**Plans:** 1 plan
+Plans:
+- [ ] 12-01-PLAN.md — Threading infrastructure (CompletionQueue, workerThreadMain, ParallelExecutor rewrite, TUI lifecycle integration)
 
 ### Phase 13: Git Advanced
 **ปัญหา**: git commands ยัง basic (status, diff, add, commit, push, pull, branch, log)
