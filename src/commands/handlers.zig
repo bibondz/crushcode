@@ -215,5 +215,5 @@ pub fn printHelp() !void {
 }
 
 pub fn printVersion() !void {
-    stdout_print("Crushcode v0.1.0\n", .{});
+    stdout_print("Crushcode v0.2.2\n", .{});
 }
