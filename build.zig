@@ -112,6 +112,7 @@ pub fn build(b: *std.Build) !void {
     const git_mod = createMod(b, "src/commands/git.zig", target, optimize, &.{imp("shell", shell_mod)});
     const skills_mod = createMod(b, "src/commands/builtins.zig", target, optimize, &.{imp("shell", shell_mod)});
     const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
+    const session_mod = simpleMod(b, "src/session.zig", target, optimize);
     const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const diff_mod = simpleMod(b, "src/tui/diff.zig", target, optimize);
     addImports(diff_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
@@ -119,7 +120,7 @@ pub fn build(b: *std.Build) !void {
     addImports(theme_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const tui_mod = simpleMod(b, "src/tui/mod.zig", target, optimize);
     addImports(tui_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
-    addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("diff", diff_mod), imp("usage_pricing", usage_pricing_mod), imp("theme", theme_mod) });
+    addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("diff", diff_mod), imp("usage_pricing", usage_pricing_mod), imp("theme", theme_mod), imp("session", session_mod) });
     addImports(chat_mod, &.{imp("tui", tui_mod)});
 
     const install_mod = createMod(b, "src/commands/install.zig", target, optimize, &.{
@@ -159,6 +160,7 @@ pub fn build(b: *std.Build) !void {
         imp("streaming_types", streaming_types_mod),     imp("streaming", streaming_session_mod), imp("streaming_buffer", streaming_buffer_mod),
         imp("streaming_display", streaming_display_mod),
     });
+    addImports(session_mod, &.{imp("core_api", core_api_mod)});
     addImports(chat_mod, &.{
         imp("intensity", intensity_mod),           imp("tiered_loader", tiered_loader_mod),   imp("convergence", convergence_mod),
         imp("color", color_mod),                   imp("source_tracker", source_tracker_mod), imp("knowledge_lint", knowledge_lint_mod),
@@ -350,7 +352,7 @@ pub fn build(b: *std.Build) !void {
         capability_catalog_mod,  intensity_mod,        tiered_loader_mod,     revision_loop_mod,         session_summarizer_mod,     model_hotswap_mod,        adversarial_review_mod,    spinner_mod,             markdown_renderer_mod,
         error_display_mod,       convergence_mod,      color_mod,             source_tracker_mod,        knowledge_lint_mod,         slash_commands_mod,       scaffold_mod,              mcp_transport_mod,       mcp_oauth_mod,
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
-        theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod,
+        theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

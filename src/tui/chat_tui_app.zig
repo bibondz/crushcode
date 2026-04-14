@@ -5,6 +5,7 @@ const config_mod = @import("config");
 const fallback_mod = @import("fallback");
 const graph_mod = @import("graph");
 const registry_mod = @import("registry");
+const session_mod = @import("session");
 const diff = @import("diff");
 const markdown = @import("markdown");
 const theme_mod = @import("theme");
@@ -54,6 +55,7 @@ const ToolCallStatus = enum {
 const recent_files_max = 5;
 const recent_files_display_max = 3;
 const tool_diff_max_lines: usize = 80;
+const session_row_display_max: usize = 8;
 const recent_file_tool_names = [_][]const u8{ "read_file", "write_file", "edit", "glob" };
 const context_source_files = [_][]const u8{
     "build.zig",
@@ -133,6 +135,11 @@ const FallbackProvider = struct {
     api_key: []const u8,
     model_name: []const u8,
     override_url: ?[]const u8,
+};
+
+const InterruptedSessionCandidate = struct {
+    session: session_mod.Session,
+    path: []const u8,
 };
 
 const RoleLabelWidget = struct {
@@ -675,6 +682,8 @@ const Command = struct {
 
 const palette_command_data = [_]Command{
     .{ .name = "/clear", .description = "Clear conversation history", .shortcut = "clr" },
+    .{ .name = "/sessions", .description = "Browse saved sessions", .shortcut = "ss" },
+    .{ .name = "/ls", .description = "Alias for /sessions", .shortcut = "ls" },
     .{ .name = "/exit", .description = "Exit crushcode", .shortcut = "q" },
     .{ .name = "/model", .description = "Show current model", .shortcut = "m" },
     .{ .name = "/thinking", .description = "Toggle thinking mode", .shortcut = "t" },
@@ -740,6 +749,227 @@ const CommandRowWidget = struct {
         const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = content_surface };
 
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
+const SessionListRowWidget = struct {
+    session: *const session_mod.Session,
+    selected: bool,
+    theme: *const theme_mod.Theme,
+
+    fn widget(self: *const SessionListRowWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const SessionListRowWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const SessionListRowWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const width = ctx.max.width orelse ctx.min.width;
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
+        const base_style: vaxis.Style = if (self.selected) .{ .reverse = true } else .{};
+        @memset(surface.buffer, .{ .style = base_style });
+
+        const date_text = try formatSessionTimestamp(ctx.arena, self.session.updated_at);
+        const line = try std.fmt.allocPrint(ctx.arena, "  {s} | {s} | {s} | {d} turns | {d} tokens", .{
+            self.session.id,
+            self.session.title,
+            date_text,
+            self.session.turn_count,
+            self.session.total_tokens,
+        });
+        const line_widget = vxfw.Text{
+            .text = line,
+            .style = if (self.selected)
+                .{ .reverse = true, .bold = true }
+            else
+                .{ .fg = self.theme.header_fg },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const line_surface = try line_widget.draw(ctx.withConstraints(
+            .{ .width = width, .height = 1 },
+            .{ .width = width, .height = 1 },
+        ));
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = line_surface };
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
+const SessionListWidget = struct {
+    sessions: []const session_mod.Session,
+    selected: usize,
+    theme: *const theme_mod.Theme,
+
+    fn widget(self: *const SessionListWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const SessionListWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const SessionListWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        var width: u16 = @min(max.width -| 4, @as(u16, 96));
+        if (width < 40) width = @min(max.width, @as(u16, 40));
+        if (width == 0) width = max.width;
+        const inner_width = width -| 4;
+
+        var list_height: u16 = @intCast(if (self.sessions.len == 0) 1 else @min(self.sessions.len, session_row_display_max));
+        if (list_height == 0) list_height = 1;
+        const height = 4 + list_height;
+
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{ .bg = self.theme.code_bg } });
+        drawBorder(&surface, .{ .fg = self.theme.border });
+
+        var child_list = std.ArrayList(vxfw.SubSurface).empty;
+        defer child_list.deinit(ctx.arena);
+
+        const title_text = vxfw.Text{
+            .text = "Saved sessions (↑↓ navigate, Enter resume, Esc close)",
+            .style = .{ .fg = self.theme.header_fg, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const title_surface = try title_text.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface });
+
+        if (self.sessions.len == 0) {
+            const empty_text = vxfw.Text{
+                .text = "No saved sessions",
+                .style = .{ .fg = self.theme.dimmed, .dim = true },
+                .softwrap = false,
+                .width_basis = .parent,
+            };
+            const empty_surface = try empty_text.draw(ctx.withConstraints(
+                .{ .width = inner_width, .height = 1 },
+                .{ .width = inner_width, .height = 1 },
+            ));
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = empty_surface });
+        } else {
+            const visible_start = if (self.selected >= list_height) self.selected - list_height + 1 else 0;
+            const visible_end = @min(visible_start + list_height, self.sessions.len);
+            for (visible_start..visible_end, 0..) |session_index, row_index| {
+                const row = SessionListRowWidget{ .session = &self.sessions[session_index], .selected = session_index == self.selected, .theme = self.theme };
+                const row_surface = try row.draw(ctx.withConstraints(
+                    .{ .width = inner_width, .height = 1 },
+                    .{ .width = inner_width, .height = 1 },
+                ));
+                try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(3 + row_index), .col = 2 }, .surface = row_surface });
+            }
+        }
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
+        @memcpy(children, child_list.items);
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
+const ResumePromptWidget = struct {
+    session: *const session_mod.Session,
+    theme: *const theme_mod.Theme,
+
+    fn widget(self: *const ResumePromptWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const ResumePromptWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const ResumePromptWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        var width: u16 = @min(max.width -| 4, @as(u16, 72));
+        if (width < 36) width = @min(max.width, @as(u16, 36));
+        if (width == 0) width = max.width;
+        const inner_width = width -| 4;
+
+        const date_text = try formatSessionTimestamp(ctx.arena, self.session.updated_at);
+        const info_line = try std.fmt.allocPrint(ctx.arena, "{s} | {s} | {s}", .{ self.session.id, self.session.title, date_text });
+
+        var child_list = std.ArrayList(vxfw.SubSurface).empty;
+        defer child_list.deinit(ctx.arena);
+
+        const title = vxfw.Text{
+            .text = "Resume interrupted session? [y/n]",
+            .style = .{ .fg = self.theme.header_fg, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const title_surface = try title.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface });
+
+        const info = vxfw.Text{
+            .text = info_line,
+            .style = .{ .fg = self.theme.dimmed, .dim = true },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const info_surface = try info.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 0 },
+            .{ .width = inner_width, .height = null },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = info_surface });
+
+        const footer = vxfw.Text{
+            .text = "y = resume, n = discard",
+            .style = .{ .fg = self.theme.tool_success, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const footer_row: u16 = @intCast(4 + info_surface.size.height);
+        const footer_surface = try footer.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = footer_row, .col = 2 }, .surface = footer_surface });
+
+        const height: u16 = footer_row + 2;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{ .bg = self.theme.code_bg } });
+        drawBorder(&surface, .{ .fg = self.theme.tool_pending });
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
+        @memcpy(children, child_list.items);
         return .{
             .size = surface.size,
             .widget = self.widget(),
@@ -1122,6 +1352,14 @@ pub const Model = struct {
     setup_provider_index: usize,
     setup_feedback: []const u8,
     setup_feedback_is_error: bool,
+    session_dir: []const u8,
+    current_session: ?session_mod.Session,
+    session_path: []const u8,
+    show_session_list: bool,
+    session_list: []session_mod.Session,
+    session_list_selected: usize,
+    resume_prompt_session: ?session_mod.Session,
+    resume_prompt_path: ?[]const u8,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -1191,6 +1429,14 @@ pub const Model = struct {
             .setup_provider_index = setupProviderIndex(options.provider_name),
             .setup_feedback = "",
             .setup_feedback_is_error = false,
+            .session_dir = try session_mod.defaultSessionDir(allocator),
+            .current_session = null,
+            .session_path = "",
+            .show_session_list = false,
+            .session_list = &.{},
+            .session_list_selected = 0,
+            .resume_prompt_session = null,
+            .resume_prompt_path = null,
         };
         errdefer model.destroy();
 
@@ -1208,6 +1454,8 @@ pub const Model = struct {
         try model.registry.registerAllProviders();
         try model.buildCodebaseContext();
         try model.loadFallbackProviders();
+        try std.fs.cwd().makePath(model.session_dir);
+        try model.prepareStartupSessionState();
         if (model.setup_phase != 0) {
             const selected_provider = setup_provider_data[model.setup_provider_index];
             if (model.provider_name.len == 0) {
@@ -1257,6 +1505,12 @@ pub const Model = struct {
         if (self.override_url) |override_url| self.allocator.free(override_url);
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         if (self.setup_feedback.len > 0) self.allocator.free(self.setup_feedback);
+        if (self.current_session) |*session| session_mod.deinitSession(self.allocator, session);
+        self.clearSessionListOwned();
+        if (self.resume_prompt_session) |*session| session_mod.deinitSession(self.allocator, session);
+        if (self.resume_prompt_path) |path| self.allocator.free(path);
+        if (self.session_path.len > 0) self.allocator.free(self.session_path);
+        self.allocator.free(self.session_dir);
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
         self.allocator.free(self.api_key);
@@ -1267,6 +1521,351 @@ pub const Model = struct {
 
     pub fn run(self: *Model) !void {
         try self.app.run(self.widget(), .{ .framerate = 30 });
+    }
+
+    fn prepareStartupSessionState(self: *Model) !void {
+        const interrupted = try self.findInterruptedSessionCandidate();
+        errdefer if (interrupted) |candidate| {
+            var session = candidate.session;
+            session_mod.deinitSession(self.allocator, &session);
+            self.allocator.free(candidate.path);
+        };
+
+        try self.beginNewSessionUnlocked();
+        if (interrupted) |candidate| {
+            self.resume_prompt_session = candidate.session;
+            self.resume_prompt_path = candidate.path;
+        }
+    }
+
+    fn beginNewSessionUnlocked(self: *Model) !void {
+        const now = std.time.timestamp();
+        var session = session_mod.Session{
+            .id = try session_mod.generateSessionId(self.allocator),
+            .created_at = now,
+            .updated_at = now,
+            .title = try self.allocator.dupe(u8, "New session"),
+            .messages = try self.allocator.alloc(session_mod.Message, 0),
+            .model = try self.allocator.dupe(u8, self.model_name),
+            .provider = try self.allocator.dupe(u8, self.provider_name),
+            .total_tokens = 0,
+            .total_cost = 0,
+            .turn_count = 0,
+            .duration_seconds = 0,
+        };
+        errdefer session_mod.deinitSession(self.allocator, &session);
+
+        const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session.id);
+        errdefer self.allocator.free(path);
+
+        try session_mod.saveSession(self.allocator, self.session_dir, &session);
+
+        if (self.current_session) |*existing| session_mod.deinitSession(self.allocator, existing);
+        self.current_session = session;
+        if (self.session_path.len > 0) self.allocator.free(self.session_path);
+        self.session_path = path;
+        self.session_start = std.time.nanoTimestamp();
+    }
+
+    fn findInterruptedSessionCandidate(self: *Model) !?InterruptedSessionCandidate {
+        const sessions = try session_mod.listSessions(self.allocator, self.session_dir);
+        defer self.allocator.free(sessions);
+
+        const now = std.time.timestamp();
+        for (sessions, 0..) |session, index| {
+            if (session.updated_at + 300 >= now) continue;
+            if (!session_mod.isInterrupted(&session)) continue;
+
+            const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session.id);
+            for (sessions, 0..) |*other, other_index| {
+                if (other_index == index) continue;
+                session_mod.deinitSession(self.allocator, other);
+            }
+            return .{ .session = session, .path = path };
+        }
+
+        for (sessions) |*session| session_mod.deinitSession(self.allocator, session);
+        return null;
+    }
+
+    fn clearRecentFilesUnlocked(self: *Model) void {
+        for (self.recent_files.items) |file| self.allocator.free(file);
+        self.recent_files.clearRetainingCapacity();
+    }
+
+    fn clearSessionListOwned(self: *Model) void {
+        if (self.session_list.len == 0) {
+            self.session_list = &.{};
+            self.session_list_selected = 0;
+            self.show_session_list = false;
+            return;
+        }
+        for (self.session_list) |*session| session_mod.deinitSession(self.allocator, session);
+        self.allocator.free(self.session_list);
+        self.session_list = &.{};
+        self.session_list_selected = 0;
+        self.show_session_list = false;
+    }
+
+    fn clearResumePromptOwned(self: *Model) void {
+        if (self.resume_prompt_session) |*session| {
+            session_mod.deinitSession(self.allocator, session);
+            self.resume_prompt_session = null;
+        }
+        if (self.resume_prompt_path) |path| {
+            self.allocator.free(path);
+            self.resume_prompt_path = null;
+        }
+    }
+
+    fn saveSessionSnapshotUnlocked(self: *Model) !void {
+        const current = self.current_session orelse return;
+        var snapshot = session_mod.Session{
+            .id = try self.allocator.dupe(u8, current.id),
+            .created_at = current.created_at,
+            .updated_at = std.time.timestamp(),
+            .title = try self.allocator.dupe(u8, current.title),
+            .messages = try self.buildSessionMessagesUnlocked(),
+            .model = try self.allocator.dupe(u8, self.model_name),
+            .provider = try self.allocator.dupe(u8, self.provider_name),
+            .total_tokens = self.total_input_tokens + self.total_output_tokens,
+            .total_cost = self.estimatedCostUsd(),
+            .turn_count = self.request_count,
+            .duration_seconds = @intCast(@min(self.sessionElapsedSeconds(), std.math.maxInt(u32))),
+        };
+        errdefer session_mod.deinitSession(self.allocator, &snapshot);
+
+        try session_mod.saveSession(self.allocator, self.session_dir, &snapshot);
+        if (self.current_session) |*existing| session_mod.deinitSession(self.allocator, existing);
+        self.current_session = snapshot;
+    }
+
+    fn buildSessionMessagesUnlocked(self: *Model) ![]session_mod.Message {
+        const copied = try self.allocator.alloc(session_mod.Message, self.messages.items.len);
+        errdefer self.allocator.free(copied);
+
+        for (self.messages.items, 0..) |message, index| {
+            copied[index] = .{
+                .role = try self.allocator.dupe(u8, message.role),
+                .content = try self.allocator.dupe(u8, message.content),
+                .tool_call_id = if (message.tool_call_id) |tool_call_id| try self.allocator.dupe(u8, tool_call_id) else null,
+                .tool_calls = try cloneToolCallInfos(self.allocator, message.tool_calls),
+            };
+        }
+        return copied;
+    }
+
+    fn restoreSessionUnlocked(self: *Model, session: session_mod.Session, path: []const u8) !void {
+        var owned_session = session;
+        errdefer session_mod.deinitSession(self.allocator, &owned_session);
+
+        self.clearMessagesUnlocked();
+        self.clearHistoryUnlocked();
+        self.clearRecentFilesUnlocked();
+        self.assistant_stream_index = null;
+        self.awaiting_first_token = false;
+        self.request_active = false;
+        self.request_done = false;
+
+        for (owned_session.messages) |message| {
+            try self.messages.append(self.allocator, .{
+                .role = try self.allocator.dupe(u8, message.role),
+                .content = if (message.content) |content| try self.allocator.dupe(u8, content) else try self.allocator.dupe(u8, ""),
+                .tool_call_id = if (message.tool_call_id) |tool_call_id| try self.allocator.dupe(u8, tool_call_id) else null,
+                .tool_calls = try cloneToolCallInfos(self.allocator, message.tool_calls),
+            });
+            try self.history.append(self.allocator, .{
+                .role = try self.allocator.dupe(u8, message.role),
+                .content = if (message.content) |content| try self.allocator.dupe(u8, content) else null,
+                .tool_call_id = if (message.tool_call_id) |tool_call_id| try self.allocator.dupe(u8, tool_call_id) else null,
+                .tool_calls = try cloneToolCallInfos(self.allocator, message.tool_calls),
+            });
+            if (message.tool_calls) |tool_calls| {
+                try self.trackToolCallFilesUnlocked(tool_calls);
+            }
+        }
+
+        try self.replaceOwnedString(&self.provider_name, owned_session.provider);
+        try self.replaceOwnedString(&self.model_name, owned_session.model);
+        self.resetFallbackProviders();
+        try self.loadFallbackProviders();
+        try self.refreshClientForSessionResumeUnlocked();
+
+        self.total_input_tokens = owned_session.total_tokens;
+        self.total_output_tokens = 0;
+        self.request_count = owned_session.turn_count;
+        self.session_start = std.time.nanoTimestamp() - (@as(i128, owned_session.duration_seconds) * std.time.ns_per_s);
+
+        if (self.current_session) |*existing| session_mod.deinitSession(self.allocator, existing);
+        self.current_session = owned_session;
+        if (self.session_path.len > 0) self.allocator.free(self.session_path);
+        self.session_path = try self.allocator.dupe(u8, path);
+
+        const status = try std.fmt.allocPrint(self.allocator, "Resumed session {s}", .{owned_session.id});
+        defer self.allocator.free(status);
+        try self.setStatusMessageUnlocked(status);
+    }
+
+    fn refreshClientForSessionResumeUnlocked(self: *Model) !void {
+        var config = config_mod.Config.init(self.allocator);
+        defer config.deinit();
+
+        config.loadDefault() catch |err| switch (err) {
+            error.ConfigNotFound, error.FileNotFound => {},
+            else => return err,
+        };
+
+        if (config.getApiKey(self.provider_name)) |api_key| {
+            try self.replaceOwnedString(&self.api_key, api_key);
+        } else if (setupProviderAllowsEmptyKey(self.provider_name)) {
+            try self.replaceOwnedString(&self.api_key, "");
+        }
+
+        if (self.override_url) |override_url| {
+            self.allocator.free(override_url);
+            self.override_url = null;
+        }
+        if (config.getProviderOverrideUrl(self.provider_name)) |override_url| {
+            self.override_url = try self.allocator.dupe(u8, override_url);
+        }
+
+        if (self.client) |*existing_client| {
+            existing_client.deinit();
+            self.client = null;
+        }
+
+        const provider = self.registry.getProvider(self.provider_name) orelse {
+            try self.setStatusMessageUnlocked("Resumed session provider is not registered.");
+            return;
+        };
+        if (self.api_key.len == 0 and !provider.config.is_local) {
+            try self.setStatusMessageUnlocked("Missing API key for resumed session provider.");
+            return;
+        }
+
+        var client = try core.AIClient.init(self.allocator, provider, self.model_name, self.api_key);
+        client.max_tokens = self.max_tokens;
+        client.temperature = self.temperature;
+        client.setTools(&builtin_tool_schemas);
+        if (self.override_url) |value| {
+            self.allocator.free(client.provider.config.base_url);
+            client.provider.config.base_url = try self.allocator.dupe(u8, value);
+        }
+        try self.refreshEffectiveSystemPrompt();
+        if (self.effective_system_prompt) |system_prompt| {
+            client.setSystemPrompt(system_prompt);
+        }
+        self.client = client;
+    }
+
+    fn openSessionList(self: *Model, ctx: *vxfw.EventContext) !void {
+        self.clearSessionListOwned();
+        const loaded = try session_mod.listSessions(self.allocator, self.session_dir);
+        if (loaded.len == 0) {
+            self.allocator.free(loaded);
+            self.session_list = &.{};
+        } else {
+            self.session_list = loaded;
+        }
+        self.show_session_list = true;
+        self.session_list_selected = 0;
+        try ctx.requestFocus(self.input.widget());
+        ctx.redraw = true;
+    }
+
+    fn closeSessionList(self: *Model, ctx: *vxfw.EventContext) !void {
+        self.clearSessionListOwned();
+        try ctx.requestFocus(self.input.widget());
+        ctx.redraw = true;
+    }
+
+    fn moveSessionListSelection(self: *Model, delta: isize) void {
+        if (self.session_list.len == 0) {
+            self.session_list_selected = 0;
+            return;
+        }
+        const current: isize = @intCast(self.session_list_selected);
+        const max_index: isize = @intCast(self.session_list.len - 1);
+        const next = std.math.clamp(current + delta, 0, max_index);
+        self.session_list_selected = @intCast(next);
+    }
+
+    fn executeSessionSelection(self: *Model, ctx: *vxfw.EventContext) !void {
+        if (self.session_list.len == 0) {
+            try self.closeSessionList(ctx);
+            return;
+        }
+
+        const session_id = try self.allocator.dupe(u8, self.session_list[self.session_list_selected].id);
+        defer self.allocator.free(session_id);
+        try self.closeSessionList(ctx);
+        try self.resumeSessionByIdUnlocked(session_id);
+        ctx.redraw = true;
+    }
+
+    fn resumeSessionByIdUnlocked(self: *Model, session_id: []const u8) !void {
+        if (self.request_active) {
+            try self.addMessageUnlocked("error", "Cannot resume a session while a response is still streaming.");
+            return;
+        }
+
+        try self.saveSessionSnapshotUnlocked();
+
+        const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session_id);
+        defer self.allocator.free(path);
+        const loaded = try session_mod.loadSession(self.allocator, path);
+        try self.restoreSessionUnlocked(loaded, path);
+    }
+
+    fn deleteSessionByIdUnlocked(self: *Model, session_id: []const u8) !void {
+        const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session_id);
+        defer self.allocator.free(path);
+
+        const deleting_current = if (self.current_session) |session|
+            std.mem.eql(u8, session.id, session_id)
+        else
+            false;
+
+        try session_mod.deleteSession(self.allocator, path);
+        if (deleting_current) {
+            self.clearMessagesUnlocked();
+            self.clearHistoryUnlocked();
+            self.clearRecentFilesUnlocked();
+            self.total_input_tokens = 0;
+            self.total_output_tokens = 0;
+            self.request_count = 0;
+            self.assistant_stream_index = null;
+            self.awaiting_first_token = false;
+            try self.beginNewSessionUnlocked();
+        }
+    }
+
+    fn handleResumePromptDecision(self: *Model, should_resume: bool) !void {
+        if (!should_resume) {
+            if (self.resume_prompt_path) |path| {
+                session_mod.deleteSession(self.allocator, path) catch {};
+            }
+            self.clearResumePromptOwned();
+            return;
+        }
+
+        const prompt_session = self.resume_prompt_session orelse return;
+        const prompt_path = self.resume_prompt_path orelse return;
+
+        if (self.session_path.len > 0) {
+            session_mod.deleteSession(self.allocator, self.session_path) catch {};
+            self.allocator.free(self.session_path);
+            self.session_path = "";
+        }
+        if (self.current_session) |*existing| {
+            session_mod.deinitSession(self.allocator, existing);
+            self.current_session = null;
+        }
+
+        self.resume_prompt_session = null;
+        self.resume_prompt_path = null;
+        try self.restoreSessionUnlocked(prompt_session, prompt_path);
+        self.allocator.free(prompt_path);
     }
 
     fn initializeClient(self: *Model) !void {
@@ -1550,6 +2149,17 @@ pub const Model = struct {
                 try ctx.requestFocus(if (self.show_palette) self.palette_input.widget() else self.input.widget());
             },
             .key_press => |key| {
+                if (self.resume_prompt_session != null) {
+                    if (key.matches('y', .{}) or key.matches('Y', .{})) {
+                        try self.handleResumePromptDecision(true);
+                    } else if (key.matches('n', .{}) or key.matches('N', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                        try self.handleResumePromptDecision(false);
+                    }
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
                 if (self.pending_permission != null) {
                     if (key.matches('y', .{}) or key.matches('Y', .{})) {
                         self.resolvePendingPermission(.yes);
@@ -1570,6 +2180,21 @@ pub const Model = struct {
                         return;
                     }
                     ctx.consumeEvent();
+                    return;
+                }
+
+                if (self.show_session_list) {
+                    if (key.matches(vaxis.Key.escape, .{})) {
+                        try self.closeSessionList(ctx);
+                    } else if (key.matches(vaxis.Key.up, .{})) {
+                        self.moveSessionListSelection(-1);
+                    } else if (key.matches(vaxis.Key.down, .{})) {
+                        self.moveSessionListSelection(1);
+                    } else if (key.matches(vaxis.Key.enter, .{})) {
+                        try self.executeSessionSelection(ctx);
+                    }
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
                     return;
                 }
 
@@ -1794,6 +2419,40 @@ pub const Model = struct {
             });
         }
 
+        if (self.show_session_list) {
+            const session_list = SessionListWidget{
+                .sessions = self.session_list,
+                .selected = self.session_list_selected,
+                .theme = self.current_theme,
+            };
+            const session_surface = try session_list.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = max.width, .height = max.height },
+            ));
+            try child_list.append(ctx.arena, .{
+                .origin = .{
+                    .row = @intCast((max.height -| session_surface.size.height) / 2),
+                    .col = @intCast((max.width -| session_surface.size.width) / 2),
+                },
+                .surface = session_surface,
+            });
+        }
+
+        if (self.resume_prompt_session) |*prompt_session| {
+            const prompt = ResumePromptWidget{ .session = prompt_session, .theme = self.current_theme };
+            const prompt_surface = try prompt.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = max.width, .height = max.height },
+            ));
+            try child_list.append(ctx.arena, .{
+                .origin = .{
+                    .row = @intCast((max.height -| prompt_surface.size.height) / 2),
+                    .col = @intCast((max.width -| prompt_surface.size.width) / 2),
+                },
+                .surface = prompt_surface,
+            });
+        }
+
         if (self.recent_files.items.len > 0) {
             const visible_files = recentFilesVisibleCount(self.recent_files.items);
             const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files], .theme = self.current_theme };
@@ -1862,6 +2521,7 @@ pub const Model = struct {
         self.request_active = true;
         self.request_done = false;
         self.awaiting_first_token = true;
+        try self.saveSessionSnapshotUnlocked();
 
         self.resetInputField();
         self.worker = try std.Thread.spawn(.{}, requestThreadMain, .{self});
@@ -2080,17 +2740,43 @@ pub const Model = struct {
             if (self.request_active) {
                 try self.addMessageUnlocked("error", "Cannot clear the chat while a response is still streaming.");
             } else {
+                try self.saveSessionSnapshotUnlocked();
                 self.clearMessagesUnlocked();
                 self.clearHistoryUnlocked();
+                self.clearRecentFilesUnlocked();
+                self.total_input_tokens = 0;
+                self.total_output_tokens = 0;
+                self.request_count = 0;
                 self.assistant_stream_index = null;
                 self.awaiting_first_token = false;
+                try self.beginNewSessionUnlocked();
+            }
+        } else if (std.mem.eql(u8, name, "/sessions") or std.mem.eql(u8, name, "/ls")) {
+            try self.openSessionList(ctx);
+            return;
+        } else if (std.mem.startsWith(u8, name, "/resume")) {
+            const session_id = std.mem.trim(u8, name[7..], " \t\r\n");
+            if (session_id.len == 0) {
+                try self.addMessageUnlocked("assistant", "Usage: /resume <id>");
+            } else {
+                try self.resumeSessionByIdUnlocked(session_id);
+            }
+        } else if (std.mem.startsWith(u8, name, "/delete")) {
+            const session_id = std.mem.trim(u8, name[7..], " \t\r\n");
+            if (session_id.len == 0) {
+                try self.addMessageUnlocked("assistant", "Usage: /delete <id>");
+            } else {
+                try self.deleteSessionByIdUnlocked(session_id);
+                const text = try std.fmt.allocPrint(self.allocator, "Deleted session {s}", .{session_id});
+                defer self.allocator.free(text);
+                try self.addMessageUnlocked("assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/thinking")) {
             self.thinking = !self.thinking;
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.addMessageUnlocked("assistant", "/compact is not yet implemented.");
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -2351,6 +3037,7 @@ pub const Model = struct {
         }
 
         try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
+        try self.saveSessionSnapshotUnlocked();
     }
 
     fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallInfo) !void {
@@ -2367,6 +3054,7 @@ pub const Model = struct {
             errdefer self.lock.unlock();
             try self.addMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
             try self.appendHistoryMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
+            try self.saveSessionSnapshotUnlocked();
             self.lock.unlock();
         }
     }
@@ -2377,6 +3065,7 @@ pub const Model = struct {
         try self.addMessageUnlocked("assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
         self.awaiting_first_token = true;
+        try self.saveSessionSnapshotUnlocked();
     }
 
     fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64) void {
@@ -2387,6 +3076,7 @@ pub const Model = struct {
         self.request_count += 1;
         self.request_active = false;
         self.request_done = true;
+        self.saveSessionSnapshotUnlocked() catch {};
     }
 
     fn finishRequestWithCaughtError(self: *Model, err: anyerror) void {
@@ -2424,6 +3114,7 @@ pub const Model = struct {
 
         self.request_active = false;
         self.request_done = true;
+        self.saveSessionSnapshotUnlocked() catch {};
     }
 
     fn handleStreamToken(self: *Model, token: []const u8, done: bool) void {
@@ -2692,10 +3383,14 @@ fn messageRoleLabel(theme: *const theme_mod.Theme, role: []const u8) []const u8 
 
 fn isSupportedSlashCommand(value: []const u8) bool {
     return std.mem.eql(u8, value, "/clear") or
+        std.mem.eql(u8, value, "/sessions") or
+        std.mem.eql(u8, value, "/ls") or
         std.mem.eql(u8, value, "/model") or
         std.mem.eql(u8, value, "/thinking") or
         std.mem.eql(u8, value, "/compact") or
         std.mem.eql(u8, value, "/help") or
+        std.mem.startsWith(u8, value, "/resume") or
+        std.mem.startsWith(u8, value, "/delete") or
         std.mem.startsWith(u8, value, "/theme");
 }
 
@@ -2755,6 +3450,16 @@ fn drawBorder(surface: *vxfw.Surface, style: vaxis.Style) void {
             surface.writeCell(width - 1, @intCast(row), vertical);
         }
     }
+}
+
+fn formatSessionTimestamp(allocator: std.mem.Allocator, timestamp: i64) ![]u8 {
+    const seconds: u64 = @intCast(@max(timestamp, 0));
+    const day_seconds: u64 = 24 * 60 * 60;
+    const days = @divFloor(seconds, day_seconds);
+    const remainder = @mod(seconds, day_seconds);
+    const hours = @divFloor(remainder, 60 * 60);
+    const minutes = @divFloor(@mod(remainder, 60 * 60), 60);
+    return std.fmt.allocPrint(allocator, "day {d} {d:0>2}:{d:0>2}", .{ days, hours, minutes });
 }
 
 fn collectFilteredCommandIndices(commands: []const Command, filter: []const u8, out: []usize) usize {

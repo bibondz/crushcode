@@ -44,5 +44,6 @@ pub const AnimationManager = @import("animate.zig").AnimationManager;
 pub const TUIApp = @import("app.zig").TUIApp;
 pub const runTUI = @import("app.zig").runTUI;
 pub const runTUIWithClient = @import("app.zig").runTUIWithClient;
+pub const session = @import("session");
 pub const chat_tui = @import("chat_tui.zig");
 pub const chat_tui_app = @import("chat_tui_app.zig");
