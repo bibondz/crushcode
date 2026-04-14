@@ -127,6 +127,7 @@ v0.4.0 Phase 8 → Phase 9 → Phase 10
 ## v0.5.0 — Full Parity
 
 ### Phase 11: LSP Deep Integration
+**Goal:** LSP diagnostics integrated into TUI sidebar with auto-detection
 **ปัญหา**: LSP client มีแต่ CLI ไม่ได้เชื่อม TUI
 **ทำ**:
 - Initialize LSP client ใน chat_tui_app.zig เมื่อเปิดไฟล์
@@ -135,6 +136,10 @@ v0.4.0 Phase 8 → Phase 9 → Phase 10
 - Real-time diagnostics update
 - Auto-detect LSP server จาก file extension (zls, rust-analyzer, gopls, etc.)
 - ไฟล์: แก้ chat_tui_app.zig + SidebarWidget — เพิ่ม LSP diagnostics section
+
+**Plans:** 1 plan
+Plans:
+- [ ] 11-01-PLAN.md — LSPManager module + TUI sidebar diagnostics integration
 
 ### Phase 12: Multi-Agent Threading
 **ปัญหา**: WorkerItem struct มีแต่ไม่มี real thread spawning
