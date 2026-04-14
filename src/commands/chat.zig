@@ -2,6 +2,8 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
+const chat_helpers = @import("chat_helpers");
+const chat_bridge = @import("chat_bridge");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -94,323 +96,15 @@ fn registerCoreChatHooks(hooks: *LifecycleHooks) !void {
     try hooks.register("chat_post_request", .core, .post_request, postRequestHook, 20);
 }
 
-fn clampUsizeToU32(value: usize) u32 {
-    if (value > std.math.maxInt(u32)) {
-        return std.math.maxInt(u32);
-    }
-    return @as(u32, @intCast(value));
-}
-
-fn clampU64ToU32(value: u64) u32 {
-    if (value > std.math.maxInt(u32)) {
-        return std.math.maxInt(u32);
-    }
-    return @as(u32, @intCast(value));
-}
-
-fn freeLastMessage(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator) void {
-    const removed = messages.pop().?;
-    freeChatMessage(removed, allocator);
-}
-
-fn freeToolCallInfos(tool_calls: ?[]const ai_types.ToolCallInfo, allocator: std.mem.Allocator) void {
-    if (tool_calls) |calls| {
-        for (calls) |tool_call| {
-            allocator.free(tool_call.id);
-            allocator.free(tool_call.name);
-            allocator.free(tool_call.arguments);
-        }
-        allocator.free(calls);
-    }
-}
-
-fn freeChatMessage(message: core.ChatMessage, allocator: std.mem.Allocator) void {
-    allocator.free(message.role);
-    if (message.content) |content| {
-        allocator.free(content);
-    }
-    if (message.tool_call_id) |tool_call_id| {
-        allocator.free(tool_call_id);
-    }
-    freeToolCallInfos(message.tool_calls, allocator);
-}
-
-fn rollbackMessagesTo(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, target_len: usize) void {
-    while (messages.items.len > target_len) {
-        freeLastMessage(messages, allocator);
-    }
-}
-
-fn clearInteractiveHistory(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, total_input_tokens: *u64, total_output_tokens: *u64, request_count: *u32) void {
-    for (messages.items) |msg| {
-        freeChatMessage(msg, allocator);
-    }
-    messages.clearRetainingCapacity();
-    total_input_tokens.* = 0;
-    total_output_tokens.* = 0;
-    request_count.* = 0;
-}
-
-fn printInteractiveSessionSummary(messages: []const core.ChatMessage, allocator: std.mem.Allocator, total_input_tokens: u64, total_output_tokens: u64) void {
-    var summarizer = SessionSummarizer.init(allocator, 100);
-    defer summarizer.deinit();
-
-    for (messages) |msg| {
-        const role: summarizer_mod.SessionEntry.Role = if (std.mem.eql(u8, msg.role, "user"))
-            .user
-        else if (std.mem.eql(u8, msg.role, "assistant"))
-            .assistant
-        else if (std.mem.eql(u8, msg.role, "system"))
-            .system
-        else
-            .tool;
-        summarizer.addEntry(role, msg.content orelse "", null) catch {};
-    }
-
-    if (summarizer.getEntries().len == 0) {
-        return;
-    }
-
-    var summary = summarizer.summarize() catch return;
-    defer summary.deinit();
-
-    const total_tokens = if (summary.total_tokens > 0)
-        summary.total_tokens
-    else
-        total_input_tokens + total_output_tokens;
-
-    out("\n--- Session Summary ---\n", .{});
-    out("  Messages: {d} user, {d} assistant, {d} tool calls\n", .{ summary.user_messages, summary.assistant_messages, summary.tool_calls });
-    out("  Tokens: {d} total\n", .{total_tokens});
-    out("  Duration: {d}s\n", .{summary.duration_seconds});
-}
-
-fn duplicateToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const ai_types.ToolCallInfo) !?[]const ai_types.ToolCallInfo {
-    const source = tool_calls orelse return null;
-    const copied = try allocator.alloc(ai_types.ToolCallInfo, source.len);
-    for (source, 0..) |tool_call, i| {
-        copied[i] = .{
-            .id = try allocator.dupe(u8, tool_call.id),
-            .name = try allocator.dupe(u8, tool_call.name),
-            .arguments = try allocator.dupe(u8, tool_call.arguments),
-        };
-    }
-    return copied;
-}
-
-fn appendResponseMessage(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, message: core.ChatMessage) !void {
-    try messages.append(.{
-        .role = try allocator.dupe(u8, message.role),
-        .content = if (message.content) |content| try allocator.dupe(u8, content) else null,
-        .tool_call_id = if (message.tool_call_id) |tool_call_id| try allocator.dupe(u8, tool_call_id) else null,
-        .tool_calls = try duplicateToolCallInfos(allocator, message.tool_calls),
-    });
-}
-
-const InteractiveBridgeContext = struct {
-    allocator: std.mem.Allocator,
-    client: *core.AIClient,
-    messages: *array_list_compat.ArrayList(core.ChatMessage),
-    hooks: *LifecycleHooks,
-    provider_name: []const u8,
-    model_name: []const u8,
-    turn_start_len: usize,
-    synced_loop_messages: usize,
-    turn_request_count: u32,
-    turn_failed: bool,
-    total_input_tokens: *u64,
-    total_output_tokens: *u64,
-    request_count: *u32,
-    /// Per-request arena — reset after each AI response.
-    /// Eliminates per-token/per-JSON-parse individual allocations.
-    /// Tokens accumulate in the arena; whole arena freed on reset.
-    request_arena: std.heap.ArenaAllocator,
-    json_out: json_output_mod.JsonOutput,
-};
-
-threadlocal var active_bridge_context: ?*InteractiveBridgeContext = null;
-threadlocal var active_streaming_enabled: bool = false;
-
-fn elapsedMillis(start_ms: i64) u64 {
-    const end_ms = std.time.milliTimestamp();
-    if (end_ms <= start_ms) {
-        return 0;
-    }
-    return @as(u64, @intCast(end_ms - start_ms));
-}
-
-fn appendLoopHistoryMessage(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, loop_message: LoopMessage) !void {
-    try messages.append(.{
-        .role = try allocator.dupe(u8, loop_message.role),
-        .content = if (loop_message.content.len > 0) try allocator.dupe(u8, loop_message.content) else null,
-        .tool_call_id = if (loop_message.tool_call_id) |tool_call_id| try allocator.dupe(u8, tool_call_id) else null,
-        .tool_calls = null,
-    });
-}
-
-fn syncLoopMessagesToOuterHistory(ctx: *InteractiveBridgeContext, loop_messages: []const LoopMessage) !void {
-    while (ctx.synced_loop_messages < loop_messages.len) : (ctx.synced_loop_messages += 1) {
-        const loop_message = loop_messages[ctx.synced_loop_messages];
-        if (std.mem.eql(u8, loop_message.role, "assistant")) {
-            continue;
-        }
-        try appendLoopHistoryMessage(ctx.messages, ctx.allocator, loop_message);
-    }
-}
-
-fn interactiveStreamCallback(token: []const u8, done: bool) void {
-    _ = done;
-    if (token.len == 0) {
-        return;
-    }
-
-    const stdout = file_compat.File.stdout().writer();
-    stdout.print("{s}", .{token}) catch {};
-}
-
-fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: []const LoopMessage) anyerror!AIResponse {
-    const ctx = active_bridge_context orelse return error.MissingBridgeContext;
-
-    // Reset arena for this request — batch-frees all per-request memory
-    // from the previous iteration (tokens, parsed JSON, tool call copies).
-    _ = ctx.request_arena.reset(.retain_capacity);
-    const arena = ctx.request_arena.allocator();
-
-    try syncLoopMessagesToOuterHistory(ctx, loop_messages);
-
-    const last_content_len = if (ctx.messages.items.len == 0)
-        0
-    else
-        (ctx.messages.items[ctx.messages.items.len - 1].content orelse "").len;
-
-    var pre_request_ctx = HookContext.init(arena);
-    defer pre_request_ctx.deinit();
-    pre_request_ctx.phase = .pre_request;
-    pre_request_ctx.provider = ctx.provider_name;
-    pre_request_ctx.model = ctx.model_name;
-    pre_request_ctx.token_count = clampUsizeToU32(last_content_len);
-    try ctx.hooks.execute(.pre_request, &pre_request_ctx);
-
-    // Show thinking indicator while waiting for AI response (Phase F)
-    spinner_mod.StreamingSpinner.showStatic("Thinking");
-
-    out("\n{s}Assistant:{s} ", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
-
-    var response: core.ChatResponse = undefined;
-    if (active_streaming_enabled) {
-        // Streaming mode — print tokens as they arrive
-        response = ctx.client.sendChatStreaming(ctx.messages.items, interactiveStreamCallback) catch |err| {
-            ctx.turn_failed = true;
-            spinner_mod.StreamingSpinner.clearStatic();
-            error_display_mod.printError("Request Failed", @errorName(err));
-            return err;
-        };
-    } else {
-        // Non-streaming mode (default) — more reliable, avoids Zig stdlib HTTP bugs
-        response = ctx.client.sendChatWithHistory(ctx.messages.items) catch |err| {
-            ctx.turn_failed = true;
-            spinner_mod.StreamingSpinner.clearStatic();
-            error_display_mod.printError("Request Failed", @errorName(err));
-            return err;
-        };
-    }
-
-    spinner_mod.StreamingSpinner.clearStatic();
-
-    if (response.choices.len == 0) {
-        ctx.turn_failed = true;
-        error_display_mod.printError("Empty Response", "The AI returned an empty response");
-        return error.EmptyResponse;
-    }
-
-    ctx.turn_request_count += 1;
-    ctx.request_count.* += 1;
-
-    const choice = response.choices[0];
-    const content = choice.message.content orelse "";
-    const finish_reason_text = choice.finish_reason orelse "stop";
-
-    // Render AI response with markdown formatting
-    if (content.len > 0) {
-        markdown_mod.MarkdownRenderer.render(content);
-    }
-
-    if (response.usage) |usage| {
-        ctx.total_input_tokens.* += usage.prompt_tokens;
-        ctx.total_output_tokens.* += usage.completion_tokens;
-        out("\n{s}({d} tokens in / {d} out | session total: {d}){s}", .{
-            Style.dimmed.start(),
-            usage.prompt_tokens,
-            usage.completion_tokens,
-            ctx.total_input_tokens.* + ctx.total_output_tokens.*,
-            Style.dimmed.reset(),
-        });
-
-        // JSON: emit assistant response and usage
-        ctx.json_out.emitAssistant(content);
-        ctx.json_out.emitUsage(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
-    } else {
-        // JSON: emit assistant response without usage
-        ctx.json_out.emitAssistant(content);
-    }
-    out("\n", .{});
-
-    var post_request_ctx = HookContext.init(arena);
-    defer post_request_ctx.deinit();
-    post_request_ctx.phase = .post_request;
-    post_request_ctx.provider = ctx.provider_name;
-    post_request_ctx.model = ctx.model_name;
-    post_request_ctx.token_count = if (response.usage) |usage|
-        clampU64ToU32(usage.total_tokens)
-    else
-        clampUsizeToU32(content.len);
-    try ctx.hooks.execute(.post_request, &post_request_ctx);
-
-    try appendResponseMessage(ctx.messages, allocator, choice.message);
-    ctx.synced_loop_messages = loop_messages.len + 1;
-
-    // Arena-allocated tool call parsing — no individual free() needed.
-    // All memory reclaimed on next arena reset.
-    const parsed_tool_calls = try ctx.client.extractToolCallsWithAllocator(&response, arena);
-
-    if (std.mem.eql(u8, finish_reason_text, "tool_calls") and parsed_tool_calls.len == 0) {
-        ctx.turn_failed = true;
-        out("\nError: Model requested tool calls but none were parsed\n", .{});
-        return error.InvalidToolCallResponse;
-    }
-
-    var loop_tool_calls: []const AIResponse.ToolCallInfo = &.{};
-    if (parsed_tool_calls.len > 0) {
-        // Copy into arena — no individual free needed
-        const copied = try arena.alloc(AIResponse.ToolCallInfo, parsed_tool_calls.len);
-        for (parsed_tool_calls, 0..) |tool_call, i| {
-            copied[i] = .{
-                .id = tool_call.id,
-                .name = tool_call.name,
-                .arguments = tool_call.arguments,
-            };
-        }
-        loop_tool_calls = copied;
-    }
-
-    return .{
-        .content = content,
-        .finish_reason = AIResponse.FinishReason.fromString(finish_reason_text),
-        .tool_calls = loop_tool_calls,
-    };
-}
-
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     const allocator = std.heap.page_allocator;
     const json_out = json_output_mod.JsonOutput.init(args.json);
 
-    // Check for interactive mode
     if (args.interactive) {
         try handleInteractiveChat(args, config, allocator, json_out);
         return;
     }
 
-    // Single message mode (original behavior)
     if (args.remaining.len == 0) {
         out("Crushcode - AI Coding Assistant\n", .{});
         out("Usage: crushcode chat <message> [--provider <name>] [--model <name>] [--interactive]\n\n", .{});
@@ -442,7 +136,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     const message = args.remaining[0];
 
-    // Load profile - use --profile flag if provided, otherwise load current
     var profile_opt: ?Profile = null;
     if (args.profile) |profile_name| {
         profile_opt = profile_mod.loadProfileByName(allocator, profile_name) catch null;
@@ -463,7 +156,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         return error.ProviderNotFound;
     }
 
-    // Initialize registry and get provider
     var registry = registry_mod.ProviderRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerAllProviders();
@@ -474,7 +166,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         return error.ProviderNotFound;
     };
 
-    // Get API key - check profile first, then config
     var api_key: []const u8 = "";
     if (profile_opt) |*p| {
         api_key = p.getApiKey(provider_name) orelse "";
@@ -493,21 +184,17 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         }
     }
 
-    // Initialize AI client
     var ai_client = try core.AIClient.init(allocator, provider, model_name, api_key);
     defer ai_client.deinit();
 
-    // Apply model parameters from config
     ai_client.max_tokens = config.max_tokens;
     ai_client.temperature = config.temperature;
 
-    // Apply provider URL override if configured
     if (config.getProviderOverrideUrl(provider_name)) |override_url| {
         allocator.free(ai_client.provider.config.base_url);
         ai_client.provider.config.base_url = try allocator.dupe(u8, override_url);
     }
 
-    // Set system prompt from profile or config if available
     var chat_sys_prompt: ?[]const u8 = null;
     if (profile_opt) |*p| {
         if (p.system_prompt.len > 0) chat_sys_prompt = p.system_prompt;
@@ -516,13 +203,11 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         chat_sys_prompt = config.getSystemPrompt();
     }
 
-    // Load skills from skills/ directory and append to system prompt
     var skill_xml: ?[]const u8 = null;
     {
         var skill_loader = skills_loader_mod.SkillLoader.init(allocator);
         defer skill_loader.deinit();
 
-        // Load skills from default directory, silently skip if not found
         skill_loader.loadFromDirectory("skills") catch {};
         const skills = skill_loader.getSkills();
         if (skills.len > 0) {
@@ -530,7 +215,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         }
     }
 
-    // Append skill XML to system prompt if skills were loaded
     if (skill_xml) |xml| {
         defer allocator.free(xml);
         if (chat_sys_prompt) |existing| {
@@ -545,14 +229,12 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     out("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
-    // JSON: emit session start
     json_out.emitSessionStart(provider_name, model_name);
 
     var response: core.ChatResponse = undefined;
     var content_slice: []const u8 = "";
 
     if (args.stream) {
-        // Streaming mode
         var full_content = array_list_compat.ArrayList(u8).init(allocator);
         defer full_content.deinit();
 
@@ -563,7 +245,6 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
             pub fn callback(token: []const u8, done: bool) void {
                 _ = done;
                 if (token.len > 0) {
-                    // Display token in real-time
                     const stdout = file_compat.File.stdout().writer();
                     stdout.print("{s}", .{token}) catch {};
                 }
@@ -577,26 +258,22 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         out("\n", .{});
         content_slice = "";
     } else {
-        // Non-streaming mode (default)
         response = ai_client.sendChat(message) catch |err| {
             out("\nError sending request: {}\n", .{err});
             json_out.emitError(@errorName(err));
             return err;
         };
 
-        // Safety check - ensure we have a valid response
         if (response.choices.len == 0) {
             error_display_mod.printError("Empty Response", "The AI returned an empty response");
             return error.EmptyResponse;
         }
 
-        // Simple content extraction with inline null check
         const choice = response.choices[0];
         if (choice.message.content) |c| {
             content_slice = c;
         }
     }
-    // Render AI response with markdown formatting (Phase F)
     markdown_mod.MarkdownRenderer.render(content_slice);
     out("\n", .{});
     out("---\n", .{});
@@ -608,24 +285,18 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
             usage.completion_tokens,
             usage.total_tokens,
         });
-        // Show extended usage info
         const ext = ai_client.extractExtendedUsage(&response);
         out("{s}({d} in / {d} out){s}\n", .{ Style.dimmed.start(), ext.input_tokens, ext.output_tokens, Style.dimmed.reset() });
 
-        // JSON: emit assistant response and usage
         json_out.emitAssistant(content_slice);
         json_out.emitUsage(usage.prompt_tokens, usage.completion_tokens, usage.total_tokens);
     } else {
-        // JSON: emit assistant response without usage
         json_out.emitAssistant(content_slice);
     }
-    // JSON: emit session end
     json_out.emitSessionEnd();
 }
 
-/// Interactive chat mode with streaming support and conversation history
 fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.mem.Allocator, json_out: json_output_mod.JsonOutput) !void {
-    // Load profile - use --profile flag if provided, otherwise load current
     var profile_opt: ?Profile = null;
     if (args.profile) |profile_name| {
         profile_opt = profile_mod.loadProfileByName(allocator, profile_name) catch null;
@@ -644,7 +315,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         return error.ProviderNotFound;
     }
 
-    // Initialize registry
     var registry = registry_mod.ProviderRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerAllProviders();
@@ -656,7 +326,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         return error.ProviderNotFound;
     };
 
-    // Get API key - check profile first, then config
     var api_key: []const u8 = "";
     if (profile_opt) |*p| {
         api_key = p.getApiKey(current_provider_name) orelse "";
@@ -672,15 +341,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         return error.MissingApiKey;
     }
 
-    // Initialize client
     var client = try core.AIClient.init(allocator, provider, current_model_name, api_key);
     defer client.deinit();
 
-    // Apply model parameters from config
     client.max_tokens = config.max_tokens;
     client.temperature = config.temperature;
 
-    // Apply provider URL override if configured
     if (config.getProviderOverrideUrl(current_provider_name)) |override_url| {
         allocator.free(client.provider.config.base_url);
         client.provider.config.base_url = try allocator.dupe(u8, override_url);
@@ -689,7 +355,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var hotswap = ModelHotSwap.init(allocator, current_provider_name, current_model_name) catch null;
     defer if (hotswap) |*hs| hs.deinit();
 
-    // Set system prompt from profile or config if available
     if (profile_opt) |*p| {
         if (p.system_prompt.len > 0) {
             client.setSystemPrompt(p.system_prompt);
@@ -698,7 +363,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         client.setSystemPrompt(sys_prompt);
     }
 
-    // Apply output intensity modifier to system prompt
     const intensity_level = Intensity.parse(args.intensity orelse "normal") orelse .normal;
     if (intensity_level != .normal) {
         const current_prompt = client.system_prompt orelse config.getSystemPrompt() orelse "";
@@ -708,7 +372,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         out("{s}[intensity: {s}]{s}\n", .{ Style.dimmed.start(), intensity_level.label(), Style.dimmed.reset() });
     }
 
-    // Initialize permission evaluator from --permission flag
     if (args.permission) |perm_str| {
         const mode = PermissionMode.fromString(perm_str) orelse blk: {
             out("Warning: Unknown permission mode '{s}' — using default\n", .{perm_str});
@@ -729,7 +392,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    // Define available tools for function calling (OpenAI schema format)
     const default_tool_schemas = try tool_loader.loadDefaultToolSchemas(allocator);
     defer tool_loader.freeToolSchemas(allocator, default_tool_schemas);
 
@@ -744,7 +406,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
     client.setTools(builtin_tool_schemas);
 
-    // Initialize MCP bridge if MCP servers are configured
     var mcp_client = mcp_bridge_mod.MCPClient.init(allocator);
     var mcp_bridge: ?Bridge = if (config.mcp_servers.len > 0) Bridge.init(allocator, &mcp_client) catch null else null;
     var mcp_schemas: []const core.ToolSchema = &.{};
@@ -758,7 +419,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         mcp_client.deinit();
     }
 
-    // Connect to MCP servers and discover tools
     if (mcp_bridge) |*bridge| {
         for (config.mcp_servers) |server_config| {
             const bridge_config = mcp_bridge_mod.MCPServerConfig{
@@ -796,12 +456,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    // Build codebase knowledge graph with tiered context loading (F2)
     var kg = KnowledgeGraph.init(allocator);
     defer kg.deinit();
 
-    // Select tier based on context loading strategy
-    // Default to focused; can be overridden via config in future
     const context_tier = LoadTier.focused;
     const max_files = context_tier.maxPages();
 
@@ -835,7 +492,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     if (indexed_count > 0) {
         const graph_ctx = kg.toCompressedContext(allocator) catch null;
         if (graph_ctx) |ctx| {
-            // Build enhanced system prompt with codebase context
             const base_prompt = client.system_prompt orelse "You are a helpful AI coding assistant with access to the user's codebase.";
             const enhanced = std.fmt.allocPrint(allocator,
                 \\{s}
@@ -866,7 +522,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    // Initialize slash command registry
     var slash_registry = SlashCommandRegistry.init(allocator);
     defer slash_registry.deinit();
     try slash_registry.registerDefaults();
@@ -889,22 +544,18 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     agent_loop.setConfig(loop_config);
     try tool_executors.registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
 
-    // Conversation history
     var messages = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
     defer {
         for (messages.items) |msg| {
-            freeChatMessage(msg, allocator);
+            chat_helpers.freeChatMessage(msg, allocator);
         }
         messages.deinit();
     }
 
-    // Session token tracking
     var total_input_tokens: u64 = 0;
     var total_output_tokens: u64 = 0;
     var request_count: u32 = 0;
 
-    // Auto-compaction: compact context when approaching token limits
-    // Default max context = 128k tokens, compact at 80% = ~102k tokens
     var compactor = ContextCompactor.init(allocator, 128_000);
     defer compactor.deinit();
     compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
@@ -916,17 +567,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     out("Shortcuts: /h /c /m /q\n", .{});
     out("--------------------------------------------\n\n", .{});
 
-    // JSON: emit session start
     json_out.emitSessionStart(current_provider_name, current_model_name);
 
     const stdin = file_compat.File.stdin();
     const stdin_reader = stdin.reader();
 
     while (true) {
-        // Print prompt
         out("\n{s}You:{s} ", .{ Style.prompt_user.start(), Style.prompt_user.reset() });
 
-        // Read line
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
             out("\nError reading input\n", .{});
             break;
@@ -965,7 +613,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 };
                 if (result.messages_summarized > 0) {
                     for (messages.items) |msg| {
-                        freeChatMessage(msg, allocator);
+                        chat_helpers.freeChatMessage(msg, allocator);
                     }
                     messages.clearRetainingCapacity();
                     const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch continue;
@@ -1006,11 +654,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
-        // /model command — show or swap model (also /m)
         const is_model_cmd = std.mem.eql(u8, user_message, "/model") or std.mem.startsWith(u8, user_message, "/model ") or
             std.mem.eql(u8, user_message, "/m") or std.mem.startsWith(u8, user_message, "/m ");
         if (is_model_cmd) {
-            // Strip /model or /m prefix
             const prefix_len: usize = if (std.mem.startsWith(u8, user_message, "/model")) "/model".len else "/m".len;
             const model_arg = std.mem.trim(u8, user_message[prefix_len..], " ");
             if (model_arg.len == 0) {
@@ -1070,7 +716,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
 
         if (std.mem.eql(u8, user_message, "exit") or std.mem.eql(u8, user_message, "quit")) {
-            printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
+            chat_helpers.printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
             out("Goodbye!\n", .{});
             break;
         }
@@ -1082,7 +728,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
-        // Check if slash command
         if (SlashCommandRegistry.isSlashCommand(user_message)) {
             const maybe_result = slash_registry.execute(user_message) catch |err| {
                 out("Command error: {}\n", .{err});
@@ -1094,14 +739,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 defer result.deinit();
 
                 if (result.should_exit) {
-                    printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
+                    chat_helpers.printInteractiveSessionSummary(messages.items, allocator, total_input_tokens, total_output_tokens);
                     out("Goodbye!\n", .{});
                     break;
                 }
 
                 out("{s}\n", .{result.output});
                 if (result.should_clear) {
-                    clearInteractiveHistory(&messages, allocator, &total_input_tokens, &total_output_tokens, &request_count);
+                    chat_helpers.clearInteractiveHistory(&messages, allocator, &total_input_tokens, &total_output_tokens, &request_count);
                 }
                 continue;
             }
@@ -1123,7 +768,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         const turn_start_len = messages.items.len;
 
-        var bridge_ctx = InteractiveBridgeContext{
+        var bridge_ctx = chat_bridge.InteractiveBridgeContext{
             .allocator = allocator,
             .client = &client,
             .messages = &messages,
@@ -1142,13 +787,13 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         };
         defer bridge_ctx.request_arena.deinit();
 
-        active_bridge_context = &bridge_ctx;
+        chat_bridge.active_bridge_context = &bridge_ctx;
         tool_executors.setJsonOutput(json_out);
-        active_streaming_enabled = args.stream;
-        var loop_result = try agent_loop.run(sendInteractiveLoopMessages, user_message);
-        active_bridge_context = null;
+        chat_bridge.active_streaming_enabled = args.stream;
+        var loop_result = try agent_loop.run(chat_bridge.sendInteractiveLoopMessages, user_message);
+        chat_bridge.active_bridge_context = null;
         tool_executors.setJsonOutput(.{ .enabled = false });
-        active_streaming_enabled = false;
+        chat_bridge.active_streaming_enabled = false;
         defer loop_result.deinit();
 
         const hit_max_iterations = loop_result.steps.items.len > 0 and
@@ -1156,17 +801,16 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             loop_result.steps.items[loop_result.steps.items.len - 1].has_tool_calls;
 
         if (bridge_ctx.turn_failed) {
-            rollbackMessagesTo(&messages, allocator, turn_start_len);
+            chat_helpers.rollbackMessagesTo(&messages, allocator, turn_start_len);
             continue;
         }
 
         if (hit_max_iterations) {
             out("\nError: Agent loop hit max iterations ({d})\n", .{loop_config.max_iterations});
-            rollbackMessagesTo(&messages, allocator, turn_start_len);
+            chat_helpers.rollbackMessagesTo(&messages, allocator, turn_start_len);
             continue;
         }
 
-        // Convergence detection — check if agent iterations are plateauing (F14)
         if (loop_result.steps.items.len > 1) {
             var converged = false;
             for (loop_result.steps.items, 0..) |step, i| {
@@ -1189,12 +833,10 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             }
         }
 
-        // Auto-compact context when approaching token limits
         const session_tokens = total_input_tokens + total_output_tokens;
         if (compactor.needsCompaction(session_tokens) and messages.items.len > 12) {
             out("\n{s}⚡ Context approaching limit ({d} tokens). Compacting...{s}\n", .{ Style.warning.start(), session_tokens, Style.warning.reset() });
 
-            // Convert ChatMessages to CompactMessages for compaction
             var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
             defer compact_msgs.deinit();
             for (messages.items) |msg| {
@@ -1211,13 +853,11 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             };
 
             if (result.messages_summarized > 0) {
-                // Free old messages
                 for (messages.items) |msg| {
-                    freeChatMessage(msg, allocator);
+                    chat_helpers.freeChatMessage(msg, allocator);
                 }
                 messages.clearRetainingCapacity();
 
-                // Add summary as a system message
                 const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch continue;
 
                 messages.append(.{
@@ -1227,7 +867,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     .tool_calls = null,
                 }) catch continue;
 
-                // Re-add preserved recent messages
                 for (result.messages) |compact_msg| {
                     messages.append(.{
                         .role = allocator.dupe(u8, compact_msg.role) catch continue,
@@ -1237,7 +876,6 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     }) catch continue;
                 }
 
-                // Free the summary if it was allocated (compactor owns it, but we copied it)
                 allocator.free(result.summary);
 
                 out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
