@@ -1,7 +1,7 @@
-# State: Crushcode v1
+# State: Crushcode v0.6.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
-**Created:** 2026-04-11
+**Updated:** 2026-04-14
 
 ---
 
@@ -9,7 +9,7 @@
 
 **Core Value:** Ship a working AI coding assistant in Zig that can execute shell commands, manage files, and interact with AI providers (Ollama, OpenRouter).
 
-**Current Focus:** Phase 1 - Core Infrastructure
+**Current Focus:** Phase 17 — TUI Widget Extraction (v0.6.0 Architecture + UI/UX Polish)
 
 ---
 
@@ -17,52 +17,63 @@
 
 | Field | Value |
 |-------|-------|
-| Phase | 1 |
-| Plan | Not started |
-| Status | Not started |
+| Milestone | v0.6.0 — Architecture + UI/UX Polish |
+| Phase | 17 |
+| Plan | 3 plans created |
+| Status | Ready for execution |
 | Progress | 0% |
 
 ---
 
-## Performance Metrics
+## Milestone History
 
-| Metric | Value |
-|--------|-------|
-| Requirements (v1) | 20 |
-| Requirements Mapped | 20 |
-| Phases | 3 |
-| Plans (total) | 3 |
+| Milestone | Phases | Status |
+|-----------|--------|--------|
+| v0.3.1 | 1-4 (context, tool loop, permission, fallback) | ✅ Done |
+| v0.3.2 | 5-7 (markdown, diff, theme) | ✅ Done |
+| v0.4.0 | 8-10 (session, agents, sidebar) | ✅ Done |
+| v0.5.0 | 11-15 (LSP, threading, git, oauth, budget) | ✅ Done |
+| v0.6.0 | 16-20 (registry, widgets, spinner, gradient, diff) | 🔄 Current |
+
+---
+
+## v0.6.0 Phases
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| 16 | Command Registry | ⬜ Not started |
+| 17 | TUI Widget Extraction | 📋 Planned (3 plans) |
+| 18 | Animated Spinner + Stalled Detection | ⬜ Not started |
+| 19 | Gradient Text + Toast Notifications | ⬜ Not started |
+| 20 | Diff Word Highlighting + Typewriter | ⬜ Not started |
 
 ---
 
 ## Accumulated Context
 
+### Seeds Consumed
+- SEED-001: Architecture Improvements → incorporated into Phase 16 + 17
+
+### Research Available
+- `.planning/research/UI-UX-ANIMATION-REFERENCE.md` — UI/UX patterns from 6 reference projects
+
 ### Decisions
-
-- Coarse granularity (3 phases) for rapid delivery
-- Group by workflow dependencies: AI chat → shell execution → file operations
-- Phase 1 delivers end-to-end chat experience with config and file reading
-- Phase 2 adds shell command execution
-- Phase 3 adds AI-driven file write/edit
-
-### Todos
-
-- Phase 1: Core Infrastructure (16 requirements)
-- Phase 2: Shell Execution (4 requirements)
-- Phase 3: AI File Operations (2 requirements)
+- Architecture before UI/UX (foundation first)
+- Command registry: comptime hash map for O(1) dispatch
+- Widget extraction: preserve widget struct pattern (widget/draw/typeErasedDrawFn)
+- Spinner: frame-based braille with gradient + stalled detection
+- Gradient: RGB interpolation across text width
+- Toast: auto-dismiss stack with max 5 visible
+- Diff: word-level highlighting within changed lines
+- Typewriter: per-character reveal with 30-80ms jitter
 
 ### Blockers
-
-- None identified - ready to start Phase 1 planning
+- None — ready for Phase 16 planning
 
 ---
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-11
+**Last Updated:** 2026-04-14
 
-Ready for planning: `/gsd-plan-phase 1`
-
----
-
-*State created: 2026-04-11*
+Ready for execution: `/gsd-execute-phase 17`
