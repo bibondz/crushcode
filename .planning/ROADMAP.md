@@ -224,6 +224,12 @@ Plans:
 - chat_tui_app.zig becomes assembly file (~500 lines)
 - ไฟล์: new `src/tui/widgets/*.zig`, slim `src/tui/chat_tui_app.zig`
 
+**Plans:** 3 plans
+Plans:
+- [ ] 17-01-PLAN.md — Shared types + helpers + message/tool call display widgets
+- [ ] 17-02-PLAN.md — Chrome widgets (header, sidebar with SidebarContext, input)
+- [ ] 17-03-PLAN.md — Overlay widgets (palette, permission, setup) + final integration
+
 ### Phase 18: Animated Spinner + Stalled Detection
 **Goal:** Frame-based spinner with gradient colors and stalled-stream detection
 **ปัญหา**: AI thinking/loading ไม่มี visual feedback ที่ดี
