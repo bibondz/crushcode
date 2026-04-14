@@ -187,8 +187,87 @@ v0.3.2 Phase 5 → Phase 6 → Phase 7                  ✅ DONE
 v0.4.0 Phase 8 → Phase 9 → Phase 10                 ✅ DONE
          (session)  (agents)  (sidebar)
 
-v0.5.0 Phase 11 → Phase 12 → Phase 13 → Phase 14 → Phase 15
+v0.5.0 Phase 11 → Phase 12 → Phase 13 → Phase 14 → Phase 15   ✅ DONE
          (LSP)     (agents)   (git)     (oauth)    (budget)
+```
+
+---
+
+## v0.6.0 — Architecture + UI/UX Polish
+
+Architecture first (foundation), then UI/UX polish on top.
+
+### Phase 16: Command Registry
+**Goal:** Replace 30+ branch if-else dispatch with O(1) command lookup
+**ปัญหา**: main.zig มี 30+ `else if` branches สำหรับ route commands — เพิ่ม command ใหม่ต้องแก้ 4 ไฟล์
+**ทำ**:
+- สร้าง `src/cli/registry.zig` — CommandRegistry with comptime hash map
+- Command module pattern: export `.name`, `.handler`, `.description`
+- main.zig dispatch becomes 5 lines instead of 80
+- handlers.zig becomes thin re-export layer
+- ไฟล์: new `src/cli/registry.zig`, rewrite `src/main.zig` dispatch, slim `src/commands/handlers.zig`
+
+**Plans:** 1 plan
+Plans:
+- [ ] 16-01-PLAN.md — Create comptime command registry + wire dispatch into main.zig
+
+### Phase 17: TUI Widget Extraction
+**Goal:** Break chat_tui_app.zig (4279 lines) into modular widget files
+**ปัญหา**: chat_tui_app.zig ยากต่อการ navigate, test, และ reuse widgets
+**ทำ**:
+- Extract HeaderWidget → `src/tui/widgets/header.zig`
+- Extract SidebarWidget → `src/tui/widgets/sidebar.zig`
+- Extract InputWidget → `src/tui/widgets/input.zig`
+- Extract MessageWidget → `src/tui/widgets/messages.zig`
+- Extract PermissionDialogWidget → `src/tui/widgets/permission.zig`
+- Extract CommandPaletteWidget → `src/tui/widgets/palette.zig`
+- chat_tui_app.zig becomes assembly file (~500 lines)
+- ไฟล์: new `src/tui/widgets/*.zig`, slim `src/tui/chat_tui_app.zig`
+
+### Phase 18: Animated Spinner + Stalled Detection
+**Goal:** Frame-based spinner with gradient colors and stalled-stream detection
+**ปัญหา**: AI thinking/loading ไม่มี visual feedback ที่ดี
+**ทำ**:
+- สร้าง `src/tui/widgets/spinner.zig` — AnimatedSpinner with frame cycling
+- Gradient color cycling (braille frames: ⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏)
+- Stalled detection: turns red when no token received for 5+ seconds
+- Token counter + elapsed time display
+- Birth offset for staggered entrance
+- Integrate into TUI streaming worker
+- Reference: crush `anim.go`, claude-code `Spinner.tsx`
+- ไฟล์: new `src/tui/widgets/spinner.zig`, modify TUI streaming
+
+### Phase 19: Gradient Text + Toast Notifications
+**Goal:** Gradient header text and toast notification system
+**ปัญหา**: TUI ดู basic — ไม่มี visual polish หรือ notification feedback
+**ทำ**:
+- สร้าง `src/tui/widgets/gradient.zig` — RGB interpolation across text
+- Apply gradient to header title (Crushcode branding)
+- สร้าง `src/tui/widgets/toast.zig` — Toast notification stack
+  - Auto-dismiss with progress animation
+  - Multiple severity levels (info, warning, error, success)
+  - Stack management (max 5 visible)
+- Wire budget alerts and permission results into toast system
+- Reference: crush `grad.go`, claude-code `ToastStack.tsx`
+- ไฟล์: new gradient.zig, toast.zig, modify chat_tui_app.zig
+
+### Phase 20: Diff Word Highlighting + Typewriter Streaming
+**Goal:** Word-level diff highlighting and typewriter text reveal for streaming
+**ปัญหา**: Diff ไม่ highlight คำที่เปลี่ยน, streaming text แสดงทีเดียวทั้งก้อน
+**ทำ**:
+- Diff: highlight individual changed words within diff lines (not just whole lines)
+- Typewriter: per-character text reveal with randomized delay (30-80ms)
+- Blinking cursor at end of revealed text
+- Integrate typewriter into AI streaming response rendering
+- Reference: claude-code `StructuredDiff.tsx`, opencode `typewriter.tsx`
+- ไฟล์: modify `src/diff/visualizer.zig`, new `src/tui/widgets/typewriter.zig`
+
+---
+
+## ลำดับการทำ
+```
+v0.6.0 Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20
+        (registry)  (widgets)  (spinner)  (gradient)  (diff+typewriter)
 ```
 
 ## ไม่ทำ (defer indefinitely)
