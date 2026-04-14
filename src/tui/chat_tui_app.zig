@@ -21,9 +21,30 @@ pub const Options = struct {
 pub const Message = struct {
     role: []const u8,
     content: []const u8,
+    tool_call_id: ?[]const u8 = null,
+    tool_calls: ?[]const core.client.ToolCallInfo = null,
 };
 
 threadlocal var active_stream_model: ?*Model = null;
+
+const setup_provider_data = [_][]const u8{
+    "openrouter",
+    "openai",
+    "anthropic",
+    "groq",
+    "together",
+    "gemini",
+    "xai",
+    "mistral",
+    "ollama",
+    "zai",
+};
+
+const ToolCallStatus = enum {
+    pending,
+    success,
+    failed,
+};
 
 const RoleLabelWidget = struct {
     label: []const u8,
@@ -107,8 +128,77 @@ const MessageContentWidget = struct {
     }
 };
 
+const ToolCallWidget = struct {
+    tool_call: core.client.ToolCallInfo,
+    status: ToolCallStatus,
+    output: ?[]const u8,
+
+    fn widget(self: *const ToolCallWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const ToolCallWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const ToolCallWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        const header = vxfw.RichText{
+            .text = &.{
+                .{ .text = toolCallStatusIcon(self.status), .style = toolCallStatusStyle(self.status) },
+                .{ .text = " ", .style = .{} },
+                .{ .text = self.tool_call.name, .style = .{ .fg = .{ .index = 15 }, .bold = true } },
+                .{ .text = if (self.tool_call.arguments.len > 0) " " else "", .style = .{} },
+                .{ .text = self.tool_call.arguments, .style = .{ .fg = .{ .index = 8 }, .dim = true } },
+            },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const header_surface = try header.draw(ctx.withConstraints(
+            .{ .width = max.width, .height = 0 },
+            .{ .width = max.width, .height = max.height },
+        ));
+
+        const output_text = try toolCallOutputText(ctx.arena, self.output, self.status);
+        if (output_text.len == 0) {
+            return header_surface;
+        }
+
+        const output_widget = vxfw.Text{
+            .text = output_text,
+            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const output_surface = try output_widget.draw(ctx.withConstraints(
+            .{ .width = max.width, .height = 0 },
+            .{ .width = max.width, .height = max.height },
+        ));
+
+        const height = header_surface.size.height + output_surface.size.height;
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
+        @memset(surface.buffer, .{ .style = .{} });
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface };
+        children[1] = .{ .origin = .{ .row = @intCast(header_surface.size.height), .col = 0 }, .surface = output_surface };
+
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
 const MessageWidget = struct {
-    message: *const Message,
+    model: *const Model,
+    message_index: usize,
 
     fn widget(self: *const MessageWidget) vxfw.Widget {
         return .{
@@ -123,17 +213,52 @@ const MessageWidget = struct {
     }
 
     fn draw(self: *const MessageWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const message = &self.model.messages.items[self.message_index];
         const max = ctx.max.size();
-        const border_width: u16 = if (std.mem.eql(u8, self.message.role, "user")) 2 else 0;
+        const border_width: u16 = if (std.mem.eql(u8, message.role, "user")) 2 else 0;
         const content_width = max.width -| border_width;
 
-        const content_widget: MessageContentWidget = .{ .message = self.message };
-        const content_surface = try content_widget.draw(ctx.withConstraints(
-            .{ .width = content_width, .height = 0 },
-            .{ .width = content_width, .height = null },
-        ));
+        var child_list = std.ArrayList(vxfw.SubSurface).empty;
+        defer child_list.deinit(ctx.arena);
 
-        const height = @max(content_surface.size.height, 1);
+        var current_row: u16 = 0;
+        if (shouldRenderMessageContent(message)) {
+            const content_widget: MessageContentWidget = .{ .message = message };
+            const content_surface = try content_widget.draw(ctx.withConstraints(
+                .{ .width = content_width, .height = 0 },
+                .{ .width = content_width, .height = null },
+            ));
+            try child_list.append(ctx.arena, .{
+                .origin = .{ .row = 0, .col = @intCast(border_width) },
+                .surface = content_surface,
+            });
+            current_row += content_surface.size.height;
+        }
+
+        if (message.tool_calls) |tool_calls| {
+            for (tool_calls, 0..) |tool_call, idx| {
+                if (current_row > 0 or idx > 0) {
+                    current_row += 1;
+                }
+                const tool_result = findToolResultMessageAfter(self.model.messages.items, self.message_index, tool_call.id);
+                const tool_widget = ToolCallWidget{
+                    .tool_call = tool_call,
+                    .status = toolCallStatusForMessage(tool_result),
+                    .output = if (tool_result) |result| result.content else null,
+                };
+                const tool_surface = try tool_widget.draw(ctx.withConstraints(
+                    .{ .width = content_width, .height = 0 },
+                    .{ .width = content_width, .height = null },
+                ));
+                try child_list.append(ctx.arena, .{
+                    .origin = .{ .row = @intCast(current_row), .col = @intCast(border_width) },
+                    .surface = tool_surface,
+                });
+                current_row += tool_surface.size.height;
+            }
+        }
+
+        const height = @max(current_row, 1);
         const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
         @memset(surface.buffer, .{ .style = .{} });
 
@@ -147,11 +272,8 @@ const MessageWidget = struct {
             }
         }
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        children[0] = .{
-            .origin = .{ .row = 0, .col = @intCast(border_width) },
-            .surface = content_surface,
-        };
+        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
+        @memcpy(children, child_list.items);
 
         return .{
             .size = surface.size,
@@ -484,11 +606,141 @@ const CommandPaletteWidget = struct {
     }
 };
 
+const SetupProviderRowWidget = struct {
+    provider_name: []const u8,
+    selected: bool,
+
+    fn widget(self: *const SetupProviderRowWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const SetupProviderRowWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const SetupProviderRowWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const width = ctx.max.width orelse ctx.min.width;
+        const text = vxfw.RichText{
+            .text = &.{
+                .{ .text = if (self.selected) "› " else "  ", .style = if (self.selected) .{ .fg = .{ .index = 39 }, .bold = true } else .{ .fg = .{ .index = 8 }, .dim = true } },
+                .{ .text = self.provider_name, .style = if (self.selected) .{ .fg = .{ .index = 15 }, .bold = true } else .{ .fg = .{ .index = 15 } } },
+            },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+    }
+};
+
+const SetupWizardWidget = struct {
+    model: *const Model,
+
+    fn widget(self: *const SetupWizardWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const SetupWizardWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const SetupWizardWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const max = ctx.max.size();
+        const width = max.width;
+        var child_list = std.ArrayList(vxfw.SubSurface).empty;
+        defer child_list.deinit(ctx.arena);
+
+        var row: u16 = 0;
+        try appendSetupText(ctx, &child_list, &row, width, "Welcome to Crushcode!", .{ .fg = .{ .index = 15 }, .bold = true });
+        row += 1;
+
+        switch (self.model.setup_phase) {
+            1 => {
+                try appendSetupText(ctx, &child_list, &row, width, "Choose a provider:", .{ .fg = .{ .index = 15 }, .bold = true });
+                try appendSetupText(ctx, &child_list, &row, width, "Use ↑↓ to choose, then press Enter.", .{ .fg = .{ .index = 8 }, .dim = true });
+                row += 1;
+                for (setup_provider_data, 0..) |provider_name, idx| {
+                    const provider_row = SetupProviderRowWidget{ .provider_name = provider_name, .selected = idx == self.model.setup_provider_index };
+                    const provider_surface = try provider_row.draw(ctx.withConstraints(
+                        .{ .width = width, .height = 1 },
+                        .{ .width = width, .height = 1 },
+                    ));
+                    try child_list.append(ctx.arena, .{ .origin = .{ .row = row, .col = 0 }, .surface = provider_surface });
+                    row += 1;
+                }
+            },
+            2 => {
+                const title = try std.fmt.allocPrint(ctx.arena, "Enter your API key for {s}:", .{self.model.provider_name});
+                try appendSetupText(ctx, &child_list, &row, width, title, .{ .fg = .{ .index = 15 }, .bold = true });
+                if (setupProviderAllowsEmptyKey(self.model.provider_name)) {
+                    try appendSetupText(ctx, &child_list, &row, width, "This provider can use a blank key. Press Enter to continue.", .{ .fg = .{ .index = 8 }, .dim = true });
+                } else {
+                    try appendSetupText(ctx, &child_list, &row, width, "Paste the key, then press Enter.", .{ .fg = .{ .index = 8 }, .dim = true });
+                }
+            },
+            3 => {
+                try appendSetupText(ctx, &child_list, &row, width, "Enter default model (or press Enter for default):", .{ .fg = .{ .index = 15 }, .bold = true });
+                const provider_line = try std.fmt.allocPrint(ctx.arena, "Provider: {s}", .{self.model.provider_name});
+                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                const default_line = try std.fmt.allocPrint(ctx.arena, "Default: {s}", .{setupDefaultModel(self.model.provider_name)});
+                try appendSetupText(ctx, &child_list, &row, width, default_line, .{ .fg = .{ .index = 8 }, .dim = true });
+            },
+            4 => {
+                try appendSetupText(ctx, &child_list, &row, width, "Setup complete! Press Enter to start chatting.", .{ .fg = .{ .index = 10 }, .bold = true });
+                const provider_line = try std.fmt.allocPrint(ctx.arena, "Provider: {s}", .{self.model.provider_name});
+                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                const model_line = try std.fmt.allocPrint(ctx.arena, "Model: {s}", .{self.model.model_name});
+                try appendSetupText(ctx, &child_list, &row, width, model_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                const config_line = try std.fmt.allocPrint(ctx.arena, "Config: {s}", .{try setupConfigPath(ctx.arena)});
+                try appendSetupText(ctx, &child_list, &row, width, config_line, .{ .fg = .{ .index = 8 }, .dim = true });
+            },
+            else => {},
+        }
+
+        if (self.model.setup_feedback.len > 0) {
+            row += 1;
+            try appendSetupText(
+                ctx,
+                &child_list,
+                &row,
+                width,
+                self.model.setup_feedback,
+                if (self.model.setup_feedback_is_error) .{ .fg = .{ .index = 1 }, .bold = true } else .{ .fg = .{ .index = 10 }, .dim = true },
+            );
+        }
+
+        const height = @max(max.height, row);
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{} });
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
+        @memcpy(children, child_list.items);
+
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
 pub const Model = struct {
     allocator: std.mem.Allocator,
     provider_name: []const u8,
     model_name: []const u8,
     api_key: []const u8,
+    system_prompt: ?[]const u8,
+    max_tokens: u32,
+    temperature: f32,
+    override_url: ?[]const u8,
     thinking: bool,
     app: *vxfw.App,
     registry: registry_mod.ProviderRegistry,
@@ -515,6 +767,10 @@ pub const Model = struct {
     request_count: u32,
     session_start: i128,
     pricing_table: usage_pricing.PricingTable,
+    setup_phase: u8,
+    setup_provider_index: usize,
+    setup_feedback: []const u8,
+    setup_feedback_is_error: bool,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -530,6 +786,10 @@ pub const Model = struct {
             .provider_name = try allocator.dupe(u8, options.provider_name),
             .model_name = try allocator.dupe(u8, options.model_name),
             .api_key = try allocator.dupe(u8, options.api_key),
+            .system_prompt = if (options.system_prompt) |system_prompt| try allocator.dupe(u8, system_prompt) else null,
+            .max_tokens = options.max_tokens,
+            .temperature = options.temperature,
+            .override_url = if (options.override_url) |override_url| try allocator.dupe(u8, override_url) else null,
             .thinking = false,
             .app = app,
             .registry = registry_mod.ProviderRegistry.init(allocator),
@@ -560,6 +820,10 @@ pub const Model = struct {
             .request_count = 0,
             .session_start = std.time.nanoTimestamp(),
             .pricing_table = try usage_pricing.PricingTable.init(allocator),
+            .setup_phase = if (options.api_key.len == 0) 1 else 0,
+            .setup_provider_index = setupProviderIndex(options.provider_name),
+            .setup_feedback = "",
+            .setup_feedback_is_error = false,
         };
         errdefer model.destroy();
 
@@ -582,8 +846,16 @@ pub const Model = struct {
         };
 
         try model.registry.registerAllProviders();
-        try model.addMessageUnlocked("assistant", "TUI chat ready. Type a message and press Enter.");
-        try model.initializeClient(options);
+        if (model.setup_phase != 0) {
+            const selected_provider = setup_provider_data[model.setup_provider_index];
+            if (model.provider_name.len == 0) {
+                model.allocator.free(model.provider_name);
+                model.provider_name = try model.allocator.dupe(u8, selected_provider);
+            }
+        } else {
+            try model.addMessageUnlocked("assistant", "TUI chat ready. Type a message and press Enter.");
+            try model.initializeClient();
+        }
         return model;
     }
 
@@ -599,8 +871,7 @@ pub const Model = struct {
         self.palette_input.deinit();
         self.clearPaletteFilter();
         for (self.messages.items) |message| {
-            self.allocator.free(message.role);
-            self.allocator.free(message.content);
+            freeDisplayMessage(self.allocator, message);
         }
         self.messages.deinit(self.allocator);
         for (self.history.items) |message| {
@@ -609,6 +880,9 @@ pub const Model = struct {
         self.history.deinit(self.allocator);
         self.registry.deinit();
         self.pricing_table.deinit();
+        if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
+        if (self.override_url) |override_url| self.allocator.free(override_url);
+        if (self.setup_feedback.len > 0) self.allocator.free(self.setup_feedback);
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
         self.allocator.free(self.api_key);
@@ -621,7 +895,7 @@ pub const Model = struct {
         try self.app.run(self.widget(), .{ .framerate = 30 });
     }
 
-    fn initializeClient(self: *Model, options: Options) !void {
+    fn initializeClient(self: *Model) !void {
         if (self.provider_name.len == 0) {
             try self.addMessageUnlocked("error", "No provider configured. Set one in ~/.crushcode/config.toml or use a profile.");
             return;
@@ -640,13 +914,13 @@ pub const Model = struct {
         }
 
         var client = try core.AIClient.init(self.allocator, provider, self.model_name, self.api_key);
-        client.max_tokens = options.max_tokens;
-        client.temperature = options.temperature;
-        if (options.override_url) |override_url| {
+        client.max_tokens = self.max_tokens;
+        client.temperature = self.temperature;
+        if (self.override_url) |override_url| {
             self.allocator.free(client.provider.config.base_url);
             client.provider.config.base_url = try self.allocator.dupe(u8, override_url);
         }
-        if (options.system_prompt) |system_prompt| {
+        if (self.system_prompt) |system_prompt| {
             if (system_prompt.len > 0) {
                 client.setSystemPrompt(system_prompt);
             }
@@ -693,6 +967,10 @@ pub const Model = struct {
                 }
 
                 if (key.matches('p', .{ .ctrl = true })) {
+                    if (self.setup_phase != 0) {
+                        ctx.consumeEvent();
+                        return;
+                    }
                     if (self.show_palette) {
                         try self.closePalette(ctx);
                     } else {
@@ -700,6 +978,19 @@ pub const Model = struct {
                     }
                     ctx.consumeEvent();
                     return;
+                }
+
+                if (self.setup_phase == 1) {
+                    if (key.matches(vaxis.Key.up, .{})) {
+                        self.moveSetupProviderSelection(-1);
+                        ctx.consumeEvent();
+                        return;
+                    }
+                    if (key.matches(vaxis.Key.down, .{})) {
+                        self.moveSetupProviderSelection(1);
+                        ctx.consumeEvent();
+                        return;
+                    }
                 }
 
                 if (self.show_palette) {
@@ -737,13 +1028,16 @@ pub const Model = struct {
         const input_height: u16 = 1;
         const body_height = max.height -| (header_height + status_height + input_height);
 
-        const full_title = try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d}%", .{
-            app_version,
-            self.provider_name,
-            self.model_name,
-            if (self.thinking) "on" else "off",
-            self.contextPercent(),
-        });
+        const full_title = if (self.setup_phase != 0)
+            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
+        else
+            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d}%", .{
+                app_version,
+                self.provider_name,
+                self.model_name,
+                if (self.thinking) "on" else "off",
+                self.contextPercent(),
+            });
 
         const header = HeaderWidget{ .title = full_title };
         const header_surface = try header.draw(ctx.withConstraints(
@@ -751,47 +1045,68 @@ pub const Model = struct {
             .{ .width = max.width, .height = header_height },
         ));
 
-        var message_widgets = std.ArrayList(vxfw.Widget).empty;
-        defer message_widgets.deinit(ctx.arena);
-        const total_widgets = if (self.messages.items.len == 0) 1 else self.messages.items.len + (self.messages.items.len - 1) * 2;
-        try message_widgets.ensureTotalCapacity(ctx.arena, total_widgets);
-        for (self.messages.items, 0..) |*message, idx| {
-            const message_widget = MessageWidget{ .message = message };
-            try message_widgets.append(ctx.arena, message_widget.widget());
-            if (idx + 1 < self.messages.items.len) {
-                const gap = MessageGapWidget{};
-                try message_widgets.append(ctx.arena, gap.widget());
-                const separator = SeparatorWidget{};
-                try message_widgets.append(ctx.arena, separator.widget());
+        const body_surface = blk: {
+            if (self.setup_phase != 0) {
+                const wizard = SetupWizardWidget{ .model = self };
+                break :blk try wizard.draw(ctx.withConstraints(
+                    .{ .width = max.width, .height = body_height },
+                    .{ .width = max.width, .height = body_height },
+                ));
+            } else {
+                var message_widgets = std.ArrayList(vxfw.Widget).empty;
+                defer message_widgets.deinit(ctx.arena);
+                try message_widgets.ensureTotalCapacity(ctx.arena, @max(self.messages.items.len * 3, 1));
+                var visible_count: usize = 0;
+                for (self.messages.items, 0..) |message, idx| {
+                    if (message.tool_call_id != null and findToolCallBefore(self.messages.items, idx, message.tool_call_id.?) != null) {
+                        continue;
+                    }
+                    const message_widget = MessageWidget{ .model = self, .message_index = idx };
+                    try message_widgets.append(ctx.arena, message_widget.widget());
+                    visible_count += 1;
+                    if (visible_count < visibleMessageCount(self.messages.items)) {
+                        const gap = MessageGapWidget{};
+                        try message_widgets.append(ctx.arena, gap.widget());
+                        const separator = SeparatorWidget{};
+                        try message_widgets.append(ctx.arena, separator.widget());
+                    }
+                }
+
+                self.scroll_view.children = .{ .slice = message_widgets.items };
+                if (message_widgets.items.len > 0) {
+                    self.scroll_view.item_count = @intCast(message_widgets.items.len);
+                    self.scroll_view.cursor = @intCast(message_widgets.items.len - 1);
+                    self.scroll_view.ensureScroll();
+                } else {
+                    self.scroll_view.item_count = 0;
+                    self.scroll_view.cursor = 0;
+                }
+                self.scroll_bars.scroll_view = self.scroll_view;
+                self.scroll_bars.estimated_content_height = estimateContentHeight(self);
+
+                const surface = try self.scroll_bars.draw(ctx.withConstraints(
+                    .{ .width = max.width, .height = body_height },
+                    .{ .width = max.width, .height = body_height },
+                ));
+                self.scroll_view = self.scroll_bars.scroll_view;
+                break :blk surface;
             }
-        }
+        };
 
-        self.scroll_view.children = .{ .slice = message_widgets.items };
-        if (self.messages.items.len > 0) {
-            self.scroll_view.item_count = @intCast(message_widgets.items.len);
-            self.scroll_view.cursor = @intCast(message_widgets.items.len - 1);
-            self.scroll_view.ensureScroll();
-        } else {
-            self.scroll_view.item_count = 0;
-            self.scroll_view.cursor = 0;
-        }
-        self.scroll_bars.scroll_view = self.scroll_view;
-        self.scroll_bars.estimated_content_height = estimateContentHeight(self.messages.items);
-
-        const body_surface = try self.scroll_bars.draw(ctx.withConstraints(
-            .{ .width = max.width, .height = body_height },
-            .{ .width = max.width, .height = body_height },
-        ));
-        self.scroll_view = self.scroll_bars.scroll_view;
-
-        const status_text = try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
-            self.total_input_tokens,
-            self.total_output_tokens,
-            self.estimatedCostUsd(),
-            self.request_count,
-            self.sessionMinutes(),
-            self.sessionSecondsPart(),
-        });
+        const status_text = if (self.setup_phase != 0)
+            try std.fmt.allocPrint(ctx.arena, "Setup {d}/4 | {s}", .{
+                @min(self.setup_phase, @as(u8, 4)),
+                if (self.setup_phase == 1) "Choose a provider" else if (self.setup_phase == 2) "Enter your API key" else if (self.setup_phase == 3) "Choose a default model" else "Press Enter to continue",
+            })
+        else
+            try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
+                self.total_input_tokens,
+                self.total_output_tokens,
+                self.estimatedCostUsd(),
+                self.request_count,
+                self.sessionMinutes(),
+                self.sessionSecondsPart(),
+            });
         const status_widget = vxfw.Text{
             .text = status_text,
             .style = .{ .fg = .{ .index = 8 }, .dim = true },
@@ -803,7 +1118,7 @@ pub const Model = struct {
             .{ .width = max.width, .height = status_height },
         ));
 
-        const input_widget = InputWidget{ .prompt = "❯ ", .field = &self.input };
+        const input_widget = InputWidget{ .prompt = self.currentInputPrompt(), .field = &self.input };
         const input_surface = try input_widget.draw(ctx.withConstraints(
             .{ .width = max.width, .height = input_height },
             .{ .width = max.width, .height = input_height },
@@ -849,6 +1164,11 @@ pub const Model = struct {
 
     fn handleSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
         self.reapWorkerIfDone();
+
+        if (self.setup_phase != 0) {
+            try self.handleSetupSubmit(value, ctx);
+            return;
+        }
 
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         if (trimmed.len == 0) return;
@@ -896,6 +1216,109 @@ pub const Model = struct {
         self.input.style = .{ .fg = .{ .index = 15 } };
         self.input.userdata = self;
         self.input.onSubmit = onSubmit;
+    }
+
+    fn currentInputPrompt(self: *const Model) []const u8 {
+        return switch (self.setup_phase) {
+            1 => "Select: ",
+            2 => "API key: ",
+            3 => "Model: ",
+            4 => "Continue: ",
+            else => "❯ ",
+        };
+    }
+
+    fn moveSetupProviderSelection(self: *Model, delta: isize) void {
+        const current: isize = @intCast(self.setup_provider_index);
+        const max_index: isize = @intCast(setup_provider_data.len - 1);
+        const next = std.math.clamp(current + delta, 0, max_index);
+        self.setup_provider_index = @intCast(next);
+    }
+
+    fn setSetupFeedback(self: *Model, text: []const u8, is_error: bool) !void {
+        if (self.setup_feedback.len > 0) {
+            self.allocator.free(self.setup_feedback);
+        }
+        self.setup_feedback = try self.allocator.dupe(u8, text);
+        self.setup_feedback_is_error = is_error;
+    }
+
+    fn clearSetupFeedback(self: *Model) void {
+        if (self.setup_feedback.len > 0) {
+            self.allocator.free(self.setup_feedback);
+        }
+        self.setup_feedback = "";
+        self.setup_feedback_is_error = false;
+    }
+
+    fn replaceOwnedString(self: *Model, slot: *[]const u8, value: []const u8) !void {
+        const updated = try self.allocator.dupe(u8, value);
+        self.allocator.free(slot.*);
+        slot.* = updated;
+    }
+
+    fn handleSetupSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
+        const trimmed = std.mem.trim(u8, value, " \t\r\n");
+        switch (self.setup_phase) {
+            1 => {
+                try self.replaceOwnedString(&self.provider_name, setup_provider_data[self.setup_provider_index]);
+                self.clearSetupFeedback();
+                self.setup_phase = 2;
+                self.resetInputField();
+            },
+            2 => {
+                if (trimmed.len == 0 and !setupProviderAllowsEmptyKey(self.provider_name)) {
+                    try self.setSetupFeedback("API key cannot be empty for this provider.", true);
+                    ctx.redraw = true;
+                    return;
+                }
+                try self.replaceOwnedString(&self.api_key, trimmed);
+                self.clearSetupFeedback();
+                self.setup_phase = 3;
+                self.resetInputField();
+            },
+            3 => {
+                const resolved_model = if (trimmed.len > 0) trimmed else setupDefaultModel(self.provider_name);
+                try self.replaceOwnedString(&self.model_name, resolved_model);
+                try self.saveSetupConfig();
+                try self.initializeClient();
+                self.clearSetupFeedback();
+                self.setup_phase = 4;
+                self.resetInputField();
+            },
+            4 => {
+                self.clearSetupFeedback();
+                self.setup_phase = 0;
+                try self.addMessageUnlocked("assistant", "TUI chat ready. Type a message and press Enter.");
+                self.resetInputField();
+            },
+            else => {},
+        }
+        try ctx.requestFocus(self.input.widget());
+        ctx.redraw = true;
+    }
+
+    fn saveSetupConfig(self: *Model) !void {
+        const config_path = try setupConfigPath(self.allocator);
+        defer self.allocator.free(config_path);
+
+        const config_dir = std.fs.path.dirname(config_path) orelse return error.InvalidPath;
+        try std.fs.cwd().makePath(config_dir);
+
+        const file = try std.fs.cwd().createFile(config_path, .{});
+        defer file.close();
+
+        const escaped_model = self.model_name;
+        const escaped_key = self.api_key;
+
+        const content = try std.fmt.allocPrint(
+            self.allocator,
+            "default_provider = \"{s}\"\ndefault_model = \"{s}\"\n\n[api_keys]\n{s} = \"{s}\"\n",
+            .{ self.provider_name, escaped_model, self.provider_name, escaped_key },
+        );
+        defer self.allocator.free(content);
+
+        try file.writeAll(content);
     }
 
     fn resetPaletteInputField(self: *Model) void {
@@ -1030,16 +1453,21 @@ pub const Model = struct {
     }
 
     fn addMessageUnlocked(self: *Model, role: []const u8, content: []const u8) !void {
+        try self.addMessageWithToolsUnlocked(role, content, null, null);
+    }
+
+    fn addMessageWithToolsUnlocked(self: *Model, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
         try self.messages.append(self.allocator, .{
             .role = try self.allocator.dupe(u8, role),
             .content = try self.allocator.dupe(u8, content),
+            .tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null,
+            .tool_calls = try cloneToolCallInfos(self.allocator, tool_calls),
         });
     }
 
     fn clearMessagesUnlocked(self: *Model) void {
         for (self.messages.items) |message| {
-            self.allocator.free(message.role);
-            self.allocator.free(message.content);
+            freeDisplayMessage(self.allocator, message);
         }
         self.messages.clearRetainingCapacity();
     }
@@ -1052,20 +1480,28 @@ pub const Model = struct {
     }
 
     fn appendHistoryMessageUnlocked(self: *Model, role: []const u8, content: []const u8) !void {
+        try self.appendHistoryMessageWithToolsUnlocked(role, content, null, null);
+    }
+
+    fn appendHistoryMessageWithToolsUnlocked(self: *Model, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
         try self.history.append(self.allocator, .{
             .role = try self.allocator.dupe(u8, role),
             .content = try self.allocator.dupe(u8, content),
-            .tool_call_id = null,
-            .tool_calls = null,
+            .tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null,
+            .tool_calls = try cloneToolCallInfos(self.allocator, tool_calls),
         });
     }
 
-    fn replaceMessageUnlocked(self: *Model, index: usize, role: []const u8, content: []const u8) !void {
+    fn replaceMessageUnlocked(self: *Model, index: usize, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
         var message = &self.messages.items[index];
         self.allocator.free(message.role);
         self.allocator.free(message.content);
+        if (message.tool_call_id) |value| self.allocator.free(value);
+        freeToolCallInfos(self.allocator, message.tool_calls);
         message.role = try self.allocator.dupe(u8, role);
         message.content = try self.allocator.dupe(u8, content);
+        message.tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null;
+        message.tool_calls = try cloneToolCallInfos(self.allocator, tool_calls);
     }
 
     fn appendToMessageUnlocked(self: *Model, index: usize, suffix: []const u8) !void {
@@ -1096,23 +1532,32 @@ pub const Model = struct {
         }
 
         const content = response.choices[0].message.content orelse "";
-        if (content.len == 0) {
+        const tool_calls = response.choices[0].message.tool_calls;
+        if (content.len == 0 and tool_calls == null) {
             self.finishRequestWithErrorText("No response received from provider");
             return;
         }
-        const output_tokens = estimateTextTokens(content);
+        var output_tokens = estimateTextTokens(content);
+        if (tool_calls) |calls| {
+            for (calls) |tool_call| {
+                output_tokens += estimateTextTokens(tool_call.name);
+                output_tokens += estimateTextTokens(tool_call.arguments);
+            }
+        }
 
         self.lock.lock();
         defer self.lock.unlock();
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                try self.replaceMessageUnlocked(index, "assistant", content);
+                try self.replaceMessageUnlocked(index, "assistant", content, null, tool_calls);
             }
             self.awaiting_first_token = false;
+        } else if (self.assistant_stream_index) |index| {
+            try self.replaceMessageUnlocked(index, "assistant", content, null, tool_calls);
         }
 
-        try self.appendHistoryMessageUnlocked("assistant", content);
+        try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
         _ = response.usage;
         self.total_input_tokens += input_tokens;
         self.total_output_tokens += output_tokens;
@@ -1143,7 +1588,7 @@ pub const Model = struct {
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                self.replaceMessageUnlocked(index, "error", text) catch {
+                self.replaceMessageUnlocked(index, "error", text, null, null) catch {
                     self.addMessageUnlocked("error", text) catch {};
                 };
             } else {
@@ -1169,7 +1614,7 @@ pub const Model = struct {
 
         const index = self.assistant_stream_index orelse return;
         if (self.awaiting_first_token) {
-            self.replaceMessageUnlocked(index, "assistant", token) catch {};
+            self.replaceMessageUnlocked(index, "assistant", token, null, null) catch {};
             self.awaiting_first_token = false;
             return;
         }
@@ -1228,6 +1673,153 @@ fn streamCallback(token: []const u8, done: bool) void {
     model.handleStreamToken(token, done);
 }
 
+fn setupProviderIndex(provider_name: []const u8) usize {
+    for (setup_provider_data, 0..) |candidate, idx| {
+        if (std.mem.eql(u8, candidate, provider_name)) return idx;
+    }
+    return 0;
+}
+
+fn setupProviderAllowsEmptyKey(provider_name: []const u8) bool {
+    return std.mem.eql(u8, provider_name, "ollama");
+}
+
+fn setupDefaultModel(provider_name: []const u8) []const u8 {
+    if (std.mem.eql(u8, provider_name, "openrouter")) return "anthropic/claude-sonnet-4";
+    if (std.mem.eql(u8, provider_name, "openai")) return "gpt-4o";
+    if (std.mem.eql(u8, provider_name, "anthropic")) return "claude-3-5-sonnet-20241022";
+    if (std.mem.eql(u8, provider_name, "groq")) return "llama-3.3-70b-versatile";
+    if (std.mem.eql(u8, provider_name, "together")) return "meta-llama/Meta-Llama-3.1-70B-Instruct-Turbo";
+    if (std.mem.eql(u8, provider_name, "gemini")) return "gemini-2.0-flash-exp";
+    if (std.mem.eql(u8, provider_name, "xai")) return "grok-beta";
+    if (std.mem.eql(u8, provider_name, "mistral")) return "mistral-large-latest";
+    if (std.mem.eql(u8, provider_name, "ollama")) return "gemma4:31b-cloud";
+    if (std.mem.eql(u8, provider_name, "zai")) return "glm-4.5-air";
+    return "default";
+}
+
+fn setupConfigPath(allocator: std.mem.Allocator) ![]const u8 {
+    const home = std.posix.getenv("HOME") orelse "/root";
+    return std.fmt.allocPrint(allocator, "{s}/.crushcode/config.toml", .{home});
+}
+
+fn appendSetupText(
+    ctx: vxfw.DrawContext,
+    child_list: *std.ArrayList(vxfw.SubSurface),
+    row: *u16,
+    width: u16,
+    text: []const u8,
+    style: vaxis.Style,
+) std.mem.Allocator.Error!void {
+    const widget = vxfw.Text{
+        .text = text,
+        .style = style,
+        .softwrap = true,
+        .width_basis = .parent,
+    };
+    const surface = try widget.draw(ctx.withConstraints(
+        .{ .width = width, .height = 0 },
+        .{ .width = width, .height = null },
+    ));
+    try child_list.append(ctx.arena, .{ .origin = .{ .row = row.*, .col = 0 }, .surface = surface });
+    row.* += surface.size.height;
+}
+
+fn shouldRenderMessageContent(message: *const Message) bool {
+    return message.content.len > 0 or message.tool_calls == null;
+}
+
+fn toolCallStatusIcon(status: ToolCallStatus) []const u8 {
+    return switch (status) {
+        .pending => "●",
+        .success => "✓",
+        .failed => "×",
+    };
+}
+
+fn toolCallStatusStyle(status: ToolCallStatus) vaxis.Style {
+    return switch (status) {
+        .pending => .{ .fg = .{ .index = 11 }, .bold = true },
+        .success => .{ .fg = .{ .index = 10 }, .bold = true },
+        .failed => .{ .fg = .{ .index = 1 }, .bold = true },
+    };
+}
+
+fn toolCallStatusForMessage(message: ?*const Message) ToolCallStatus {
+    const result = message orelse return .pending;
+    if (std.mem.eql(u8, result.role, "error")) return .failed;
+
+    const trimmed = std.mem.trim(u8, result.content, " \t\r\n");
+    if (trimmed.len >= 6 and std.ascii.eqlIgnoreCase(trimmed[0..6], "error:")) {
+        return .failed;
+    }
+    return .success;
+}
+
+fn toolCallOutputText(allocator: std.mem.Allocator, output: ?[]const u8, status: ToolCallStatus) ![]const u8 {
+    const text = output orelse {
+        if (status == .pending) return allocator.dupe(u8, "  running...");
+        return allocator.dupe(u8, "");
+    };
+    if (text.len == 0) {
+        if (status == .pending) return allocator.dupe(u8, "  running...");
+        return allocator.dupe(u8, "");
+    }
+
+    var builder = std.ArrayList(u8).empty;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    var line_count: usize = 0;
+    var remaining: usize = 0;
+    while (lines.next()) |line| {
+        if (line_count < 5) {
+            if (line_count > 0) try builder.append(allocator, '\n');
+            try builder.appendSlice(allocator, "  ");
+            try builder.appendSlice(allocator, line);
+        } else {
+            remaining += 1;
+        }
+        line_count += 1;
+    }
+    if (remaining > 0) {
+        if (builder.items.len > 0) try builder.append(allocator, '\n');
+        try builder.writer(allocator).print("  and {d} more lines...", .{remaining});
+    }
+    return builder.toOwnedSlice(allocator);
+}
+
+fn findToolCallBefore(messages: []const Message, before_index: usize, tool_call_id: []const u8) ?core.client.ToolCallInfo {
+    var idx = before_index;
+    while (idx > 0) {
+        idx -= 1;
+        if (messages[idx].tool_calls) |tool_calls| {
+            for (tool_calls) |tool_call| {
+                if (std.mem.eql(u8, tool_call.id, tool_call_id)) return tool_call;
+            }
+        }
+    }
+    return null;
+}
+
+fn findToolResultMessageAfter(messages: []const Message, after_index: usize, tool_call_id: []const u8) ?*const Message {
+    var idx = after_index + 1;
+    while (idx < messages.len) : (idx += 1) {
+        const message = &messages[idx];
+        if (message.tool_call_id) |message_tool_call_id| {
+            if (std.mem.eql(u8, message_tool_call_id, tool_call_id)) return message;
+        }
+    }
+    return null;
+}
+
+fn visibleMessageCount(messages: []const Message) usize {
+    var count: usize = 0;
+    for (messages, 0..) |message, idx| {
+        if (message.tool_call_id != null and findToolCallBefore(messages, idx, message.tool_call_id.?) != null) continue;
+        count += 1;
+    }
+    return count;
+}
+
 fn messageRoleStyle(role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "user")) {
         return .{ .fg = .{ .index = 39 }, .bold = true };
@@ -1240,6 +1832,9 @@ fn messageRoleStyle(role: []const u8) vaxis.Style {
     }
     if (std.mem.eql(u8, role, "system")) {
         return .{ .fg = .{ .index = 11 }, .bold = true };
+    }
+    if (std.mem.eql(u8, role, "tool")) {
+        return .{ .fg = .{ .index = 14 }, .bold = true };
     }
     return .{ .fg = .{ .index = 8 }, .bold = true };
 }
@@ -1257,6 +1852,9 @@ fn messageBodyStyle(role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "system")) {
         return .{ .fg = .{ .index = 11 }, .dim = true };
     }
+    if (std.mem.eql(u8, role, "tool")) {
+        return .{ .fg = .{ .index = 14 }, .dim = true };
+    }
     return .{ .fg = .{ .index = 8 }, .dim = true };
 }
 
@@ -1265,14 +1863,36 @@ fn messageRoleLabel(role: []const u8) []const u8 {
     if (std.mem.eql(u8, role, "assistant")) return "Assistant";
     if (std.mem.eql(u8, role, "error")) return "Error";
     if (std.mem.eql(u8, role, "system")) return "System";
+    if (std.mem.eql(u8, role, "tool")) return "Tool";
     return role;
 }
 
-fn estimateContentHeight(messages: []const Message) ?u32 {
+fn estimateContentHeight(model: *const Model) ?u32 {
     var total: u32 = 0;
+    const messages = model.messages.items;
+    const visible_count = visibleMessageCount(messages);
+    var visible_index: usize = 0;
     for (messages, 0..) |message, idx| {
-        total += @intCast(1 + std.mem.count(u8, message.content, "\n"));
-        if (idx + 1 < messages.len) total += 2;
+        if (message.tool_call_id != null and findToolCallBefore(messages, idx, message.tool_call_id.?) != null) continue;
+
+        if (shouldRenderMessageContent(&message)) {
+            total += @intCast(1 + std.mem.count(u8, message.content, "\n"));
+        }
+        if (message.tool_calls) |tool_calls| {
+            for (tool_calls) |tool_call| {
+                total += 1;
+                if (tool_call.arguments.len > 0) total += @intCast(std.mem.count(u8, tool_call.arguments, "\n"));
+                const result = findToolResultMessageAfter(messages, idx, tool_call.id);
+                const output = result orelse null;
+                const output_text = if (output) |message_result| message_result.content else if (toolCallStatusForMessage(result) == .pending) "running..." else "";
+                if (output_text.len > 0) {
+                    total += @intCast(@min(std.mem.count(u8, output_text, "\n") + 1, 6));
+                }
+            }
+        }
+
+        visible_index += 1;
+        if (visible_index < visible_count) total += 2;
     }
     return total;
 }
@@ -1415,6 +2035,26 @@ fn freeToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const core.cli
         }
         allocator.free(calls);
     }
+}
+
+fn cloneToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const core.client.ToolCallInfo) !?[]const core.client.ToolCallInfo {
+    const source = tool_calls orelse return null;
+    const copied = try allocator.alloc(core.client.ToolCallInfo, source.len);
+    for (source, 0..) |tool_call, i| {
+        copied[i] = .{
+            .id = try allocator.dupe(u8, tool_call.id),
+            .name = try allocator.dupe(u8, tool_call.name),
+            .arguments = try allocator.dupe(u8, tool_call.arguments),
+        };
+    }
+    return copied;
+}
+
+fn freeDisplayMessage(allocator: std.mem.Allocator, message: Message) void {
+    allocator.free(message.role);
+    allocator.free(message.content);
+    if (message.tool_call_id) |tool_call_id| allocator.free(tool_call_id);
+    freeToolCallInfos(allocator, message.tool_calls);
 }
 
 fn freeChatMessage(allocator: std.mem.Allocator, message: core.ChatMessage) void {
