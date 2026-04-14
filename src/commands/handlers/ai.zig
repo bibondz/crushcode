@@ -340,24 +340,46 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
 
         if (!is_local) {
             const existing = config.getApiKey(provider_name) orelse "";
-            if (existing.len > 0 and !std.mem.startsWith(u8, existing, "sk-your") and !std.mem.startsWith(u8, existing, "xai-your") and !std.mem.startsWith(u8, existing, "gsk_your") and !std.mem.startsWith(u8, existing, "AIzaSy") and !std.mem.startsWith(u8, existing, "your-")) {
-                stdout_print("\nAPI key for {s} already configured.\n", .{provider_name});
-                api_key = existing;
-            } else {
-                stdout_print("\nEnter API key for {s}: ", .{provider_name});
-                const key_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 512) catch {
-                    stdout_print("\nSetup cancelled.\n", .{});
-                    return;
-                };
-                if (key_input) |ki| {
-                    defer allocator.free(ki);
-                    const trimmed = std.mem.trim(u8, ki, " \t\r\n");
-                    if (trimmed.len > 0) {
-                        @memcpy(api_key_buf[0..trimmed.len], trimmed);
-                        api_key = api_key_buf[0..trimmed.len];
+            const has_real_key = existing.len > 0 and !std.mem.startsWith(u8, existing, "sk-your") and !std.mem.startsWith(u8, existing, "xai-your") and !std.mem.startsWith(u8, existing, "gsk_your") and !std.mem.startsWith(u8, existing, "AIzaSy") and !std.mem.startsWith(u8, existing, "your-");
+
+            api_key = blk: {
+                if (has_real_key) {
+                    stdout_print("\nAPI key for {s} already configured.\n", .{provider_name});
+                    stdout_print("Press Enter to keep it, or type a new key: ", .{});
+                    const key_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 512) catch {
+                        break :blk existing;
+                    };
+                    if (key_input) |ki| {
+                        defer allocator.free(ki);
+                        const trimmed = std.mem.trim(u8, ki, " \t\r\n");
+                        if (trimmed.len > 0) {
+                            @memcpy(api_key_buf[0..trimmed.len], trimmed);
+                            break :blk api_key_buf[0..trimmed.len];
+                        } else {
+                            break :blk existing;
+                        }
+                    } else {
+                        break :blk existing;
+                    }
+                } else {
+                    stdout_print("\nEnter API key for {s}: ", .{provider_name});
+                    const key_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 512) catch {
+                        break :blk "";
+                    };
+                    if (key_input) |ki| {
+                        defer allocator.free(ki);
+                        const trimmed = std.mem.trim(u8, ki, " \t\r\n");
+                        if (trimmed.len > 0) {
+                            @memcpy(api_key_buf[0..trimmed.len], trimmed);
+                            break :blk api_key_buf[0..trimmed.len];
+                        } else {
+                            break :blk "";
+                        }
+                    } else {
+                        break :blk "";
                     }
                 }
-            }
+            };
         }
 
         if (!is_local and api_key.len == 0) {
