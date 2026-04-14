@@ -46,6 +46,10 @@ const ToolCallStatus = enum {
     failed,
 };
 
+const recent_files_max = 5;
+const recent_files_display_max = 3;
+const recent_file_tool_names = [_][]const u8{ "read_file", "write_file", "edit", "glob" };
+
 const RoleLabelWidget = struct {
     label: []const u8,
     style: vaxis.Style,
@@ -396,6 +400,45 @@ const SurfaceWidget = struct {
         _ = ctx;
         const self: *const SurfaceWidget = @ptrCast(@alignCast(ptr));
         return self.surface;
+    }
+};
+
+const FilesWidget = struct {
+    files: []const []const u8,
+
+    fn widget(self: *const FilesWidget) vxfw.Widget {
+        return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const FilesWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const FilesWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const width = ctx.max.width orelse ctx.min.width;
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
+        @memset(surface.buffer, .{ .style = .{} });
+
+        if (self.files.len == 0) return surface;
+
+        var buffer = std.ArrayList(u8).empty;
+        try buffer.appendSlice(ctx.arena, "📄 Files: ");
+        for (self.files, 0..) |file, idx| {
+            if (idx > 0) try buffer.appendSlice(ctx.arena, ", ");
+            try buffer.appendSlice(ctx.arena, file);
+        }
+
+        const text = vxfw.Text{
+            .text = try buffer.toOwnedSlice(ctx.arena),
+            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const text_surface = try text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = text_surface };
+        return .{ .size = surface.size, .widget = self.widget(), .buffer = surface.buffer, .children = children };
     }
 };
 
@@ -755,6 +798,7 @@ pub const Model = struct {
     palette_filter: []const u8,
     scroll_view: vxfw.ScrollView,
     scroll_bars: vxfw.ScrollBars,
+    recent_files: std.ArrayList([]const u8),
     lock: std.Thread.Mutex,
     worker: ?std.Thread,
     request_active: bool,
@@ -808,6 +852,7 @@ pub const Model = struct {
                 .wheel_scroll = 3,
             },
             .scroll_bars = undefined,
+            .recent_files = try std.ArrayList([]const u8).initCapacity(allocator, 5),
             .lock = .{},
             .worker = null,
             .request_active = false,
@@ -870,6 +915,8 @@ pub const Model = struct {
         self.input.deinit();
         self.palette_input.deinit();
         self.clearPaletteFilter();
+        for (self.recent_files.items) |file| self.allocator.free(file);
+        self.recent_files.deinit(self.allocator);
         for (self.messages.items) |message| {
             freeDisplayMessage(self.allocator, message);
         }
@@ -1024,9 +1071,10 @@ pub const Model = struct {
 
         const max = ctx.max.size();
         const header_height: u16 = 2;
+        const files_height: u16 = if (self.recent_files.items.len > 0) 1 else 0;
         const status_height: u16 = 1;
         const input_height: u16 = 1;
-        const body_height = max.height -| (header_height + status_height + input_height);
+        const body_height = max.height -| (header_height + files_height + status_height + input_height);
 
         const full_title = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
@@ -1128,8 +1176,8 @@ pub const Model = struct {
         defer child_list.deinit(ctx.arena);
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = body_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = status_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + status_height), .col = 0 }, .surface = input_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height), .col = 0 }, .surface = status_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height + status_height), .col = 0 }, .surface = input_surface });
 
         if (self.show_palette) {
             const palette = CommandPaletteWidget{
@@ -1149,6 +1197,16 @@ pub const Model = struct {
                 },
                 .surface = palette_surface,
             });
+        }
+
+        if (self.recent_files.items.len > 0) {
+            const visible_files = recentFilesVisibleCount(self.recent_files.items);
+            const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files] };
+            const files_surface = try files_widget.draw(ctx.withConstraints(
+                .{ .width = max.width, .height = 1 },
+                .{ .width = max.width, .height = 1 },
+            ));
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = files_surface });
         }
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
@@ -1513,6 +1571,35 @@ pub const Model = struct {
         message.content = updated;
     }
 
+    fn trackToolCallFilesUnlocked(self: *Model, tool_calls: ?[]const core.client.ToolCallInfo) !void {
+        const calls = tool_calls orelse return;
+        for (calls) |tool_call| {
+            if (!isRecentFileTool(tool_call.name)) continue;
+            if (extractToolFilePath(tool_call.arguments)) |path| {
+                try self.addRecentFileUnlocked(path);
+            }
+        }
+    }
+
+    fn addRecentFileUnlocked(self: *Model, file_path: []const u8) !void {
+        var found_index: ?usize = null;
+        for (self.recent_files.items, 0..) |existing, idx| {
+            if (std.mem.eql(u8, existing, file_path)) {
+                found_index = idx;
+                break;
+            }
+        }
+        if (found_index) |idx| {
+            self.allocator.free(self.recent_files.items[idx]);
+            _ = self.recent_files.orderedRemove(idx);
+        }
+        const owned = try self.allocator.dupe(u8, file_path);
+        try self.recent_files.append(self.allocator, owned);
+        if (self.recent_files.items.len > recent_files_max) {
+            self.allocator.free(self.recent_files.orderedRemove(0));
+        }
+    }
+
     fn requestThreadMain(self: *Model) void {
         active_stream_model = self;
         defer active_stream_model = null;
@@ -1543,6 +1630,7 @@ pub const Model = struct {
                 output_tokens += estimateTextTokens(tool_call.name);
                 output_tokens += estimateTextTokens(tool_call.arguments);
             }
+            self.trackToolCallFilesUnlocked(tool_calls) catch {};
         }
 
         self.lock.lock();
@@ -2005,6 +2093,36 @@ fn repeated(allocator: std.mem.Allocator, token: []const u8, count: u16) ![]cons
         try buffer.appendSlice(allocator, token);
     }
     return buffer.toOwnedSlice(allocator);
+}
+
+fn recentFilesDisplay(files: []const []const u8) []const []const u8 {
+    return files[0..@min(files.len, recent_files_display_max)];
+}
+
+fn isRecentFileTool(name: []const u8) bool {
+    for (recent_file_tool_names) |candidate| {
+        if (std.mem.eql(u8, candidate, name)) return true;
+    }
+    return false;
+}
+
+fn extractToolFilePath(arguments: []const u8) ?[]const u8 {
+    inline for (.{ "path", "file_path" }) |key| {
+        if (std.mem.indexOf(u8, arguments, std.fmt.comptimePrint("\"{s}\"", .{key}))) |key_index| {
+            const colon = std.mem.indexOfPos(u8, arguments, key_index, ":") orelse return null;
+            var start = colon + 1;
+            while (start < arguments.len and std.ascii.isWhitespace(arguments[start])) : (start += 1) {}
+            if (start >= arguments.len or arguments[start] != '"') return null;
+            start += 1;
+            const end = std.mem.indexOfScalarPos(u8, arguments, start, '"') orelse return null;
+            return arguments[start..end];
+        }
+    }
+    return null;
+}
+
+fn recentFilesVisibleCount(files: []const []const u8) usize {
+    return @min(files.len, recent_files_display_max);
 }
 
 fn contentSurfaceWidget(allocator: std.mem.Allocator, surface: vxfw.Surface) !vxfw.Widget {
