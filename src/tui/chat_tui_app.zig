@@ -14,6 +14,22 @@ const usage_pricing = @import("usage_pricing");
 const vxfw = vaxis.vxfw;
 const app_version = "0.2.2";
 
+pub const WorkerStatus = enum {
+    pending,
+    running,
+    done,
+    @"error",
+    cancelled,
+};
+
+pub const WorkerItem = struct {
+    id: u32,
+    task: []const u8,
+    status: WorkerStatus,
+    result: ?[]const u8 = null,
+    @"error": ?[]const u8 = null,
+};
+
 pub const Options = struct {
     provider_name: []const u8,
     model_name: []const u8,
@@ -741,6 +757,67 @@ const SidebarWidget = struct {
         row += 1;
         children[child_idx] = .{
             .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "Workers", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        if (self.model.workers.items.len == 0) {
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, "(none)", self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        } else {
+            var idx: usize = 0;
+            for (self.model.workers.items) |w_item| {
+                if (idx >= 3) break;
+                const status_ch: u8 = switch (w_item.status) {
+                    .pending => 'P',
+                    .running => 'R',
+                    .done => 'D',
+                    .@"error" => 'E',
+                    .cancelled => 'C',
+                };
+                const status_style: vaxis.Style = switch (w_item.status) {
+                    .pending => .{ .fg = theme.dimmed },
+                    .running => .{ .fg = theme.accent },
+                    .done => .{ .fg = .{ .index = 10 } },
+                    .@"error" => .{ .fg = .{ .index = 1 } },
+                    .cancelled => .{ .fg = theme.dimmed },
+                };
+                idx += 1;
+                const id_txt = try std.fmt.allocPrint(ctx.arena, "#{d}", .{w_item.id});
+                const combined_txt = try std.fmt.allocPrint(ctx.arena, "[{c}] {s}", .{ status_ch, id_txt });
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, combined_txt, 8, status_style),
+                };
+                child_idx += 1;
+
+                const task_truncated = if (w_item.task.len > w - 9) w_item.task[0..(w - 9)] else w_item.task;
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 9 },
+                    .surface = try self.buildText(ctx, task_truncated, self.width - 10, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+            if (self.model.workers.items.len > 3) {
+                const overflow_txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{self.model.workers.items.len - 3});
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+        }
+
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
             .surface = try self.buildSectionTitle(ctx, "Theme", w, theme),
         };
         child_idx += 1;
@@ -863,6 +940,8 @@ const palette_command_data = [_]Command{
     .{ .name = "/theme dark", .description = "Switch to dark theme", .shortcut = "td" },
     .{ .name = "/theme light", .description = "Switch to light theme", .shortcut = "tl" },
     .{ .name = "/theme mono", .description = "Switch to monochrome theme", .shortcut = "tm" },
+    .{ .name = "/workers", .description = "List active workers", .shortcut = "w" },
+    .{ .name = "/kill", .description = "Kill a worker: /kill <id>", .shortcut = "k" },
     .{ .name = "/help", .description = "Show available commands", .shortcut = "h" },
 };
 
@@ -1533,6 +1612,8 @@ pub const Model = struct {
     resume_prompt_session: ?session_mod.Session,
     resume_prompt_path: ?[]const u8,
     sidebar_visible: bool = false,
+    workers: std.ArrayList(WorkerItem),
+    next_worker_id: u32 = 0,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -1611,6 +1692,7 @@ pub const Model = struct {
             .resume_prompt_session = null,
             .resume_prompt_path = null,
             .sidebar_visible = false,
+            .workers = std.ArrayList(WorkerItem).empty,
         };
         errdefer model.destroy();
 
@@ -1618,6 +1700,7 @@ pub const Model = struct {
         model.history = try std.ArrayList(core.ChatMessage).initCapacity(allocator, 8);
         model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
         model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
+        model.workers = try std.ArrayList(WorkerItem).initCapacity(allocator, 4);
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -1649,6 +1732,12 @@ pub const Model = struct {
             thread.join();
             self.worker = null;
         }
+        for (self.workers.items) |*w| {
+            if (w.task.len > 0) self.allocator.free(w.task);
+            if (w.result) |r| self.allocator.free(r);
+            if (w.@"error") |e| self.allocator.free(e);
+        }
+        self.workers.deinit(self.allocator);
         if (self.client) |*client| {
             client.deinit();
         }
@@ -2969,13 +3058,61 @@ pub const Model = struct {
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.addMessageUnlocked("assistant", "/compact is not yet implemented.");
         } else if (std.mem.eql(u8, name, "/model")) {
             const text = try std.fmt.allocPrint(self.allocator, "Current model: {s}/{s}", .{ self.provider_name, self.model_name });
             defer self.allocator.free(text);
             try self.addMessageUnlocked("assistant", text);
+        } else if (std.mem.eql(u8, name, "/workers")) {
+            if (self.workers.items.len == 0) {
+                try self.addMessageUnlocked("assistant", "No active workers.");
+            } else {
+                var buf: [1024]u8 = undefined;
+                var offset: usize = 0;
+                const head_result = std.fmt.bufPrint(&buf, "Active workers:\n", .{});
+                if (head_result) |written| {
+                    offset = written.len;
+                } else |_| {}
+                for (self.workers.items) |w| {
+                    const status_str = switch (w.status) {
+                        .pending => "pending",
+                        .running => "running",
+                        .done => "done",
+                        .@"error" => "error",
+                        .cancelled => "cancelled",
+                    };
+                    const result_preview = if (w.result) |r| if (r.len > 30) r[0..30] else r else "(none)";
+                    const line_result = std.fmt.bufPrint(buf[offset..], "#{d} [{s}] {s} → {s}\n", .{ w.id, status_str, w.task, result_preview });
+                    if (line_result) |written| {
+                        offset += written.len;
+                    } else |_| {}
+                }
+                const text = try self.allocator.dupe(u8, &buf);
+                try self.addMessageUnlocked("assistant", text);
+            }
+        } else if (std.mem.startsWith(u8, name, "/kill ")) {
+            const id_str = name[6..];
+            const id = std.fmt.parseInt(u32, id_str, 10) catch {
+                try self.addMessageUnlocked("assistant", "Invalid worker ID. Usage: /kill <id>");
+                ctx.redraw = true;
+                return;
+            };
+            var found = false;
+            for (self.workers.items) |*w| {
+                if (w.id == id) {
+                    w.status = .cancelled;
+                    const text = try std.fmt.allocPrint(self.allocator, "Worker #{d} cancelled.", .{id});
+                    try self.addMessageUnlocked("assistant", text);
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                const text = try std.fmt.allocPrint(self.allocator, "Worker #{d} not found.", .{id});
+                try self.addMessageUnlocked("assistant", text);
+            }
         }
 
         ctx.redraw = true;
