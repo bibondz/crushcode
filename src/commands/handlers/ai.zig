@@ -406,8 +406,47 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
             try config.setApiKey(provider_name, api_key);
         }
 
+        var default_model: []const u8 = "";
+        default_model = blk: {
+            stdout_print("\nFetching models from {s}...\n", .{provider_name});
+            const models = registry.fetchModels(provider_name, api_key) catch {
+                stdout_print("Could not fetch models — skipping model selection.\n", .{});
+                break :blk "";
+            };
+            defer {
+                for (models) |m| allocator.free(m);
+                allocator.free(models);
+            }
+            if (models.len > 0) {
+                stdout_print("\nAvailable models:\n\n", .{});
+                for (models, 1..) |m, i| {
+                    stdout_print("  {d}. {s}\n", .{ i, m });
+                }
+                stdout_print("\nChoose model [1-{d}] or press Enter for first: ", .{models.len});
+                const model_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256) catch {
+                    break :blk models[0];
+                };
+                if (model_input) |mi| {
+                    defer allocator.free(mi);
+                    const trimmed = std.mem.trim(u8, mi, " \t\r\n");
+                    if (trimmed.len == 0) {
+                        break :blk models[0];
+                    }
+                    const num = std.fmt.parseInt(usize, trimmed, 10) catch 0;
+                    if (num >= 1 and num <= models.len) {
+                        break :blk models[num - 1];
+                    } else {
+                        break :blk models[0];
+                    }
+                } else {
+                    break :blk models[0];
+                }
+            }
+            break :blk "";
+        };
+
         config.default_provider = try allocator.dupe(u8, provider_name);
-        config.default_model = try allocator.dupe(u8, "");
+        config.default_model = try allocator.dupe(u8, default_model);
 
         const config_path = config_mod.getConfigPath(allocator) catch {
             stdout_print("\nConfigured {s} as default provider.\n", .{provider_name});
