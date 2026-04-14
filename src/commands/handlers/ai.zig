@@ -325,7 +325,7 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
     if (line) |input| {
         defer allocator.free(input);
         const choice = std.mem.trim(u8, input, " \t\r\n");
-        if (choice.len == 0) {
+        if (choice.len == 0 or std.mem.eql(u8, choice, "q") or std.mem.eql(u8, choice, "quit") or std.mem.eql(u8, choice, "exit")) {
             stdout_print("Setup cancelled.\n", .{});
             return;
         }
@@ -337,12 +337,17 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
             }
         }
 
-        var api_key_buf: [512]u8 = undefined;
-        var api_key: []const u8 = "";
-
         var registry = registry_mod.ProviderRegistry.init(allocator);
         defer registry.deinit();
         try registry.registerAllProviders();
+
+        if (registry.getProvider(provider_name) == null) {
+            stdout_print("\nUnknown provider '{s}'.\nRun 'crushcode list --providers' to see available providers.\n", .{provider_name});
+            return;
+        }
+
+        var api_key_buf: [512]u8 = undefined;
+        var api_key: []const u8 = "";
 
         const is_local = std.mem.eql(u8, provider_name, "ollama") or
             std.mem.eql(u8, provider_name, "lm_studio") or
