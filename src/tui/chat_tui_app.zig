@@ -1,6 +1,9 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const core = @import("core_api");
+const config_mod = @import("config");
+const fallback_mod = @import("fallback");
+const graph_mod = @import("graph");
 const registry_mod = @import("registry");
 const markdown = @import("markdown");
 const usage_pricing = @import("usage_pricing");
@@ -49,6 +52,85 @@ const ToolCallStatus = enum {
 const recent_files_max = 5;
 const recent_files_display_max = 3;
 const recent_file_tool_names = [_][]const u8{ "read_file", "write_file", "edit", "glob" };
+const context_source_files = [_][]const u8{
+    "build.zig",
+    "src/main.zig",
+    "src/cli/args.zig",
+    "src/commands/chat.zig",
+    "src/config/config.zig",
+    "src/ai/client.zig",
+    "src/ai/registry.zig",
+    "src/tui/chat_tui_app.zig",
+};
+
+const builtin_tool_schemas = [_]core.ToolSchema{
+    .{
+        .name = "read_file",
+        .description = "Read a file from disk",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+        ,
+    },
+    .{
+        .name = "shell",
+        .description = "Run a shell command",
+        .parameters =
+        \\{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}
+        ,
+    },
+    .{
+        .name = "write_file",
+        .description = "Write full content to a file",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}
+        ,
+    },
+    .{
+        .name = "glob",
+        .description = "Find files matching a glob pattern",
+        .parameters =
+        \\{"type":"object","properties":{"pattern":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
+        ,
+    },
+    .{
+        .name = "grep",
+        .description = "Search file contents for text",
+        .parameters =
+        \\{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
+        ,
+    },
+    .{
+        .name = "edit",
+        .description = "Replace one exact string in a file",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["file_path","old_string","new_string"]}
+        ,
+    },
+};
+
+const PermissionMode = enum {
+    default,
+    auto,
+    plan,
+};
+
+const PermissionDecision = enum {
+    yes,
+    no,
+    always,
+};
+
+const ToolPermission = struct {
+    tool_name: []const u8,
+    arguments: []const u8,
+};
+
+const FallbackProvider = struct {
+    provider_name: []const u8,
+    api_key: []const u8,
+    model_name: []const u8,
+    override_url: ?[]const u8,
+};
 
 const RoleLabelWidget = struct {
     label: []const u8,
@@ -649,6 +731,102 @@ const CommandPaletteWidget = struct {
     }
 };
 
+const PermissionDialogWidget = struct {
+    model: *const Model,
+
+    fn widget(self: *const PermissionDialogWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const PermissionDialogWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const PermissionDialogWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const pending = self.model.pending_permission orelse {
+            return vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = 0, .height = 0 });
+        };
+
+        const max = ctx.max.size();
+        var width: u16 = @min(max.width -| 4, @as(u16, 84));
+        if (width < 36) width = @min(max.width, @as(u16, 36));
+        if (width == 0) width = max.width;
+        const inner_width = width -| 4;
+
+        var child_list = std.ArrayList(vxfw.SubSurface).empty;
+        defer child_list.deinit(ctx.arena);
+
+        const title = vxfw.Text{
+            .text = "Tool permission required",
+            .style = .{ .fg = .{ .index = 15 }, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const title_surface = try title.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface });
+
+        const tool_line = try std.fmt.allocPrint(ctx.arena, "Allow {s}?", .{pending.tool_name});
+        const tool_text = vxfw.Text{
+            .text = tool_line,
+            .style = .{ .fg = .{ .index = 11 }, .bold = true },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const tool_surface = try tool_text.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 0 },
+            .{ .width = inner_width, .height = null },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = tool_surface });
+
+        const args_text = vxfw.Text{
+            .text = pending.arguments,
+            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .softwrap = true,
+            .width_basis = .parent,
+        };
+        const args_surface = try args_text.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 0 },
+            .{ .width = inner_width, .height = null },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(4 + tool_surface.size.height), .col = 2 }, .surface = args_surface });
+
+        const footer_line = "[y] yes   [n] no   [a] always";
+        const footer = vxfw.Text{
+            .text = footer_line,
+            .style = .{ .fg = .{ .index = 10 }, .bold = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const footer_row: u16 = @intCast(5 + tool_surface.size.height + args_surface.size.height);
+        const footer_surface = try footer.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = footer_row, .col = 2 }, .surface = footer_surface });
+
+        const height: u16 = footer_row + 2;
+        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
+        @memset(surface.buffer, .{ .style = .{ .bg = .{ .index = 0 } } });
+        drawBorder(&surface, .{ .fg = .{ .index = 11 } });
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
+        @memcpy(children, child_list.items);
+        return .{
+            .size = surface.size,
+            .widget = self.widget(),
+            .buffer = surface.buffer,
+            .children = children,
+        };
+    }
+};
+
 const SetupProviderRowWidget = struct {
     provider_name: []const u8,
     selected: bool,
@@ -781,6 +959,9 @@ pub const Model = struct {
     model_name: []const u8,
     api_key: []const u8,
     system_prompt: ?[]const u8,
+    effective_system_prompt: ?[]const u8,
+    codebase_context: ?[]const u8,
+    context_file_count: u32,
     max_tokens: u32,
     temperature: f32,
     override_url: ?[]const u8,
@@ -799,6 +980,17 @@ pub const Model = struct {
     scroll_view: vxfw.ScrollView,
     scroll_bars: vxfw.ScrollBars,
     recent_files: std.ArrayList([]const u8),
+    fallback_chain: fallback_mod.FallbackChain,
+    fallback_providers: std.ArrayList(FallbackProvider),
+    active_provider_index: usize,
+    max_iterations: u32,
+    permission_mode: PermissionMode,
+    pending_permission: ?ToolPermission,
+    always_allow_tools: std.ArrayList([]const u8),
+    permission_mutex: std.Thread.Mutex,
+    permission_condition: std.Thread.Condition,
+    permission_decision: ?PermissionDecision,
+    status_message: []const u8,
     lock: std.Thread.Mutex,
     worker: ?std.Thread,
     request_active: bool,
@@ -831,6 +1023,9 @@ pub const Model = struct {
             .model_name = try allocator.dupe(u8, options.model_name),
             .api_key = try allocator.dupe(u8, options.api_key),
             .system_prompt = if (options.system_prompt) |system_prompt| try allocator.dupe(u8, system_prompt) else null,
+            .effective_system_prompt = null,
+            .codebase_context = null,
+            .context_file_count = 0,
             .max_tokens = options.max_tokens,
             .temperature = options.temperature,
             .override_url = if (options.override_url) |override_url| try allocator.dupe(u8, override_url) else null,
@@ -853,6 +1048,17 @@ pub const Model = struct {
             },
             .scroll_bars = undefined,
             .recent_files = try std.ArrayList([]const u8).initCapacity(allocator, 5),
+            .fallback_chain = fallback_mod.FallbackChain.init(allocator),
+            .fallback_providers = std.ArrayList(FallbackProvider).empty,
+            .active_provider_index = 0,
+            .max_iterations = 10,
+            .permission_mode = .default,
+            .pending_permission = null,
+            .always_allow_tools = std.ArrayList([]const u8).empty,
+            .permission_mutex = .{},
+            .permission_condition = .{},
+            .permission_decision = null,
+            .status_message = "",
             .lock = .{},
             .worker = null,
             .request_active = false,
@@ -874,6 +1080,8 @@ pub const Model = struct {
 
         model.messages = try std.ArrayList(Message).initCapacity(allocator, 8);
         model.history = try std.ArrayList(core.ChatMessage).initCapacity(allocator, 8);
+        model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
+        model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
         model.input.style = .{ .fg = .{ .index = 15 } };
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -891,6 +1099,8 @@ pub const Model = struct {
         };
 
         try model.registry.registerAllProviders();
+        try model.buildCodebaseContext();
+        try model.loadFallbackProviders();
         if (model.setup_phase != 0) {
             const selected_provider = setup_provider_data[model.setup_provider_index];
             if (model.provider_name.len == 0) {
@@ -905,6 +1115,7 @@ pub const Model = struct {
     }
 
     pub fn destroy(self: *Model) void {
+        self.resolvePendingPermission(.no);
         if (self.worker) |thread| {
             thread.join();
             self.worker = null;
@@ -917,6 +1128,12 @@ pub const Model = struct {
         self.clearPaletteFilter();
         for (self.recent_files.items) |file| self.allocator.free(file);
         self.recent_files.deinit(self.allocator);
+        self.fallback_chain.deinit();
+        for (self.fallback_providers.items) |provider| self.freeFallbackProvider(provider);
+        self.fallback_providers.deinit(self.allocator);
+        if (self.pending_permission) |pending| self.freePendingPermission(pending);
+        for (self.always_allow_tools.items) |tool_name| self.allocator.free(tool_name);
+        self.always_allow_tools.deinit(self.allocator);
         for (self.messages.items) |message| {
             freeDisplayMessage(self.allocator, message);
         }
@@ -928,7 +1145,10 @@ pub const Model = struct {
         self.registry.deinit();
         self.pricing_table.deinit();
         if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
+        if (self.effective_system_prompt) |system_prompt| self.allocator.free(system_prompt);
+        if (self.codebase_context) |codebase_context| self.allocator.free(codebase_context);
         if (self.override_url) |override_url| self.allocator.free(override_url);
+        if (self.status_message.len > 0) self.allocator.free(self.status_message);
         if (self.setup_feedback.len > 0) self.allocator.free(self.setup_feedback);
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
@@ -943,36 +1163,240 @@ pub const Model = struct {
     }
 
     fn initializeClient(self: *Model) !void {
-        if (self.provider_name.len == 0) {
+        return self.initializeClientFor(self.provider_name, self.model_name, self.api_key, self.override_url);
+    }
+
+    fn initializeClientFor(self: *Model, provider_name: []const u8, model_name: []const u8, api_key: []const u8, override_url: ?[]const u8) !void {
+        if (provider_name.len == 0) {
             try self.addMessageUnlocked("error", "No provider configured. Set one in ~/.crushcode/config.toml or use a profile.");
             return;
         }
 
-        const provider = self.registry.getProvider(self.provider_name) orelse {
-            const text = try std.fmt.allocPrint(self.allocator, "Provider '{s}' is not registered. Run 'crushcode list --providers' to see available providers.", .{self.provider_name});
+        const provider = self.registry.getProvider(provider_name) orelse {
+            const text = try std.fmt.allocPrint(self.allocator, "Provider '{s}' is not registered. Run 'crushcode list --providers' to see available providers.", .{provider_name});
             defer self.allocator.free(text);
             try self.addMessageUnlocked("error", text);
             return;
         };
 
-        if (self.api_key.len == 0 and !provider.config.is_local) {
+        if (api_key.len == 0 and !provider.config.is_local) {
             try self.addMessageUnlocked("error", "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml");
             return;
         }
 
-        var client = try core.AIClient.init(self.allocator, provider, self.model_name, self.api_key);
+        if (self.client) |*existing_client| {
+            existing_client.deinit();
+            self.client = null;
+        }
+
+        var client = try core.AIClient.init(self.allocator, provider, model_name, api_key);
         client.max_tokens = self.max_tokens;
         client.temperature = self.temperature;
-        if (self.override_url) |override_url| {
+        client.setTools(&builtin_tool_schemas);
+        if (override_url) |value| {
             self.allocator.free(client.provider.config.base_url);
-            client.provider.config.base_url = try self.allocator.dupe(u8, override_url);
+            client.provider.config.base_url = try self.allocator.dupe(u8, value);
         }
-        if (self.system_prompt) |system_prompt| {
-            if (system_prompt.len > 0) {
-                client.setSystemPrompt(system_prompt);
-            }
+        try self.refreshEffectiveSystemPrompt();
+        if (self.effective_system_prompt) |system_prompt| {
+            client.setSystemPrompt(system_prompt);
         }
         self.client = client;
+    }
+
+    fn buildCodebaseContext(self: *Model) !void {
+        var kg = graph_mod.KnowledgeGraph.init(self.allocator);
+        defer kg.deinit();
+
+        var indexed_count: u32 = 0;
+        for (context_source_files) |file_path| {
+            kg.indexFile(file_path) catch continue;
+            indexed_count += 1;
+        }
+        kg.detectCommunities() catch {};
+
+        if (indexed_count == 0) return;
+        self.codebase_context = try kg.toCompressedContext(self.allocator);
+        self.context_file_count = indexed_count;
+    }
+
+    fn refreshEffectiveSystemPrompt(self: *Model) !void {
+        if (self.effective_system_prompt) |existing| {
+            self.allocator.free(existing);
+            self.effective_system_prompt = null;
+        }
+
+        const base_prompt = if (self.system_prompt) |prompt|
+            if (prompt.len > 0) prompt else "You are a helpful AI coding assistant with access to the user's codebase."
+        else
+            "You are a helpful AI coding assistant with access to the user's codebase.";
+
+        if (self.codebase_context) |compressed_context| {
+            self.effective_system_prompt = try std.fmt.allocPrint(
+                self.allocator,
+                \\{s}
+                \\
+                \\## Codebase Context
+                \\{s}
+                \\
+                \\## Available Tools
+                \\- read_file(path)
+                \\- shell(command)
+                \\- write_file(path, content)
+                \\- glob(pattern)
+                \\- grep(pattern)
+                \\- edit(file_path, old_string, new_string)
+            ,
+                .{ base_prompt, compressed_context },
+            );
+            return;
+        }
+
+        self.effective_system_prompt = try self.allocator.dupe(u8, base_prompt);
+    }
+
+    fn loadFallbackProviders(self: *Model) !void {
+        var config = config_mod.Config.init(self.allocator);
+        defer config.deinit();
+
+        config.loadDefault() catch |err| switch (err) {
+            error.ConfigNotFound, error.FileNotFound => {},
+            else => return err,
+        };
+
+        try self.appendFallbackProvider(self.provider_name, self.api_key, self.model_name, self.override_url);
+
+        for (setup_provider_data) |provider_name| {
+            if (std.mem.eql(u8, provider_name, self.provider_name)) continue;
+            const provider = self.registry.getProvider(provider_name) orelse continue;
+            const api_key = config.getApiKey(provider_name) orelse "";
+            if (api_key.len == 0 and !provider.config.is_local) continue;
+            const model_name = self.fallbackModelForProvider(provider_name);
+            try self.appendFallbackProvider(provider_name, api_key, model_name, config.getProviderOverrideUrl(provider_name));
+        }
+
+        self.active_provider_index = self.findFallbackProviderIndex(self.provider_name) orelse 0;
+    }
+
+    fn resetFallbackProviders(self: *Model) void {
+        self.fallback_chain.deinit();
+        self.fallback_chain = fallback_mod.FallbackChain.init(self.allocator);
+        for (self.fallback_providers.items) |provider| self.freeFallbackProvider(provider);
+        self.fallback_providers.clearRetainingCapacity();
+        self.active_provider_index = 0;
+    }
+
+    fn appendFallbackProvider(self: *Model, provider_name: []const u8, api_key: []const u8, model_name: []const u8, override_url: ?[]const u8) !void {
+        if (self.findFallbackProviderIndex(provider_name) != null) return;
+
+        try self.fallback_chain.addEntry(provider_name, model_name);
+        try self.fallback_providers.append(self.allocator, .{
+            .provider_name = try self.allocator.dupe(u8, provider_name),
+            .api_key = try self.allocator.dupe(u8, api_key),
+            .model_name = try self.allocator.dupe(u8, model_name),
+            .override_url = if (override_url) |url| try self.allocator.dupe(u8, url) else null,
+        });
+    }
+
+    fn fallbackModelForProvider(self: *const Model, provider_name: []const u8) []const u8 {
+        if (std.mem.eql(u8, provider_name, self.provider_name)) return self.model_name;
+        if (std.mem.indexOfScalar(u8, self.model_name, '/') == null) return self.model_name;
+        return setupDefaultModel(provider_name);
+    }
+
+    fn findFallbackProviderIndex(self: *const Model, provider_name: []const u8) ?usize {
+        for (self.fallback_providers.items, 0..) |provider, index| {
+            if (std.mem.eql(u8, provider.provider_name, provider_name)) return index;
+        }
+        return null;
+    }
+
+    fn freeFallbackProvider(self: *Model, provider: FallbackProvider) void {
+        self.allocator.free(provider.provider_name);
+        self.allocator.free(provider.api_key);
+        self.allocator.free(provider.model_name);
+        if (provider.override_url) |override_url| self.allocator.free(override_url);
+    }
+
+    fn freePendingPermission(self: *Model, pending: ToolPermission) void {
+        self.allocator.free(pending.tool_name);
+        self.allocator.free(pending.arguments);
+    }
+
+    fn setStatusMessage(self: *Model, text: []const u8) !void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        try self.setStatusMessageUnlocked(text);
+    }
+
+    fn setStatusMessageUnlocked(self: *Model, text: []const u8) !void {
+        if (self.status_message.len > 0) self.allocator.free(self.status_message);
+        self.status_message = if (text.len == 0) "" else try self.allocator.dupe(u8, text);
+    }
+
+    fn clearStatusMessage(self: *Model) void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (self.status_message.len > 0) self.allocator.free(self.status_message);
+        self.status_message = "";
+    }
+
+    fn resolvePendingPermission(self: *Model, decision: PermissionDecision) void {
+        self.permission_mutex.lock();
+        self.permission_decision = decision;
+        self.permission_condition.signal();
+        self.permission_mutex.unlock();
+    }
+
+    fn needsPermission(self: *const Model, tool_name: []const u8) bool {
+        _ = self;
+        if (std.mem.eql(u8, tool_name, "shell")) return true;
+        if (std.mem.eql(u8, tool_name, "write_file")) return true;
+        if (std.mem.eql(u8, tool_name, "edit")) return true;
+        return false;
+    }
+
+    fn isAlwaysAllowed(self: *const Model, tool_name: []const u8) bool {
+        for (self.always_allow_tools.items) |allowed_tool| {
+            if (std.mem.eql(u8, allowed_tool, tool_name)) return true;
+        }
+        return false;
+    }
+
+    fn requestToolPermission(self: *Model, tool_name: []const u8, arguments: []const u8) !bool {
+        if (self.permission_mode == .auto or !self.needsPermission(tool_name) or self.isAlwaysAllowed(tool_name)) {
+            return true;
+        }
+
+        self.permission_mutex.lock();
+        defer self.permission_mutex.unlock();
+        self.permission_decision = null;
+
+        self.lock.lock();
+        if (self.pending_permission) |pending| self.freePendingPermission(pending);
+        self.pending_permission = .{
+            .tool_name = try self.allocator.dupe(u8, tool_name),
+            .arguments = try self.allocator.dupe(u8, arguments),
+        };
+        self.lock.unlock();
+
+        while (self.permission_decision == null) {
+            self.permission_condition.wait(&self.permission_mutex);
+        }
+
+        const decision = self.permission_decision.?;
+        self.permission_decision = null;
+
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (decision == .always and !self.isAlwaysAllowed(tool_name)) {
+            self.always_allow_tools.append(self.allocator, try self.allocator.dupe(u8, tool_name)) catch {};
+        }
+        if (self.pending_permission) |pending| {
+            self.freePendingPermission(pending);
+            self.pending_permission = null;
+        }
+        return decision != .no;
     }
 
     fn widget(self: *Model) vxfw.Widget {
@@ -1006,7 +1430,31 @@ pub const Model = struct {
                 try ctx.requestFocus(if (self.show_palette) self.palette_input.widget() else self.input.widget());
             },
             .key_press => |key| {
+                if (self.pending_permission != null) {
+                    if (key.matches('y', .{}) or key.matches('Y', .{})) {
+                        self.resolvePendingPermission(.yes);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (key.matches('n', .{}) or key.matches('N', .{}) or key.matches(vaxis.Key.escape, .{})) {
+                        self.resolvePendingPermission(.no);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (key.matches('a', .{}) or key.matches('A', .{})) {
+                        self.resolvePendingPermission(.always);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    ctx.consumeEvent();
+                    return;
+                }
+
                 if (key.matches('c', .{ .ctrl = true }) or key.matches('q', .{})) {
+                    self.resolvePendingPermission(.no);
                     self.should_quit = true;
                     ctx.quit = true;
                     ctx.consumeEvent();
@@ -1079,11 +1527,12 @@ pub const Model = struct {
         const full_title = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
         else
-            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d}%", .{
+            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d} files indexed | usage:{d}%", .{
                 app_version,
                 self.provider_name,
                 self.model_name,
                 if (self.thinking) "on" else "off",
+                self.context_file_count,
                 self.contextPercent(),
             });
 
@@ -1146,6 +1595,16 @@ pub const Model = struct {
                 @min(self.setup_phase, @as(u8, 4)),
                 if (self.setup_phase == 1) "Choose a provider" else if (self.setup_phase == 2) "Enter your API key" else if (self.setup_phase == 3) "Choose a default model" else "Press Enter to continue",
             })
+        else if (self.status_message.len > 0)
+            try std.fmt.allocPrint(ctx.arena, "{s} | Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
+                self.status_message,
+                self.total_input_tokens,
+                self.total_output_tokens,
+                self.estimatedCostUsd(),
+                self.request_count,
+                self.sessionMinutes(),
+                self.sessionSecondsPart(),
+            })
         else
             try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
                 self.total_input_tokens,
@@ -1199,6 +1658,21 @@ pub const Model = struct {
             });
         }
 
+        if (self.pending_permission != null) {
+            const permission_dialog = PermissionDialogWidget{ .model = self };
+            const permission_surface = try permission_dialog.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = max.width, .height = max.height },
+            ));
+            try child_list.append(ctx.arena, .{
+                .origin = .{
+                    .row = @intCast((max.height -| permission_surface.size.height) / 2),
+                    .col = @intCast((max.width -| permission_surface.size.width) / 2),
+                },
+                .surface = permission_surface,
+            });
+        }
+
         if (self.recent_files.items.len > 0) {
             const visible_files = recentFilesVisibleCount(self.recent_files.items);
             const files_widget = FilesWidget{ .files = self.recent_files.items[0..visible_files] };
@@ -1231,6 +1705,7 @@ pub const Model = struct {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         if (trimmed.len == 0) return;
         if (std.mem.eql(u8, trimmed, "/exit")) {
+            self.resolvePendingPermission(.no);
             self.should_quit = true;
             ctx.quit = true;
             return;
@@ -1339,6 +1814,8 @@ pub const Model = struct {
                 const resolved_model = if (trimmed.len > 0) trimmed else setupDefaultModel(self.provider_name);
                 try self.replaceOwnedString(&self.model_name, resolved_model);
                 try self.saveSetupConfig();
+                self.resetFallbackProviders();
+                try self.loadFallbackProviders();
                 try self.initializeClient();
                 self.clearSetupFeedback();
                 self.setup_phase = 4;
@@ -1609,36 +2086,110 @@ pub const Model = struct {
     }
 
     fn runStreamingRequest(self: *Model) !void {
-        const input_tokens = estimateMessageTokens(self.history.items);
-        var response = try self.client.?.sendChatStreaming(self.history.items, streamCallback);
-        defer freeChatResponse(self.allocator, &response);
+        var total_input_tokens: u64 = 0;
+        var total_output_tokens: u64 = 0;
+        var iteration: u32 = 0;
 
-        if (response.choices.len == 0) {
-            self.finishRequestWithErrorText("No response received from provider");
-            return;
-        }
+        while (iteration < self.max_iterations) : (iteration += 1) {
+            total_input_tokens += estimateMessageTokens(self.history.items);
 
-        const content = response.choices[0].message.content orelse "";
-        const tool_calls = response.choices[0].message.tool_calls;
-        if (content.len == 0 and tool_calls == null) {
-            self.finishRequestWithErrorText("No response received from provider");
-            return;
-        }
-        var output_tokens = estimateTextTokens(content);
-        if (tool_calls) |calls| {
-            for (calls) |tool_call| {
-                output_tokens += estimateTextTokens(tool_call.name);
-                output_tokens += estimateTextTokens(tool_call.arguments);
+            var response = try self.sendChatStreamingWithFallback();
+            defer freeChatResponse(self.allocator, &response);
+
+            if (response.choices.len == 0) {
+                self.finishRequestWithErrorText("No response received from provider");
+                return;
             }
-            self.trackToolCallFilesUnlocked(tool_calls) catch {};
+
+            const content = response.choices[0].message.content orelse "";
+            const tool_calls = response.choices[0].message.tool_calls;
+            if (content.len == 0 and tool_calls == null) {
+                self.finishRequestWithErrorText("No response received from provider");
+                return;
+            }
+
+            total_output_tokens += estimateResponseOutputTokens(content, tool_calls);
+            try self.applyAssistantResponse(content, tool_calls);
+
+            if (tool_calls) |calls| {
+                try self.executeToolCalls(calls);
+                if (iteration + 1 >= self.max_iterations) {
+                    self.finishRequestWithErrorText("Stopped after reaching max tool iterations.");
+                    return;
+                }
+                try self.startNextAssistantPlaceholder();
+                continue;
+            }
+
+            self.finishRequestSuccess(total_input_tokens, total_output_tokens);
+            return;
         }
+
+        self.finishRequestWithErrorText("Stopped after reaching max tool iterations.");
+    }
+
+    fn activateFallbackProvider(self: *Model, index: usize) !void {
+        const provider = self.fallback_providers.items[index];
 
         self.lock.lock();
         defer self.lock.unlock();
+        try self.replaceOwnedString(&self.provider_name, provider.provider_name);
+        try self.replaceOwnedString(&self.model_name, provider.model_name);
+        try self.replaceOwnedString(&self.api_key, provider.api_key);
+        if (self.override_url) |current_override_url| self.allocator.free(current_override_url);
+        self.override_url = if (provider.override_url) |override_url| try self.allocator.dupe(u8, override_url) else null;
+        self.active_provider_index = index;
+        try self.initializeClientFor(self.provider_name, self.model_name, self.api_key, self.override_url);
+    }
+
+    fn sendChatStreamingWithFallback(self: *Model) !core.ChatResponse {
+        var index = self.active_provider_index;
+        while (index < self.fallback_providers.items.len) : (index += 1) {
+            try self.activateFallbackProvider(index);
+            const response = self.client.?.sendChatStreaming(self.history.items, streamCallback) catch |err| {
+                if (!isRetryableProviderError(err) or index + 1 >= self.fallback_providers.items.len) {
+                    return err;
+                }
+                const next_provider = self.fallback_providers.items[index + 1];
+                const status_text = try std.fmt.allocPrint(self.allocator, "⚠ {s} failed, trying {s}/{s}...", .{
+                    self.fallback_providers.items[index].provider_name,
+                    next_provider.provider_name,
+                    next_provider.model_name,
+                });
+                defer self.allocator.free(status_text);
+                try self.setStatusMessage(status_text);
+                try self.resetActiveAssistantPlaceholderForRetry();
+                continue;
+            };
+            self.clearStatusMessage();
+            return response;
+        }
+        return error.NetworkError;
+    }
+
+    fn resetActiveAssistantPlaceholderForRetry(self: *Model) !void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        if (self.assistant_stream_index) |index| {
+            try self.replaceMessageUnlocked(index, "assistant", "Thinking...", null, null);
+        }
+        self.awaiting_first_token = true;
+    }
+
+    fn applyAssistantResponse(self: *Model, content: []const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
+        self.lock.lock();
+        defer self.lock.unlock();
+
+        if (tool_calls) |_| {
+            try self.trackToolCallFilesUnlocked(tool_calls);
+        }
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
                 try self.replaceMessageUnlocked(index, "assistant", content, null, tool_calls);
+            } else {
+                try self.addMessageWithToolsUnlocked("assistant", content, null, tool_calls);
+                self.assistant_stream_index = self.messages.items.len - 1;
             }
             self.awaiting_first_token = false;
         } else if (self.assistant_stream_index) |index| {
@@ -1646,7 +2197,37 @@ pub const Model = struct {
         }
 
         try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
-        _ = response.usage;
+    }
+
+    fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallInfo) !void {
+        for (tool_calls) |tool_call| {
+            const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments);
+            const result_text = if (!allowed)
+                try self.allocator.dupe(u8, "error: tool execution denied by user")
+            else
+                executeInlineTool(self.allocator, tool_call) catch |err|
+                    try std.fmt.allocPrint(self.allocator, "error: {s}", .{@errorName(err)});
+            defer self.allocator.free(result_text);
+
+            self.lock.lock();
+            errdefer self.lock.unlock();
+            try self.addMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
+            try self.appendHistoryMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
+            self.lock.unlock();
+        }
+    }
+
+    fn startNextAssistantPlaceholder(self: *Model) !void {
+        self.lock.lock();
+        defer self.lock.unlock();
+        try self.addMessageUnlocked("assistant", "Thinking...");
+        self.assistant_stream_index = self.messages.items.len - 1;
+        self.awaiting_first_token = true;
+    }
+
+    fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64) void {
+        self.lock.lock();
+        defer self.lock.unlock();
         self.total_input_tokens += input_tokens;
         self.total_output_tokens += output_tokens;
         self.request_count += 1;
@@ -2142,6 +2723,216 @@ fn spinnerFrame() []const u8 {
     const frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
     const tick = @divFloor(std.time.milliTimestamp(), 120);
     return frames[@as(usize, @intCast(@mod(tick, frames.len)))];
+}
+
+fn estimateResponseOutputTokens(content: []const u8, tool_calls: ?[]const core.client.ToolCallInfo) u64 {
+    var total = estimateTextTokens(content);
+    if (tool_calls) |calls| {
+        for (calls) |tool_call| {
+            total += estimateTextTokens(tool_call.name);
+            total += estimateTextTokens(tool_call.arguments);
+        }
+    }
+    return total;
+}
+
+fn isRetryableProviderError(err: anyerror) bool {
+    return switch (err) {
+        error.NetworkError, error.TimeoutError, error.ServerError, error.RetryExhausted => true,
+        else => false,
+    };
+}
+
+fn executeInlineTool(allocator: std.mem.Allocator, tool_call: core.client.ToolCallInfo) ![]const u8 {
+    if (std.mem.eql(u8, tool_call.name, "read_file")) return executeReadFileToolInline(allocator, tool_call.arguments);
+    if (std.mem.eql(u8, tool_call.name, "shell")) return executeShellToolInline(allocator, tool_call.arguments);
+    if (std.mem.eql(u8, tool_call.name, "write_file")) return executeWriteFileToolInline(allocator, tool_call.arguments);
+    if (std.mem.eql(u8, tool_call.name, "glob")) return executeGlobToolInline(allocator, tool_call.arguments);
+    if (std.mem.eql(u8, tool_call.name, "grep")) return executeGrepToolInline(allocator, tool_call.arguments);
+    if (std.mem.eql(u8, tool_call.name, "edit")) return executeEditToolInline(allocator, tool_call.arguments);
+    return std.fmt.allocPrint(allocator, "error: unsupported tool '{s}'", .{tool_call.name});
+}
+
+fn executeReadFileToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct { path: []const u8 };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const content = try std.fs.cwd().readFileAlloc(allocator, parsed.value.path, 1024 * 1024);
+    defer allocator.free(content);
+    return std.fmt.allocPrint(allocator, "=== {s} ===\n{s}", .{ parsed.value.path, content });
+}
+
+fn executeShellToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct { command: []const u8 };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const result = try std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "sh", "-c", parsed.value.command },
+        .max_output_bytes = 1024 * 1024,
+    });
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
+
+    const exit_code: i32 = switch (result.term) {
+        .Exited => |code| code,
+        .Signal => |signal| @as(i32, @intCast(signal)),
+        else => 1,
+    };
+    return std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, result.stdout, result.stderr });
+}
+
+fn executeWriteFileToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct { path: []const u8, content: []const u8 };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const file = try std.fs.cwd().createFile(parsed.value.path, .{});
+    defer file.close();
+    try file.writeAll(parsed.value.content);
+    return std.fmt.allocPrint(allocator, "wrote {d} bytes to {s}", .{ parsed.value.content.len, parsed.value.path });
+}
+
+fn executeGlobToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct { pattern: []const u8, max_results: ?usize = 50 };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
+    defer dir.close();
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    var buffer = std.ArrayList(u8).empty;
+    var count: usize = 0;
+    const max_results = parsed.value.max_results orelse 50;
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+        if (!globMatch(parsed.value.pattern, entry.path)) continue;
+        if (count > 0) try buffer.append(allocator, '\n');
+        try buffer.appendSlice(allocator, entry.path);
+        count += 1;
+        if (count >= max_results) break;
+    }
+    return std.fmt.allocPrint(allocator, "Found {d} files matching '{s}':\n{s}", .{ count, parsed.value.pattern, buffer.items });
+}
+
+fn executeGrepToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct {
+        pattern: []const u8,
+        path: ?[]const u8 = null,
+        include: ?[]const u8 = null,
+        max_results: ?usize = 50,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const search_path = parsed.value.path orelse ".";
+    const max_results = parsed.value.max_results orelse 50;
+    var matches = std.ArrayList(u8).empty;
+    var match_count: usize = 0;
+
+    const stat = std.fs.cwd().statFile(search_path) catch null;
+    if (stat != null) {
+        try appendGrepMatchesForFile(allocator, &matches, search_path, parsed.value.pattern, &match_count, max_results);
+    } else {
+        var dir = try std.fs.cwd().openDir(search_path, .{ .iterate = true });
+        defer dir.close();
+        var walker = try dir.walk(allocator);
+        defer walker.deinit();
+
+        while (try walker.next()) |entry| {
+            if (entry.kind != .file) continue;
+            if (parsed.value.include) |include_pattern| {
+                if (!globMatch(include_pattern, entry.path)) continue;
+            }
+            const full_path = if (std.mem.eql(u8, search_path, "."))
+                try allocator.dupe(u8, entry.path)
+            else
+                try std.fs.path.join(allocator, &.{ search_path, entry.path });
+            defer allocator.free(full_path);
+            try appendGrepMatchesForFile(allocator, &matches, full_path, parsed.value.pattern, &match_count, max_results);
+            if (match_count >= max_results) break;
+        }
+    }
+
+    return std.fmt.allocPrint(allocator, "Found {d} matches for '{s}':\n{s}", .{ match_count, parsed.value.pattern, matches.items });
+}
+
+fn appendGrepMatchesForFile(
+    allocator: std.mem.Allocator,
+    matches: *std.ArrayList(u8),
+    file_path: []const u8,
+    pattern: []const u8,
+    match_count: *usize,
+    max_results: usize,
+) !void {
+    const content = std.fs.cwd().readFileAlloc(allocator, file_path, 512 * 1024) catch return;
+    defer allocator.free(content);
+
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    var line_no: usize = 1;
+    while (lines.next()) |line| : (line_no += 1) {
+        if (std.mem.indexOf(u8, line, pattern) == null) continue;
+        if (matches.items.len > 0) try matches.append(allocator, '\n');
+        try matches.writer(allocator).print("{s}:{d}: {s}", .{ file_path, line_no, line });
+        match_count.* += 1;
+        if (match_count.* >= max_results) return;
+    }
+}
+
+fn executeEditToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
+    const Args = struct {
+        file_path: []const u8,
+        old_string: []const u8,
+        new_string: []const u8,
+    };
+    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const content = try std.fs.cwd().readFileAlloc(allocator, parsed.value.file_path, 1024 * 1024);
+    defer allocator.free(content);
+
+    const match_index = std.mem.indexOf(u8, content, parsed.value.old_string) orelse return error.OldStringNotFound;
+    const after_match = match_index + parsed.value.old_string.len;
+    if (std.mem.indexOf(u8, content[after_match..], parsed.value.old_string) != null) return error.MultipleMatches;
+
+    var updated = std.ArrayList(u8).empty;
+    try updated.appendSlice(allocator, content[0..match_index]);
+    try updated.appendSlice(allocator, parsed.value.new_string);
+    try updated.appendSlice(allocator, content[after_match..]);
+
+    const file = try std.fs.cwd().createFile(parsed.value.file_path, .{});
+    defer file.close();
+    try file.writeAll(updated.items);
+
+    return std.fmt.allocPrint(allocator, "edited {s}: {d} lines → {d} lines", .{
+        parsed.value.file_path,
+        countLines(content),
+        countLines(updated.items),
+    });
+}
+
+fn globMatch(pattern: []const u8, value: []const u8) bool {
+    if (pattern.len == 0) return value.len == 0;
+    if (pattern[0] == '*') {
+        if (globMatch(pattern[1..], value)) return true;
+        if (value.len == 0) return false;
+        return globMatch(pattern, value[1..]);
+    }
+    if (value.len == 0) return false;
+    if (pattern[0] == '?') return globMatch(pattern[1..], value[1..]);
+    if (pattern[0] != value[0]) return false;
+    return globMatch(pattern[1..], value[1..]);
+}
+
+fn countLines(text: []const u8) u32 {
+    var count: u32 = 0;
+    var lines = std.mem.splitScalar(u8, text, '\n');
+    while (lines.next()) |_| count += 1;
+    return count;
 }
 
 fn freeToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const core.client.ToolCallInfo) void {
