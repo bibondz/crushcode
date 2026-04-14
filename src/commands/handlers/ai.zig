@@ -27,8 +27,18 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
     }
     defer if (profile_opt) |*p| p.deinit();
 
-    const provider_name = if (profile_opt) |*p| p.default_provider else config.default_provider;
-    const model_name = if (profile_opt) |*p| p.default_model else config.default_model;
+    const provider_name = blk: {
+        if (profile_opt) |*p| {
+            if (p.default_provider.len > 0) break :blk p.default_provider;
+        }
+        break :blk config.default_provider;
+    };
+    const model_name = blk: {
+        if (profile_opt) |*p| {
+            if (p.default_model.len > 0) break :blk p.default_model;
+        }
+        break :blk config.default_model;
+    };
 
     if (provider_name.len == 0) {
         try runFirstTimeSetup(allocator, config);
@@ -297,17 +307,17 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
         \\
     , .{}) catch {};
 
-    const popular = [_][]const u8{ "zai", "openrouter", "openai", "anthropic", "deepseek", "ollama" };
-    const needs_key = [_]bool{ true, true, true, true, true, false };
+    const popular = [_][]const u8{ "zai", "openrouter", "openai", "anthropic", "deepseek", "gemini", "xai", "mistral", "groq", "ollama" };
+    const needs_key = [_]bool{ true, true, true, true, true, true, true, true, true, false };
 
-    stdout.print("Popular providers:\n\n", .{}) catch {};
+    stdout.print("Providers:\n\n", .{}) catch {};
     for (popular, 1..) |name, i| {
-        const key_note: []const u8 = if (needs_key[i - 1]) "(requires API key)" else "(local, no key needed)";
-        stdout_print("  {d}. {s} {s}\n", .{ i, name, key_note });
+        const key_note: []const u8 = if (needs_key[i - 1]) "" else "(local)";
+        stdout_print("  {d:2}. {s} {s}\n", .{ i, name, key_note });
     }
-    stdout_print("\n  Or type any provider name (gemini, xai, mistral, groq, etc.)\n", .{});
+    stdout_print("\n  Or type any provider name (together, azure, vertexai, bedrock, etc.)\n", .{});
 
-    stdout.print("\nChoose provider [1-6 or name]: ", .{}) catch {};
+    stdout.print("\nChoose provider [1-10 or name]: ", .{}) catch {};
     const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256) catch {
         stdout_print("\nSetup cancelled.\n", .{});
         return;
