@@ -2,8 +2,11 @@ const std = @import("std");
 const vaxis = @import("vaxis");
 const core = @import("core_api");
 const registry_mod = @import("registry");
+const markdown = @import("markdown");
+const usage_pricing = @import("usage_pricing");
 
 const vxfw = vaxis.vxfw;
+const app_version = "0.2.2";
 
 pub const Options = struct {
     provider_name: []const u8,
@@ -23,7 +26,7 @@ pub const Message = struct {
 threadlocal var active_stream_model: ?*Model = null;
 
 const RoleLabelWidget = struct {
-    role: []const u8,
+    label: []const u8,
     style: vaxis.Style,
 
     fn widget(self: *const RoleLabelWidget) vxfw.Widget {
@@ -41,7 +44,7 @@ const RoleLabelWidget = struct {
     fn draw(self: *const RoleLabelWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const rich: vxfw.RichText = .{
             .text = &.{
-                .{ .text = self.role, .style = self.style },
+                .{ .text = self.label, .style = self.style },
                 .{ .text = ": ", .style = .{ .fg = .{ .index = 8 }, .dim = true } },
             },
             .softwrap = false,
@@ -69,18 +72,35 @@ const MessageContentWidget = struct {
     fn draw(self: *const MessageContentWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const role_style = messageRoleStyle(self.message.role);
         const body_style = messageBodyStyle(self.message.role);
-        const role_label: RoleLabelWidget = .{ .role = self.message.role, .style = role_style };
-        const content = vxfw.Text{
-            .text = self.message.content,
-            .style = body_style,
-            .softwrap = true,
-            .width_basis = .parent,
+        const role_label: RoleLabelWidget = .{ .label = messageRoleLabel(self.message.role), .style = role_style };
+        const content_surface = if (std.mem.eql(u8, self.message.role, "assistant")) blk: {
+            const segments = try markdown.parseMarkdown(ctx.arena, self.message.content);
+            const content = vxfw.RichText{
+                .text = segments,
+                .softwrap = true,
+                .width_basis = .parent,
+            };
+            break :blk try content.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = ctx.max.width, .height = ctx.max.height },
+            ));
+        } else blk: {
+            const content = vxfw.Text{
+                .text = self.message.content,
+                .style = body_style,
+                .softwrap = true,
+                .width_basis = .parent,
+            };
+            break :blk try content.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = ctx.max.width, .height = ctx.max.height },
+            ));
         };
 
         var row = vxfw.FlexRow{
             .children = &.{
                 .{ .widget = role_label.widget(), .flex = 0 },
-                .{ .widget = content.widget(), .flex = 1 },
+                .{ .widget = try contentSurfaceWidget(ctx.arena, content_surface), .flex = 1 },
             },
         };
         return row.draw(ctx);
@@ -119,7 +139,7 @@ const MessageWidget = struct {
 
         if (border_width > 0) {
             const border_cell: vaxis.Cell = .{
-                .char = .{ .grapheme = "│", .width = 1 },
+                .char = .{ .grapheme = "▌", .width = 1 },
                 .style = .{ .fg = .{ .index = 39 } },
             };
             for (0..height) |row| {
@@ -142,6 +162,27 @@ const MessageWidget = struct {
     }
 };
 
+const MessageGapWidget = struct {
+    fn widget(self: *const MessageGapWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const self: *const MessageGapWidget = @ptrCast(@alignCast(ptr));
+        return self.draw(ctx);
+    }
+
+    fn draw(self: *const MessageGapWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        const width = ctx.max.width orelse ctx.min.width;
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
+        @memset(surface.buffer, .{ .style = .{} });
+        return surface;
+    }
+};
+
 const SeparatorWidget = struct {
     fn widget(self: *const SeparatorWidget) vxfw.Widget {
         return .{
@@ -158,14 +199,18 @@ const SeparatorWidget = struct {
     fn draw(self: *const SeparatorWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         _ = self;
         const width = ctx.max.width orelse ctx.min.width;
-        const line = try std.fmt.allocPrint(ctx.arena, "{s}", .{try repeated(ctx.arena, "─", width)});
+        const line_width: u16 = @max(@min(width, @as(u16, 40)), @as(u16, 2));
+        const line = if (line_width <= 3)
+            try repeated(ctx.arena, "─", line_width)
+        else
+            try std.fmt.allocPrint(ctx.arena, "╶{s}╴", .{try repeated(ctx.arena, "─", line_width - 2)});
         const text: vxfw.Text = .{
             .text = line,
             .style = .{ .fg = .{ .index = 8 }, .dim = true },
             .softwrap = false,
-            .width_basis = .parent,
+            .width_basis = .longest_line,
         };
-        return text.draw(ctx.withConstraints(ctx.min, .{ .width = width, .height = 1 }));
+        return text.draw(ctx.withConstraints(.{ .width = line_width, .height = 1 }, .{ .width = line_width, .height = 1 }));
     }
 };
 
@@ -185,12 +230,50 @@ const HeaderWidget = struct {
     }
 
     fn draw(self: *const HeaderWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const rich: vxfw.RichText = .{
+        const width = ctx.max.width orelse ctx.min.width;
+        const title = vxfw.RichText{
             .text = &.{.{ .text = self.title, .style = .{ .fg = .{ .index = 15 }, .bold = true } }},
             .softwrap = false,
             .width_basis = .parent,
         };
-        return rich.draw(ctx.withConstraints(.{ .width = 0, .height = 1 }, .{ .width = ctx.max.width, .height = 1 }));
+        const title_surface = try title.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+
+        const line = try repeated(ctx.arena, "─", width);
+        const separator = vxfw.Text{
+            .text = line,
+            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const separator_surface = try separator.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
+
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = title_surface };
+        children[1] = .{ .origin = .{ .row = 1, .col = 0 }, .surface = separator_surface };
+
+        return .{
+            .size = .{ .width = width, .height = 2 },
+            .widget = self.widget(),
+            .buffer = &.{},
+            .children = children,
+        };
+    }
+};
+
+const SurfaceWidget = struct {
+    surface: vxfw.Surface,
+
+    fn widget(self: *const SurfaceWidget) vxfw.Widget {
+        return .{
+            .userdata = @constCast(self),
+            .drawFn = typeErasedDrawFn,
+        };
+    }
+
+    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        _ = ctx;
+        const self: *const SurfaceWidget = @ptrCast(@alignCast(ptr));
+        return self.surface;
     }
 };
 
@@ -235,12 +318,12 @@ const Command = struct {
 };
 
 const palette_command_data = [_]Command{
-    .{ .name = "/clear", .description = "Clear chat messages and history", .shortcut = "clr" },
-    .{ .name = "/exit", .description = "Quit the TUI chat", .shortcut = "q" },
-    .{ .name = "/model", .description = "Show the current provider and model", .shortcut = "m" },
-    .{ .name = "/thinking", .description = "Toggle the thinking flag", .shortcut = "t" },
-    .{ .name = "/compact", .description = "Compact the conversation", .shortcut = "c" },
-    .{ .name = "/help", .description = "Show available palette commands", .shortcut = "h" },
+    .{ .name = "/clear", .description = "Clear conversation history", .shortcut = "clr" },
+    .{ .name = "/exit", .description = "Exit crushcode", .shortcut = "q" },
+    .{ .name = "/model", .description = "Show current model", .shortcut = "m" },
+    .{ .name = "/thinking", .description = "Toggle thinking mode", .shortcut = "t" },
+    .{ .name = "/compact", .description = "Compact conversation context", .shortcut = "c" },
+    .{ .name = "/help", .description = "Show available commands", .shortcut = "h" },
 };
 
 const CommandRowWidget = struct {
@@ -262,32 +345,28 @@ const CommandRowWidget = struct {
     fn draw(self: *const CommandRowWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const width = ctx.max.width orelse ctx.min.width;
         const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
+        const name_gap = try repeated(ctx.arena, " ", commandDescriptionGap(self.command.name.len));
 
         const base_style: vaxis.Style = if (self.selected)
-            .{ .fg = .{ .index = 15 }, .bg = .{ .index = 24 } }
+            .{ .reverse = true }
         else
-            .{ .fg = .{ .index = 8 }, .dim = true };
+            .{};
         @memset(surface.buffer, .{ .style = base_style });
 
         const name_style: vaxis.Style = if (self.selected)
-            .{ .fg = .{ .index = 15 }, .bg = .{ .index = 24 }, .bold = true }
+            .{ .bold = true, .reverse = true }
         else
             .{ .fg = .{ .index = 39 }, .bold = true };
-        const shortcut_style: vaxis.Style = if (self.selected)
-            .{ .fg = .{ .index = 229 }, .bg = .{ .index = 24 }, .bold = true }
-        else
-            .{ .fg = .{ .index = 8 }, .dim = true };
         const description_style: vaxis.Style = if (self.selected)
-            .{ .fg = .{ .index = 252 }, .bg = .{ .index = 24 } }
+            .{ .dim = true, .reverse = true }
         else
             .{ .fg = .{ .index = 8 }, .dim = true };
 
         const content = vxfw.RichText{
             .text = &.{
+                .{ .text = "  ", .style = name_style },
                 .{ .text = self.command.name, .style = name_style },
-                .{ .text = "  ", .style = description_style },
-                .{ .text = self.command.shortcut, .style = shortcut_style },
-                .{ .text = "  ", .style = description_style },
+                .{ .text = name_gap, .style = description_style },
                 .{ .text = self.command.description, .style = description_style },
             },
             .softwrap = false,
@@ -349,7 +428,7 @@ const CommandPaletteWidget = struct {
         defer child_list.deinit(ctx.arena);
 
         const title_text = vxfw.Text{
-            .text = "Command palette",
+            .text = "Commands (↑↓ navigate, Enter select, Esc close)",
             .style = .{ .fg = .{ .index = 15 }, .bold = true },
             .softwrap = false,
             .width_basis = .parent,
@@ -434,6 +513,8 @@ pub const Model = struct {
     total_input_tokens: u64,
     total_output_tokens: u64,
     request_count: u32,
+    session_start: i128,
+    pricing_table: usage_pricing.PricingTable,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -477,6 +558,8 @@ pub const Model = struct {
             .total_input_tokens = 0,
             .total_output_tokens = 0,
             .request_count = 0,
+            .session_start = std.time.nanoTimestamp(),
+            .pricing_table = try usage_pricing.PricingTable.init(allocator),
         };
         errdefer model.destroy();
 
@@ -525,6 +608,7 @@ pub const Model = struct {
         }
         self.history.deinit(self.allocator);
         self.registry.deinit();
+        self.pricing_table.deinit();
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
         self.allocator.free(self.api_key);
@@ -551,9 +635,7 @@ pub const Model = struct {
         };
 
         if (self.api_key.len == 0 and !provider.config.is_local) {
-            const text = try std.fmt.allocPrint(self.allocator, "No API key found for provider '{s}'. Add it to ~/.crushcode/config.toml or your active profile.", .{self.provider_name});
-            defer self.allocator.free(text);
-            try self.addMessageUnlocked("error", text);
+            try self.addMessageUnlocked("error", "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml");
             return;
         }
 
@@ -650,26 +732,17 @@ pub const Model = struct {
         defer self.lock.unlock();
 
         const max = ctx.max.size();
-        const header_height: u16 = 1;
+        const header_height: u16 = 2;
+        const status_height: u16 = 1;
         const input_height: u16 = 1;
-        const body_height = max.height -| (header_height + input_height);
+        const body_height = max.height -| (header_height + status_height + input_height);
 
-        const status = if (self.request_active)
-            try std.fmt.allocPrint(ctx.arena, "Thinking {s}", .{spinnerFrame()})
-        else if (self.client == null)
-            try std.fmt.allocPrint(ctx.arena, "Disconnected", .{})
-        else
-            try std.fmt.allocPrint(ctx.arena, "Ready", .{});
-
-        const title = try std.fmt.allocPrint(ctx.arena, "Crushcode | {s}/{s} | {s}", .{
+        const full_title = try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d}%", .{
+            app_version,
             self.provider_name,
             self.model_name,
-            status,
-        });
-
-        const full_title = try std.fmt.allocPrint(ctx.arena, "{s} | thinking:{s}", .{
-            title,
             if (self.thinking) "on" else "off",
+            self.contextPercent(),
         });
 
         const header = HeaderWidget{ .title = full_title };
@@ -680,12 +753,14 @@ pub const Model = struct {
 
         var message_widgets = std.ArrayList(vxfw.Widget).empty;
         defer message_widgets.deinit(ctx.arena);
-        const total_widgets = if (self.messages.items.len == 0) 1 else self.messages.items.len * 2 - 1;
+        const total_widgets = if (self.messages.items.len == 0) 1 else self.messages.items.len + (self.messages.items.len - 1) * 2;
         try message_widgets.ensureTotalCapacity(ctx.arena, total_widgets);
         for (self.messages.items, 0..) |*message, idx| {
             const message_widget = MessageWidget{ .message = message };
             try message_widgets.append(ctx.arena, message_widget.widget());
             if (idx + 1 < self.messages.items.len) {
+                const gap = MessageGapWidget{};
+                try message_widgets.append(ctx.arena, gap.widget());
                 const separator = SeparatorWidget{};
                 try message_widgets.append(ctx.arena, separator.widget());
             }
@@ -709,6 +784,25 @@ pub const Model = struct {
         ));
         self.scroll_view = self.scroll_bars.scroll_view;
 
+        const status_text = try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
+            self.total_input_tokens,
+            self.total_output_tokens,
+            self.estimatedCostUsd(),
+            self.request_count,
+            self.sessionMinutes(),
+            self.sessionSecondsPart(),
+        });
+        const status_widget = vxfw.Text{
+            .text = status_text,
+            .style = .{ .fg = .{ .index = 8 }, .dim = true },
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const status_surface = try status_widget.draw(ctx.withConstraints(
+            .{ .width = max.width, .height = status_height },
+            .{ .width = max.width, .height = status_height },
+        ));
+
         const input_widget = InputWidget{ .prompt = "❯ ", .field = &self.input };
         const input_surface = try input_widget.draw(ctx.withConstraints(
             .{ .width = max.width, .height = input_height },
@@ -719,7 +813,8 @@ pub const Model = struct {
         defer child_list.deinit(ctx.arena);
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = body_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = input_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = status_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + status_height), .col = 0 }, .surface = input_surface });
 
         if (self.show_palette) {
             const palette = CommandPaletteWidget{
@@ -773,7 +868,11 @@ pub const Model = struct {
         }
 
         if (self.client == null) {
-            try self.addMessageUnlocked("error", "Chat client is not ready. Fix the configuration shown above and restart the TUI.");
+            const text = if (self.api_key.len == 0)
+                "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml"
+            else
+                "Chat client is not ready. Fix the configuration shown above and restart the TUI.";
+            try self.addMessageUnlocked("error", text);
             ctx.redraw = true;
             return;
         }
@@ -903,7 +1002,7 @@ pub const Model = struct {
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear chat messages and history\n/exit — Quit the TUI chat\n/model — Show the current provider and model\n/thinking — Toggle the thinking flag\n/compact — Compact conversation (not yet implemented)\n/help — Show available palette commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.addMessageUnlocked("assistant", "/compact is not yet implemented.");
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -981,54 +1080,72 @@ pub const Model = struct {
     fn requestThreadMain(self: *Model) void {
         active_stream_model = self;
         defer active_stream_model = null;
-        self.runStreamingRequest();
+        self.runStreamingRequest() catch |err| {
+            self.finishRequestWithCaughtError(err);
+        };
     }
 
-    fn runStreamingRequest(self: *Model) void {
-        var response = self.client.?.sendChatStreaming(self.history.items, streamCallback) catch |err| {
-            self.finishRequestWithError(@errorName(err));
-            return;
-        };
+    fn runStreamingRequest(self: *Model) !void {
+        const input_tokens = estimateMessageTokens(self.history.items);
+        var response = try self.client.?.sendChatStreaming(self.history.items, streamCallback);
         defer freeChatResponse(self.allocator, &response);
 
         if (response.choices.len == 0) {
-            self.finishRequestWithError("EmptyResponse");
+            self.finishRequestWithErrorText("No response received from provider");
             return;
         }
 
         const content = response.choices[0].message.content orelse "";
+        if (content.len == 0) {
+            self.finishRequestWithErrorText("No response received from provider");
+            return;
+        }
+        const output_tokens = estimateTextTokens(content);
 
         self.lock.lock();
         defer self.lock.unlock();
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                const replacement = if (content.len > 0) content else "(empty response)";
-                self.replaceMessageUnlocked(index, "assistant", replacement) catch {};
+                try self.replaceMessageUnlocked(index, "assistant", content);
             }
             self.awaiting_first_token = false;
         }
 
-        self.appendHistoryMessageUnlocked("assistant", content) catch {};
-        if (response.usage) |usage| {
-            self.total_input_tokens += usage.prompt_tokens;
-            self.total_output_tokens += usage.completion_tokens;
-        }
+        try self.appendHistoryMessageUnlocked("assistant", content);
+        _ = response.usage;
+        self.total_input_tokens += input_tokens;
+        self.total_output_tokens += output_tokens;
         self.request_count += 1;
         self.request_active = false;
         self.request_done = true;
     }
 
-    fn finishRequestWithError(self: *Model, err_name: []const u8) void {
-        const text = std.fmt.allocPrint(self.allocator, "Request failed: {s}", .{err_name}) catch return;
-        defer self.allocator.free(text);
+    fn finishRequestWithCaughtError(self: *Model, err: anyerror) void {
+        switch (err) {
+            error.AuthenticationError => self.finishRequestWithErrorText("No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml"),
+            error.NetworkError => self.finishRequestWithErrorText("Network error while contacting provider. Check your connection and try again."),
+            error.TimeoutError => self.finishRequestWithErrorText("Request timed out. Please try again."),
+            error.ServerError => self.finishRequestWithErrorText("Provider returned an error. Please try again in a moment."),
+            error.InvalidResponse => self.finishRequestWithErrorText("Provider returned an invalid response."),
+            error.ConfigurationError => self.finishRequestWithErrorText("Chat client is not configured correctly. Run crushcode setup or edit ~/.crushcode/config.toml"),
+            else => {
+                const text = std.fmt.allocPrint(self.allocator, "Request failed: {s}", .{@errorName(err)}) catch return;
+                defer self.allocator.free(text);
+                self.finishRequestWithErrorText(text);
+            },
+        }
+    }
 
+    fn finishRequestWithErrorText(self: *Model, text: []const u8) void {
         self.lock.lock();
         defer self.lock.unlock();
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                self.replaceMessageUnlocked(index, "error", text) catch {};
+                self.replaceMessageUnlocked(index, "error", text) catch {
+                    self.addMessageUnlocked("error", text) catch {};
+                };
             } else {
                 self.addMessageUnlocked("error", text) catch {};
             }
@@ -1058,6 +1175,31 @@ pub const Model = struct {
         }
 
         self.appendToMessageUnlocked(index, token) catch {};
+    }
+
+    fn estimatedCostUsd(self: *Model) f64 {
+        const input_tokens: u32 = @intCast(@min(self.total_input_tokens, std.math.maxInt(u32)));
+        const output_tokens: u32 = @intCast(@min(self.total_output_tokens, std.math.maxInt(u32)));
+        return self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), input_tokens, output_tokens);
+    }
+
+    fn contextPercent(self: *const Model) u8 {
+        const total_tokens = self.total_input_tokens + self.total_output_tokens;
+        const percent = @min((total_tokens * 100) / 128_000, 100);
+        return @intCast(percent);
+    }
+
+    fn sessionElapsedSeconds(self: *const Model) u64 {
+        const elapsed_ns = @max(std.time.nanoTimestamp() - self.session_start, 0);
+        return @intCast(@divFloor(elapsed_ns, std.time.ns_per_s));
+    }
+
+    fn sessionMinutes(self: *const Model) u64 {
+        return @divFloor(self.sessionElapsedSeconds(), 60);
+    }
+
+    fn sessionSecondsPart(self: *const Model) u64 {
+        return @mod(self.sessionElapsedSeconds(), 60);
     }
 };
 
@@ -1094,14 +1236,17 @@ fn messageRoleStyle(role: []const u8) vaxis.Style {
         return .{ .fg = .{ .index = 1 }, .bold = true };
     }
     if (std.mem.eql(u8, role, "assistant")) {
-        return .{ .fg = .{ .index = 15 }, .bold = true };
+        return .{ .fg = .{ .index = 10 }, .bold = true };
+    }
+    if (std.mem.eql(u8, role, "system")) {
+        return .{ .fg = .{ .index = 11 }, .bold = true };
     }
     return .{ .fg = .{ .index = 8 }, .bold = true };
 }
 
 fn messageBodyStyle(role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "assistant")) {
-        return .{ .fg = .{ .index = 2 } };
+        return .{ .fg = .{ .index = 15 } };
     }
     if (std.mem.eql(u8, role, "user")) {
         return .{ .fg = .{ .index = 39 } };
@@ -1109,14 +1254,25 @@ fn messageBodyStyle(role: []const u8) vaxis.Style {
     if (std.mem.eql(u8, role, "error")) {
         return .{ .fg = .{ .index = 1 } };
     }
+    if (std.mem.eql(u8, role, "system")) {
+        return .{ .fg = .{ .index = 11 }, .dim = true };
+    }
     return .{ .fg = .{ .index = 8 }, .dim = true };
+}
+
+fn messageRoleLabel(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "user")) return "You";
+    if (std.mem.eql(u8, role, "assistant")) return "Assistant";
+    if (std.mem.eql(u8, role, "error")) return "Error";
+    if (std.mem.eql(u8, role, "system")) return "System";
+    return role;
 }
 
 fn estimateContentHeight(messages: []const Message) ?u32 {
     var total: u32 = 0;
     for (messages, 0..) |message, idx| {
         total += @intCast(1 + std.mem.count(u8, message.content, "\n"));
-        if (idx + 1 < messages.len) total += 1;
+        if (idx + 1 < messages.len) total += 2;
     }
     return total;
 }
@@ -1182,6 +1338,46 @@ fn containsIgnoreCase(haystack: []const u8, needle: []const u8) bool {
     return false;
 }
 
+fn commandDescriptionGap(name_len: usize) u16 {
+    const max_name_len = maxCommandNameLen(&palette_command_data);
+    const gap = max_name_len - name_len + 4;
+    return @intCast(@max(gap, 1));
+}
+
+fn maxCommandNameLen(commands: []const Command) usize {
+    var max_len: usize = 0;
+    for (commands) |command| {
+        max_len = @max(max_len, command.name.len);
+    }
+    return max_len;
+}
+
+fn estimateTextTokens(text: []const u8) u64 {
+    if (text.len == 0) return 0;
+    return @intCast(@divFloor(text.len + 3, 4));
+}
+
+fn estimateMessageTokens(messages: []const core.ChatMessage) u64 {
+    var total: u64 = 0;
+    for (messages) |message| {
+        total += estimateTextTokens(message.role);
+        if (message.content) |content| {
+            total += estimateTextTokens(content);
+        }
+        if (message.tool_call_id) |tool_call_id| {
+            total += estimateTextTokens(tool_call_id);
+        }
+        if (message.tool_calls) |tool_calls| {
+            for (tool_calls) |tool_call| {
+                total += estimateTextTokens(tool_call.id);
+                total += estimateTextTokens(tool_call.name);
+                total += estimateTextTokens(tool_call.arguments);
+            }
+        }
+    }
+    return total;
+}
+
 fn repeated(allocator: std.mem.Allocator, token: []const u8, count: u16) ![]const u8 {
     var buffer = std.ArrayList(u8).empty;
     try buffer.ensureTotalCapacity(allocator, token.len * count);
@@ -1189,6 +1385,19 @@ fn repeated(allocator: std.mem.Allocator, token: []const u8, count: u16) ![]cons
         try buffer.appendSlice(allocator, token);
     }
     return buffer.toOwnedSlice(allocator);
+}
+
+fn contentSurfaceWidget(allocator: std.mem.Allocator, surface: vxfw.Surface) !vxfw.Widget {
+    const widget_holder = try allocator.create(SurfaceWidget);
+    widget_holder.* = .{ .surface = surface };
+    return widget_holder.widget();
+}
+
+fn resolvedPricingModel(model: *Model) []const u8 {
+    if (model.pricing_table.getPrice(model.provider_name, model.model_name) != null) {
+        return model.model_name;
+    }
+    return "default";
 }
 
 fn spinnerFrame() []const u8 {

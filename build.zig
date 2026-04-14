@@ -111,8 +111,11 @@ pub fn build(b: *std.Build) !void {
     const write_mod = simpleMod(b, "src/commands/write.zig", target, optimize);
     const git_mod = createMod(b, "src/commands/git.zig", target, optimize, &.{imp("shell", shell_mod)});
     const skills_mod = createMod(b, "src/commands/builtins.zig", target, optimize, &.{imp("shell", shell_mod)});
+    const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
+    const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const tui_mod = simpleMod(b, "src/tui/mod.zig", target, optimize);
     addImports(tui_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
+    addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("usage_pricing", usage_pricing_mod) });
     addImports(chat_mod, &.{imp("tui", tui_mod)});
 
     const install_mod = createMod(b, "src/commands/install.zig", target, optimize, &.{
@@ -188,7 +191,6 @@ pub fn build(b: *std.Build) !void {
     });
 
     const usage_tracker_mod = createMod(b, "src/usage/tracker.zig", target, optimize, &.{imp("streaming_types", streaming_types_mod)});
-    const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
     const usage_budget_mod = simpleMod(b, "src/usage/budget.zig", target, optimize);
     const usage_report_mod = createMod(b, "src/usage/report.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod), imp("file_compat", compat_file_mod),
