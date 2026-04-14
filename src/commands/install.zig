@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const file_compat = @import("file_compat");
 const env = @import("env");
@@ -6,15 +7,27 @@ const json_extract = @import("json_extract");
 
 const Allocator = std.mem.Allocator;
 
+const InstallTarget = enum {
+    user,
+    global,
+};
+
+const InstallOptions = struct {
+    target: InstallTarget = .user,
+    version: ?[]const u8 = null,
+    uninstall: bool = false,
+    help: bool = false,
+    print: bool = false,
+};
+
 /// Install command — downloads crushcode binary from GitHub releases or builds from source
 pub const Installer = struct {
     const version = "0.2.2";
-    const github_repo = "crushcode/crushcode";
     const releases_base = "https://github.com/crushcode/crushcode/releases";
 
     /// Detect the current OS
     pub fn detectOS() []const u8 {
-        const target = @import("builtin").target;
+        const target = builtin.target;
         return switch (target.os.tag) {
             .linux => "linux",
             .macos => "macos",
@@ -25,7 +38,7 @@ pub const Installer = struct {
 
     /// Detect the current architecture
     pub fn detectArch() []const u8 {
-        const target = @import("builtin").target;
+        const target = builtin.target;
         return switch (target.cpu.arch) {
             .x86_64 => "x86_64",
             .aarch64 => "aarch64",
@@ -37,7 +50,7 @@ pub const Installer = struct {
 
     /// Get the binary file name for the current platform
     pub fn binaryName() []const u8 {
-        const target = @import("builtin").target;
+        const target = builtin.target;
         if (target.os.tag == .windows) {
             return "crushcode.exe";
         }
@@ -67,10 +80,7 @@ pub const Installer = struct {
         const data = response.body;
         if (data.len == 0) return error.NetworkError;
 
-        // Extract "tag_name":"vX.Y.Z" from JSON response
         const tag = json_extract.extractString(data, "tag_name") orelse return error.ParseError;
-
-        // Strip the 'v' prefix if present
         if (tag.len > 0 and tag[0] == 'v') {
             return try allocator.dupe(u8, tag[1..]);
         }
@@ -86,7 +96,6 @@ pub const Installer = struct {
             .{ .name = "Accept", .value = "application/octet-stream" },
         };
 
-        // Open destination file
         const dest_file = std.fs.cwd().createFile(dest_path, .{ .truncate = true }) catch |err| {
             try stdout.print("Error: Cannot create file {s}: {}\n", .{ dest_path, err });
             return err;
@@ -109,7 +118,6 @@ pub const Installer = struct {
         const data = response.body;
         try dest_file.writeAll(data);
 
-        // Make executable (Unix only)
         if (!std.mem.eql(u8, detectOS(), "windows")) {
             dest_file.chmod(0o755) catch {};
         }
@@ -118,7 +126,7 @@ pub const Installer = struct {
     }
 
     /// Run the install process
-    pub fn runInstall(allocator: Allocator, ver: ?[]const u8) !void {
+    pub fn runInstall(allocator: Allocator, ver: ?[]const u8, target: InstallTarget) !void {
         const stdout = file_compat.File.stdout().writer();
         const os = detectOS();
         const arch = detectArch();
@@ -133,26 +141,27 @@ pub const Installer = struct {
             return error.UnsupportedPlatform;
         }
 
-        // Resolve version
-        const version_to_use = ver orelse ver: {
+        if (target == .global and !canInstallGlobally()) {
+            try stdout.print("Permission denied. Run with sudo or use --user\n", .{});
+            return error.AccessDenied;
+        }
+
+        const version_to_use = ver orelse version_value: {
             try stdout.print("Fetching latest version...\n", .{});
             const latest = getLatestVersion(allocator) catch {
                 try stdout.print("Warning: Could not fetch latest version, using {s}\n", .{version});
-                break :ver version;
+                break :version_value version;
             };
             try stdout.print("Latest version: {s}\n", .{latest});
-            break :ver latest;
+            break :version_value latest;
         };
 
-        // Build download URL
         const url = try downloadURL(allocator, version_to_use, os, arch);
         defer allocator.free(url);
 
-        // Determine install path
-        const install_dir = try getInstallDir(allocator);
+        const install_dir = try getInstallDir(allocator, target);
         defer allocator.free(install_dir);
 
-        // Ensure directory exists
         std.fs.cwd().makePath(install_dir) catch |err| {
             try stdout.print("Error: Cannot create directory {s}: {}\n", .{ install_dir, err });
             return err;
@@ -162,10 +171,8 @@ pub const Installer = struct {
         const dest_path = try std.fs.path.join(allocator, &[_][]const u8{ install_dir, bin_name });
         defer allocator.free(dest_path);
 
-        // Download
         try downloadFile(allocator, url, dest_path);
 
-        // Verify
         try stdout.print("\nVerifying installation...\n", .{});
         const installed_file = std.fs.cwd().openFile(dest_path, .{}) catch {
             try stdout.print("Error: Downloaded file not found\n", .{});
@@ -175,31 +182,70 @@ pub const Installer = struct {
 
         try stdout.print("{s} installed to {s}\n\n", .{ bin_name, dest_path });
 
-        // PATH hint
+        if (target == .user) {
+            try ensureUserPathInBashrc(allocator, install_dir);
+        }
         try printPathHint(allocator, install_dir);
 
         try stdout.print("Run 'crushcode --help' to get started.\n\n", .{});
     }
 
-    /// Get the install directory (prefers ~/.local/bin)
-    pub fn getInstallDir(allocator: Allocator) ![]const u8 {
-        // Check CRUSHCODE_INSTALL_DIR env
-        if (std.process.getEnvVarOwned(allocator, "CRUSHCODE_INSTALL_DIR")) |dir| {
-            return dir;
-        } else |_| {}
+    /// Get the install directory for the selected target
+    pub fn getInstallDir(allocator: Allocator, target: InstallTarget) ![]const u8 {
+        if (target == .global) {
+            return try allocator.dupe(u8, "/usr/local/bin");
+        }
 
-        // Default to ~/.local/bin
         const home = try env.getHomeDir(allocator);
         defer allocator.free(home);
 
         return std.fs.path.join(allocator, &[_][]const u8{ home, ".local", "bin" });
     }
 
+    fn canInstallGlobally() bool {
+        if (builtin.target.os.tag == .windows) return false;
+        return std.posix.geteuid() == 0;
+    }
+
+    fn ensureUserPathInBashrc(allocator: Allocator, install_dir: []const u8) !void {
+        const stdout = file_compat.File.stdout().writer();
+        const home = try env.getHomeDir(allocator);
+        defer allocator.free(home);
+
+        const bashrc_path = try std.fs.path.join(allocator, &[_][]const u8{ home, ".bashrc" });
+        defer allocator.free(bashrc_path);
+
+        const export_line = "export PATH=\"$HOME/.local/bin:$PATH\"";
+        const bashrc_contents = std.fs.cwd().readFileAlloc(allocator, bashrc_path, 1024 * 1024) catch |err| switch (err) {
+            error.FileNotFound => try allocator.dupe(u8, ""),
+            else => return err,
+        };
+        defer allocator.free(bashrc_contents);
+
+        if (std.mem.indexOf(u8, bashrc_contents, export_line) != null or std.mem.indexOf(u8, bashrc_contents, install_dir) != null) {
+            try stdout.print("~/.local/bin is already configured in ~/.bashrc.\n", .{});
+            return;
+        }
+
+        const bashrc_exists = if (std.fs.cwd().access(bashrc_path, .{})) true else |_| false;
+        const bashrc_file = if (bashrc_exists)
+            try std.fs.cwd().openFile(bashrc_path, .{ .mode = .read_write })
+        else
+            try std.fs.cwd().createFile(bashrc_path, .{ .truncate = false, .read = true });
+        defer bashrc_file.close();
+
+        try bashrc_file.seekFromEnd(0);
+        if (bashrc_contents.len > 0 and bashrc_contents[bashrc_contents.len - 1] != '\n') {
+            try bashrc_file.writeAll("\n");
+        }
+        try bashrc_file.writeAll(export_line ++ "\n");
+
+        try stdout.print("Added ~/.local/bin to ~/.bashrc.\n", .{});
+    }
+
     /// Print PATH configuration hint
     fn printPathHint(allocator: Allocator, install_dir: []const u8) !void {
         const stdout = file_compat.File.stdout().writer();
-
-        // Check if install_dir is already in PATH
         const path_env = std.process.getEnvVarOwned(allocator, "PATH") catch null;
         defer if (path_env) |value| allocator.free(value);
 
@@ -208,52 +254,45 @@ pub const Installer = struct {
             return;
         }
 
-        try stdout.print("Add to your shell config:\n", .{});
+        try stdout.print("Restart your shell or run:\n", .{});
         try stdout.print("  export PATH=\"{s}:$PATH\"\n\n", .{install_dir});
-
-        // Detect which rc file to suggest
-        const home = env.getHomeDir(allocator) catch return;
-        defer allocator.free(home);
-
-        const zshrc = try std.fs.path.join(allocator, &[_][]const u8{ home, ".zshrc" });
-        defer allocator.free(zshrc);
-        const bashrc = try std.fs.path.join(allocator, &[_][]const u8{ home, ".bashrc" });
-        defer allocator.free(bashrc);
-
-        const has_zshrc = if (std.fs.cwd().access(zshrc, .{})) true else |_| false;
-        const has_bashrc = if (std.fs.cwd().access(bashrc, .{})) true else |_| false;
-
-        if (has_zshrc) {
-            try stdout.print("  echo 'export PATH=\"{s}:$PATH\"' >> ~/.zshrc\n", .{install_dir});
-        } else if (has_bashrc) {
-            try stdout.print("  echo 'export PATH=\"{s}:$PATH\"' >> ~/.bashrc\n", .{install_dir});
-        }
     }
 
     /// Run the uninstall process
     pub fn runUninstall(allocator: Allocator) !void {
         const stdout = file_compat.File.stdout().writer();
+        const bin_name = binaryName();
+        const targets = [_]InstallTarget{ .user, .global };
+        var removed_any = false;
 
         try stdout.print("\n=== Crushcode Uninstaller ===\n\n", .{});
 
-        const install_dir = try getInstallDir(allocator);
-        defer allocator.free(install_dir);
+        for (targets) |target| {
+            const install_dir = try getInstallDir(allocator, target);
+            defer allocator.free(install_dir);
 
-        const bin_name = binaryName();
-        const bin_path = try std.fs.path.join(allocator, &[_][]const u8{ install_dir, bin_name });
-        defer allocator.free(bin_path);
+            const bin_path = try std.fs.path.join(allocator, &[_][]const u8{ install_dir, bin_name });
+            defer allocator.free(bin_path);
 
-        // Remove binary
-        std.fs.cwd().deleteFile(bin_path) catch |err| {
-            if (err == error.FileNotFound) {
-                try stdout.print("Crushcode is not installed (file not found: {s})\n", .{bin_path});
-                return;
-            }
-            try stdout.print("Error removing {s}: {}\n", .{ bin_path, err });
-            return err;
-        };
+            std.fs.cwd().deleteFile(bin_path) catch |err| {
+                if (err == error.FileNotFound) continue;
+                if (err == error.AccessDenied and target == .global) {
+                    try stdout.print("Permission denied. Run with sudo or use --user\n", .{});
+                    return error.AccessDenied;
+                }
+                try stdout.print("Error removing {s}: {}\n", .{ bin_path, err });
+                return err;
+            };
 
-        try stdout.print("Removed {s}\n", .{bin_path});
+            removed_any = true;
+            try stdout.print("Removed {s}\n", .{bin_path});
+        }
+
+        if (!removed_any) {
+            try stdout.print("Crushcode is not installed in ~/.local/bin or /usr/local/bin\n", .{});
+            return;
+        }
+
         try stdout.print("Uninstallation complete.\n", .{});
         try stdout.print("Note: You may want to remove the PATH entry from your shell config.\n\n", .{});
     }
@@ -267,8 +306,15 @@ pub const Installer = struct {
             \\Quick Install:
             \\  crushcode install
             \\
+            \\User install (default):
+            \\  crushcode install --user
+            \\
+            \\Global install:
+            \\  crushcode install --global
+            \\
             \\Install specific version:
             \\  crushcode install --version 0.2.0
+            \\  crushcode install --global --version 0.2.0
             \\
             \\Uninstall:
             \\  crushcode install --uninstall
@@ -284,23 +330,63 @@ pub const Installer = struct {
     }
 };
 
+fn printInstallUsage() void {
+    const stdout = file_compat.File.stdout().writer();
+    stdout.print(
+        \\Usage: crushcode install [--user|--global] [--version <version>] [--uninstall] [--help] [--print]
+        \\
+    , .{}) catch {};
+}
+
+fn parseInstallArgs(args: [][]const u8) !InstallOptions {
+    var options = InstallOptions{};
+    var seen_target = false;
+    var i: usize = 0;
+
+    while (i < args.len) : (i += 1) {
+        const arg = args[i];
+
+        if (std.mem.eql(u8, arg, "--global")) {
+            if (seen_target and options.target != .global) return error.InvalidArguments;
+            options.target = .global;
+            seen_target = true;
+        } else if (std.mem.eql(u8, arg, "--user")) {
+            if (seen_target and options.target != .user) return error.InvalidArguments;
+            options.target = .user;
+            seen_target = true;
+        } else if (std.mem.eql(u8, arg, "--version")) {
+            if (i + 1 >= args.len) return error.InvalidArguments;
+            options.version = args[i + 1];
+            i += 1;
+        } else if (std.mem.eql(u8, arg, "--uninstall")) {
+            options.uninstall = true;
+        } else if (std.mem.eql(u8, arg, "--help")) {
+            options.help = true;
+        } else if (std.mem.eql(u8, arg, "--print")) {
+            options.print = true;
+        } else {
+            return error.InvalidArguments;
+        }
+    }
+
+    if (options.uninstall and options.version != null) return error.InvalidArguments;
+    return options;
+}
+
 /// Handle install command from CLI
 pub fn handleInstall(args: [][]const u8) !void {
     const allocator = std.heap.page_allocator;
 
-    if (args.len > 0 and std.mem.eql(u8, args[0], "--uninstall")) {
-        try Installer.runUninstall(allocator);
-    } else if (args.len > 0 and std.mem.eql(u8, args[0], "--version")) {
-        if (args.len > 1) {
-            try Installer.runInstall(allocator, args[1]);
-        } else {
-            const stdout = file_compat.File.stdout().writer();
-            stdout.print("Usage: crushcode install --version <version>\n", .{}) catch {};
-        }
-    } else if (args.len > 0 and std.mem.eql(u8, args[0], "--help")) {
+    const options = parseInstallArgs(args) catch {
+        printInstallUsage();
+        return;
+    };
+
+    if (options.help) {
         Installer.printInstallInstructions();
-    } else if (args.len > 0 and std.mem.eql(u8, args[0], "--print")) {
-        // Print install script for piping
+    } else if (options.uninstall) {
+        try Installer.runUninstall(allocator);
+    } else if (options.print) {
         const stdout = file_compat.File.stdout().writer();
         stdout.print(
             \\#!/bin/sh
@@ -309,12 +395,11 @@ pub fn handleInstall(args: [][]const u8) !void {
             \\mkdir -p ~/.local/bin
             \\curl -sL https://github.com/crushcode/crushcode/releases/latest/download/crushcode-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m) -o ~/.local/bin/crushcode
             \\chmod +x ~/.local/bin/crushcode
-            \\echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc 2>/dev/null || true
+            \\grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
             \\echo "Done! Run: crushcode --help"
             \\
         , .{}) catch {};
     } else {
-        // Default: run actual install
-        try Installer.runInstall(allocator, null);
+        try Installer.runInstall(allocator, options.version, options.target);
     }
 }
