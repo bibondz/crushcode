@@ -67,6 +67,7 @@ const APIChatResponse = struct {
 const StreamingToolCall = streaming_parsers.StreamingToolCall;
 
 pub const StreamCallback = ai_types.StreamCallback;
+pub threadlocal var active_show_thinking: bool = false;
 
 const StreamFormat = streaming_parsers.StreamFormat;
 
@@ -231,6 +232,9 @@ pub const AIClient = struct {
 
         var chunk_buf: [4096]u8 = undefined;
         var saw_done = false;
+
+        streaming_parsers.active_show_thinking = active_show_thinking;
+        defer streaming_parsers.active_show_thinking = false;
 
         while (true) {
             const bytes_read = response_reader.readSliceShort(&chunk_buf) catch return error.NetworkError;

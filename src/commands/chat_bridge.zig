@@ -42,6 +42,7 @@ pub const InteractiveBridgeContext = struct {
 
 pub threadlocal var active_bridge_context: ?*InteractiveBridgeContext = null;
 pub threadlocal var active_streaming_enabled: bool = false;
+pub threadlocal var active_show_thinking: bool = false;
 
 pub fn appendLoopHistoryMessage(messages: *array_list_compat.ArrayList(core.ChatMessage), allocator: std.mem.Allocator, loop_message: LoopMessage) !void {
     try messages.append(.{
@@ -100,6 +101,8 @@ pub fn sendInteractiveLoopMessages(allocator: std.mem.Allocator, loop_messages: 
 
     var response: core.ChatResponse = undefined;
     if (active_streaming_enabled) {
+        core.setStreamingThinkingEnabled(active_show_thinking);
+        defer core.setStreamingThinkingEnabled(false);
         response = ctx.client.sendChatStreaming(ctx.messages.items, interactiveStreamCallback) catch |err| {
             ctx.turn_failed = true;
             spinner_mod.StreamingSpinner.clearStatic();

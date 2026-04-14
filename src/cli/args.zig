@@ -18,6 +18,7 @@ pub const Args = struct {
     memory_limit: u32 = 100, // max messages to remember
     stream: bool = false, // enable streaming output
     debug: bool = false, // enable debug output
+    show_thinking: bool = false, // show streaming thinking output
     permission: ?[]const u8 = null, // permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
     intensity: ?[]const u8 = null, // output intensity: lite, normal, full, ultra (F1: Caveman-inspired)
     remaining: [][]const u8,
@@ -53,7 +54,7 @@ pub const Args = struct {
             }
 
             // After command is found, or if it's a flag, parse options
-            if (std.mem.startsWith(u8, arg, "--")) {
+            if (std.mem.startsWith(u8, arg, "-")) {
                 // Parse flags with = or space
                 if (std.mem.startsWith(u8, arg, "--provider=")) {
                     result.provider = arg[11..];
@@ -81,7 +82,7 @@ pub const Args = struct {
                     }
                 } else if (std.mem.eql(u8, arg, "--interactive") or std.mem.eql(u8, arg, "-i")) {
                     result.interactive = true;
-                } else if (std.mem.eql(u8, arg, "--tui") or std.mem.eql(u8, arg, "-t")) {
+                } else if (std.mem.eql(u8, arg, "--tui")) {
                     result.tui = true;
                 } else if (std.mem.eql(u8, arg, "--json") or std.mem.eql(u8, arg, "-j")) {
                     result.json = true;
@@ -135,6 +136,8 @@ pub const Args = struct {
                     result.stream = true;
                 } else if (std.mem.eql(u8, arg, "--debug") or std.mem.eql(u8, arg, "-d")) {
                     result.debug = true;
+                } else if (std.mem.eql(u8, arg, "--thinking") or std.mem.eql(u8, arg, "-t")) {
+                    result.show_thinking = true;
                 } else if (std.mem.startsWith(u8, arg, "--intensity=")) {
                     result.intensity = arg[12..];
                 } else if (std.mem.eql(u8, arg, "--intensity")) {
@@ -172,6 +175,7 @@ pub const Args = struct {
             .memory_limit = result.memory_limit,
             .stream = result.stream,
             .debug = result.debug,
+            .show_thinking = result.show_thinking,
             .permission = if (result.permission) |p| try allocator.dupe(u8, p) else null,
             .intensity = if (result.intensity) |i| try allocator.dupe(u8, i) else null,
             .remaining = remaining,

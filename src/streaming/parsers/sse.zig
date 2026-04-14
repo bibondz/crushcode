@@ -109,6 +109,23 @@ pub const SSEParser = struct {
         if (event_type != .string) return null;
         const type_str = event_type.string;
 
+        if (std.mem.eql(u8, type_str, "content_block_start")) {
+            const content_block = root.object.get("content_block") orelse return null;
+            if (content_block != .object) return null;
+
+            const block_type = content_block.object.get("type") orelse return null;
+            if (block_type != .string) return null;
+
+            if (std.mem.eql(u8, block_type.string, "thinking")) {
+                const text = content_block.object.get("thinking") orelse return null;
+                if (text != .string) return null;
+                if (text.string.len == 0) return null;
+                return StreamEvent.thinkingEvent(text.string);
+            }
+
+            return null;
+        }
+
         // Content delta — text tokens
         if (std.mem.eql(u8, type_str, "content_block_delta")) {
             const delta = root.object.get("delta") orelse return null;

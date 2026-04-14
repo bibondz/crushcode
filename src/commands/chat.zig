@@ -286,10 +286,16 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
 
     var response: core.ChatResponse = undefined;
     var content_slice: []const u8 = "";
+    const stream_options = core.StreamOptions{
+        .show_thinking = args.show_thinking,
+    };
 
     if (args.stream) {
         var full_content = array_list_compat.ArrayList(u8).init(allocator);
         defer full_content.deinit();
+
+        core.setStreamingThinkingEnabled(stream_options.show_thinking);
+        defer core.setStreamingThinkingEnabled(false);
 
         response = ai_client.sendChatStreaming(&[_]core.ChatMessage{.{
             .role = try allocator.dupe(u8, "user"),
@@ -608,6 +614,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     var total_input_tokens: u64 = 0;
     var total_output_tokens: u64 = 0;
     var request_count: u32 = 0;
+    var stream_options = core.StreamOptions{
+        .show_thinking = args.show_thinking,
+    };
 
     var compactor = ContextCompactor.init(allocator, 128_000);
     defer compactor.deinit();
@@ -616,8 +625,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     out("=== Interactive Chat Mode (Streaming) ===\n", .{});
     out("Provider: {s} | Model: {s}\n", .{ current_provider_name, current_model_name });
     out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    out("Commands: /help /clear /model /cost /compact /exit\n", .{});
+    out("Commands: /help /clear /model /thinking /cost /compact /exit\n", .{});
     out("Shortcuts: /h /c /m /q\n", .{});
+    out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
     out("--------------------------------------------\n\n", .{});
 
     json_out.emitSessionStart(current_provider_name, current_model_name);
@@ -704,6 +714,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 out("  Compression: {d:.1}x\n", .{kg.compressionRatio()});
             }
             out("  [graph context already injected into system prompt]\n", .{});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/thinking")) {
+            stream_options.show_thinking = !stream_options.show_thinking;
+            out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
             continue;
         }
 
@@ -843,10 +859,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         chat_bridge.active_bridge_context = &bridge_ctx;
         tool_executors.setJsonOutput(json_out);
         chat_bridge.active_streaming_enabled = args.stream;
+        chat_bridge.active_show_thinking = stream_options.show_thinking;
         var loop_result = try agent_loop.run(chat_bridge.sendInteractiveLoopMessages, user_message);
         chat_bridge.active_bridge_context = null;
         tool_executors.setJsonOutput(.{ .enabled = false });
         chat_bridge.active_streaming_enabled = false;
+        chat_bridge.active_show_thinking = false;
         defer loop_result.deinit();
 
         const hit_max_iterations = loop_result.steps.items.len > 0 and

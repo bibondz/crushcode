@@ -11,6 +11,8 @@ pub const Usage = ai_types.Usage;
 pub const StreamCallback = ai_types.StreamCallback;
 pub const ApiFormat = registry_mod.ApiFormat;
 
+pub threadlocal var active_show_thinking: bool = false;
+
 pub const StreamingToolCall = struct {
     id: ?[]const u8 = null,
     name: ?[]const u8 = null,
@@ -73,6 +75,16 @@ pub fn appendStreamingToken(full_content: *array_list_compat.ArrayList(u8), toke
     }
     try full_content.appendSlice(token);
     callback(token, false);
+}
+
+pub fn appendThinkingToken(token: []const u8, callback: StreamCallback) void {
+    if (!active_show_thinking or token.len == 0) {
+        return;
+    }
+
+    callback("\x1b[2m", false);
+    callback(token, false);
+    callback("\x1b[0m", false);
 }
 
 pub fn markStreamDone(
@@ -165,6 +177,14 @@ pub fn processOpenAIStreamingPayload(
             else => return,
         };
         try appendStreamingToken(full_content, token, callback);
+    }
+
+    if (delta.object.get("reasoning_content")) |reasoning_value| {
+        const token = switch (reasoning_value) {
+            .string => |s| s,
+            else => return,
+        };
+        appendThinkingToken(token, callback);
     }
 }
 
@@ -337,7 +357,34 @@ pub fn processSSELine(
                         else => return,
                     };
                     try appendStreamingToken(full_content, token, callback);
+                } else if (std.mem.eql(u8, delta_type.string, "thinking_delta")) {
+                    const thinking = delta.object.get("thinking") orelse return;
+                    const token = switch (thinking) {
+                        .string => |s| s,
+                        else => return,
+                    };
+                    appendThinkingToken(token, callback);
                 }
+                return;
+            }
+
+            if (std.mem.eql(u8, event_type, "content_block_start")) {
+                const content_block = root.object.get("content_block") orelse return;
+                if (content_block != .object) {
+                    return;
+                }
+
+                const block_type = content_block.object.get("type") orelse return;
+                if (block_type != .string or !std.mem.eql(u8, block_type.string, "thinking")) {
+                    return;
+                }
+
+                const thinking = content_block.object.get("thinking") orelse return;
+                const token = switch (thinking) {
+                    .string => |s| s,
+                    else => return,
+                };
+                appendThinkingToken(token, callback);
                 return;
             }
 

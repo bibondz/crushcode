@@ -85,8 +85,9 @@ fn printHelp() !void {
         \\  --memory <path>   Session memory/history file
         \\  --memory-limit <n>  Max messages to remember (default: 100)
         \\  --interactive, -i  Start interactive chat
-        \\  --tui, -t          Launch terminal UI
+        \\  --tui              Launch terminal UI
         \\  --stream, -s       Enable streaming output
+        \\  --thinking, -t     Show streaming thinking output
         \\  --permission <mode> Permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
         \\
         \\Examples:

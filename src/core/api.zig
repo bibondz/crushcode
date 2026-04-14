@@ -31,6 +31,10 @@ pub const ResponseBuffer = buffer.ResponseBuffer;
 pub const display = @import("streaming_display");
 pub const StreamDisplay = display.StreamDisplay;
 
+pub fn setStreamingThinkingEnabled(enabled: bool) void {
+    client.active_show_thinking = enabled;
+}
+
 comptime {
     _ = std;
 }

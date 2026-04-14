@@ -172,6 +172,7 @@ pub fn main() !void {
             .memory_limit = 100,
             .stream = false,
             .debug = false,
+            .show_thinking = false,
             .permission = null,
             .intensity = null,
             .remaining = &.{},

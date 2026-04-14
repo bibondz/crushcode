@@ -83,6 +83,7 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
                 .memory = null,
                 .memory_limit = 100,
                 .stream = false,
+                .show_thinking = false,
                 .permission = null,
                 .intensity = null,
                 .remaining = &.{},
