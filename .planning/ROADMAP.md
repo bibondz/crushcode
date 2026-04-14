@@ -122,9 +122,77 @@ v0.4.0 Phase 8 → Phase 9 → Phase 10
          (session)  (agents)  (sidebar)
 ```
 
+---
+
+## v0.5.0 — Full Parity
+
+### Phase 11: LSP Deep Integration
+**ปัญหา**: LSP client มีแต่ CLI ไม่ได้เชื่อม TUI
+**ทำ**:
+- Initialize LSP client ใน chat_tui_app.zig เมื่อเปิดไฟล์
+- openDocument() เมื่อ edit
+- Poll getDiagnostics() → แสดงใน sidebar (error count + file list)
+- Real-time diagnostics update
+- Auto-detect LSP server จาก file extension (zls, rust-analyzer, gopls, etc.)
+- ไฟล์: แก้ chat_tui_app.zig + SidebarWidget — เพิ่ม LSP diagnostics section
+
+### Phase 12: Multi-Agent Threading
+**ปัญหา**: WorkerItem struct มีแต่ไม่มี real thread spawning
+**ทำ**:
+- std.Thread.spawn() สำหรับ worker threads
+- Thread-safe queue (std.Thread.Mutex + ArrayList) สำหรับ task/result
+- Real AI request ใน background thread → result กลับมา main thread
+- WorkerItem status update จาก thread (pending → running → done/error)
+- ไฟล์: แก้ src/agent/parallel.zig — เพิ่ม real threading
+
+### Phase 13: Git Advanced
+**ปัญหา**: git commands ยัง basic (status, diff, add, commit, push, pull, branch, log)
+**ทำ**:
+- git blame — แสดง per-line author
+- git stash — stash/pop/list
+- git rebase — interactive rebase support
+- git merge — merge branches
+- git bisect — binary search for bugs
+- git remote — add/remove/list remotes
+- git log -S — search commit history
+- ไฟล์: แก้ src/commands/git.zig — เพิ่ม commands
+
+### Phase 14: OAuth Provider Flow
+**ปัญหา**: OAuth มีแค่ MCP auth ไม่มี AI provider auth
+**ทำ**:
+- Generalize OAuth จาก mcp/oauth.zig ให้ใช้กับ AI providers ได้
+- Provider login flow (OpenRouter, etc.)
+- Token refresh อัตโนมัติ
+- ไฟล์: สร้าง src/auth/provider_oauth.zig — reuse mcp/oauth.zig patterns
+
+### Phase 15: Token Budget Completion
+**ปัญหา**: Budget tracking มีแต่ยังไม่มี time-based reset + TUI display
+**ทำ**:
+- Daily/monthly reset logic (timestamp-based)
+- Budget display ใน TUI status bar
+- /budget command — show current usage vs limits
+- Alert when approaching limit
+- ไฟล์: แก้ src/usage/budget.zig + chat_tui_app.zig
+
+---
+
+## ลำดับการทำ
+```
+v0.3.1 Phase 1 → Phase 2 → Phase 3 → Phase 4       ✅ DONE
+         (context)  (tool loop)  (permission)  (fallback)
+
+v0.3.2 Phase 5 → Phase 6 → Phase 7                  ✅ DONE
+         (markdown)  (diff)  (theme)
+
+v0.4.0 Phase 8 → Phase 9 → Phase 10                 ✅ DONE
+         (session)  (agents)  (sidebar)
+
+v0.5.0 Phase 11 → Phase 12 → Phase 13 → Phase 14 → Phase 15
+         (LSP)     (agents)   (git)     (oauth)    (budget)
+```
+
 ## ไม่ทำ (defer indefinitely)
 - Voice input
 - Vim mode
-- Full LSP integration (just diagnostics display)
 - Package managers (deb/rpm/brew) — install command พอ
 - IDE bridge (VS Code / JetBrains)
