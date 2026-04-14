@@ -160,12 +160,10 @@ Plans:
 - ไฟล์: แก้ src/commands/git.zig — เพิ่ม commands
 
 ### Phase 14: OAuth Provider Flow
-**ปัญหา**: OAuth มีแค่ MCP auth ไม่มี AI provider auth
-**ทำ**:
-- Generalize OAuth จาก mcp/oauth.zig ให้ใช้กับ AI providers ได้
-- Provider login flow (OpenRouter, etc.)
-- Token refresh อัตโนมัติ
-- ไฟล์: สร้าง src/auth/provider_oauth.zig — reuse mcp/oauth.zig patterns
+**Goal:** Generalize OAuth from MCP to AI providers, enabling browser-based login with automatic token refresh
+**Plans:** 1 plan
+Plans:
+- [ ] 14-01-PLAN.md — ProviderOAuth module + auth CLI command (login/status/logout)
 
 ### Phase 15: Token Budget Completion
 **ปัญหา**: Budget tracking มีแต่ยังไม่มี time-based reset + TUI display
