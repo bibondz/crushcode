@@ -8,6 +8,59 @@ const chat_bridge = @import("chat_bridge");
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
 }
+
+fn estimateCompactTokens(messages: []const compaction_mod.CompactMessage) u64 {
+    var total: u64 = 0;
+    for (messages) |msg| {
+        total += ContextCompactor.estimateTokens(msg.content);
+    }
+    return total;
+}
+
+fn replaceMessagesFromCompaction(
+    allocator: std.mem.Allocator,
+    messages: *array_list_compat.ArrayList(core.ChatMessage),
+    summary: ?[]const u8,
+    compact_messages: []const compaction_mod.CompactMessage,
+) !void {
+    var rebuilt = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
+    errdefer {
+        for (rebuilt.items) |msg| {
+            chat_helpers.freeChatMessage(msg, allocator);
+        }
+        rebuilt.deinit();
+    }
+
+    if (summary) |summary_text| {
+        if (summary_text.len > 0) {
+            try rebuilt.append(.{
+                .role = try allocator.dupe(u8, "system"),
+                .content = try allocator.dupe(u8, summary_text),
+                .tool_call_id = null,
+                .tool_calls = null,
+            });
+        }
+    }
+
+    for (compact_messages) |compact_msg| {
+        try rebuilt.append(.{
+            .role = try allocator.dupe(u8, compact_msg.role),
+            .content = if (compact_msg.content.len > 0) try allocator.dupe(u8, compact_msg.content) else null,
+            .tool_call_id = null,
+            .tool_calls = null,
+        });
+    }
+
+    for (messages.items) |msg| {
+        chat_helpers.freeChatMessage(msg, allocator);
+    }
+    messages.clearRetainingCapacity();
+
+    for (rebuilt.items) |msg| {
+        try messages.append(msg);
+    }
+    rebuilt.deinit();
+}
 const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
@@ -834,7 +887,8 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
 
         const session_tokens = total_input_tokens + total_output_tokens;
-        if (compactor.needsCompaction(session_tokens) and messages.items.len > 12) {
+        const tier = compactor.compactionTier(session_tokens);
+        if (tier != .none and messages.items.len > 12) {
             out("\n{s}⚡ Context approaching limit ({d} tokens). Compacting...{s}\n", .{ Style.warning.start(), session_tokens, Style.warning.reset() });
 
             var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch continue;
@@ -847,43 +901,123 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 });
             }
 
-            const result = compactor.compact(compact_msgs.items) catch |err| {
-                out("Compaction failed: {}\n", .{err});
-                continue;
-            };
+            switch (tier) {
+                .light => {
+                    var result = compactor.compactLight(compact_msgs.items) catch continue;
+                    defer result.deinit();
 
-            if (result.messages_summarized > 0) {
-                for (messages.items) |msg| {
-                    chat_helpers.freeChatMessage(msg, allocator);
-                }
-                messages.clearRetainingCapacity();
+                    if (result.tokens_saved > 0) {
+                        replaceMessagesFromCompaction(allocator, &messages, null, result.messages) catch continue;
+                        out("{s}  Light compaction truncated tool output. Saved ~{d} tokens.{s}\n", .{
+                            Style.warning.start(),
+                            result.tokens_saved,
+                            Style.warning.reset(),
+                        });
+                    }
+                },
+                .heavy => {
+                    var result = (if (compactor.previous_summary.len > 0)
+                        compactor.compactWithSummary(compact_msgs.items, compactor.previous_summary)
+                    else
+                        compactor.compact(compact_msgs.items)) catch continue;
+                    defer result.deinit();
 
-                const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch continue;
+                    if (result.messages_summarized > 0) {
+                        replaceMessagesFromCompaction(allocator, &messages, result.summary, result.messages) catch continue;
+                        out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
+                            Style.warning.start(),
+                            result.messages_summarized,
+                            result.tokens_saved,
+                            Style.warning.reset(),
+                        });
+                    }
+                },
+                .full => {
+                    const summarize_prompt = compactor.buildSummarizationPrompt(compact_msgs.items, compactor.previous_summary) catch continue;
+                    defer allocator.free(summarize_prompt);
 
-                messages.append(.{
-                    .role = allocator.dupe(u8, "system") catch continue,
-                    .content = summary_content,
-                    .tool_call_id = null,
-                    .tool_calls = null,
-                }) catch continue;
+                    const recent_split = if (compact_msgs.items.len > compactor.recent_window)
+                        compact_msgs.items.len - compactor.recent_window
+                    else
+                        0;
+                    const recent_messages = compact_msgs.items[recent_split..];
+                    const total_tokens_before = estimateCompactTokens(compact_msgs.items);
 
-                for (result.messages) |compact_msg| {
-                    messages.append(.{
-                        .role = allocator.dupe(u8, compact_msg.role) catch continue,
-                        .content = if (compact_msg.content.len > 0) allocator.dupe(u8, compact_msg.content) catch continue else null,
-                        .tool_call_id = null,
-                        .tool_calls = null,
-                    }) catch continue;
-                }
+                    const summary_response = client.sendChat(summarize_prompt) catch {
+                        var fallback_result = (if (compactor.previous_summary.len > 0)
+                            compactor.compactWithSummary(compact_msgs.items, compactor.previous_summary)
+                        else
+                            compactor.compact(compact_msgs.items)) catch continue;
+                        defer fallback_result.deinit();
 
-                allocator.free(result.summary);
+                        if (fallback_result.messages_summarized > 0) {
+                            replaceMessagesFromCompaction(allocator, &messages, fallback_result.summary, fallback_result.messages) catch continue;
+                            out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
+                                Style.warning.start(),
+                                fallback_result.messages_summarized,
+                                fallback_result.tokens_saved,
+                                Style.warning.reset(),
+                            });
+                        }
+                        continue;
+                    };
 
-                out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
-                    Style.warning.start(),
-                    result.messages_summarized,
-                    result.tokens_saved,
-                    Style.warning.reset(),
-                });
+                    if (summary_response.choices.len == 0) {
+                        var fallback_result = (if (compactor.previous_summary.len > 0)
+                            compactor.compactWithSummary(compact_msgs.items, compactor.previous_summary)
+                        else
+                            compactor.compact(compact_msgs.items)) catch continue;
+                        defer fallback_result.deinit();
+
+                        if (fallback_result.messages_summarized > 0) {
+                            replaceMessagesFromCompaction(allocator, &messages, fallback_result.summary, fallback_result.messages) catch continue;
+                            out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
+                                Style.warning.start(),
+                                fallback_result.messages_summarized,
+                                fallback_result.tokens_saved,
+                                Style.warning.reset(),
+                            });
+                        }
+                        continue;
+                    }
+
+                    const llm_summary = summary_response.choices[0].message.content orelse "";
+                    if (llm_summary.len == 0) {
+                        var fallback_result = (if (compactor.previous_summary.len > 0)
+                            compactor.compactWithSummary(compact_msgs.items, compactor.previous_summary)
+                        else
+                            compactor.compact(compact_msgs.items)) catch continue;
+                        defer fallback_result.deinit();
+
+                        if (fallback_result.messages_summarized > 0) {
+                            replaceMessagesFromCompaction(allocator, &messages, fallback_result.summary, fallback_result.messages) catch continue;
+                            out("{s}  Compacted {d} messages. Saved ~{d} tokens.{s}\n", .{
+                                Style.warning.start(),
+                                fallback_result.messages_summarized,
+                                fallback_result.tokens_saved,
+                                Style.warning.reset(),
+                            });
+                        }
+                        continue;
+                    }
+
+                    compactor.setPreviousSummary(llm_summary) catch continue;
+                    const tokens_after = ContextCompactor.estimateTokens(llm_summary) + estimateCompactTokens(recent_messages);
+                    const llm_result = compaction_mod.CompactResult{
+                        .messages = recent_messages,
+                        .tokens_saved = total_tokens_before -| tokens_after,
+                        .messages_summarized = @intCast(recent_split),
+                        .summary = llm_summary,
+                    };
+
+                    replaceMessagesFromCompaction(allocator, &messages, llm_result.summary, llm_result.messages) catch continue;
+                    out("{s}  Used LLM to compress context. Saved ~{d} tokens.{s}\n", .{
+                        Style.warning.start(),
+                        llm_result.tokens_saved,
+                        Style.warning.reset(),
+                    });
+                },
+                .none => {},
             }
         }
     }
