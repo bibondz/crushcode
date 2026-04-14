@@ -61,6 +61,75 @@ fn replaceMessagesFromCompaction(
     }
     rebuilt.deinit();
 }
+
+fn findLastAssistantMessageIndex(messages: []const core.ChatMessage) ?usize {
+    var i = messages.len;
+    while (i > 0) {
+        i -= 1;
+        const message = messages[i];
+        const content = message.content orelse continue;
+        if (content.len == 0) continue;
+        if (std.mem.eql(u8, message.role, "assistant")) {
+            return i;
+        }
+    }
+    return null;
+}
+
+fn sourceTypeForRole(role: []const u8) source_tracker_mod.SourceProvenance.SourceType {
+    if (std.mem.eql(u8, role, "user")) return .user_input;
+    if (std.mem.eql(u8, role, "assistant")) return .ai_generated;
+    if (std.mem.eql(u8, role, "tool")) return .tool_output;
+    if (std.mem.eql(u8, role, "system")) return .derived;
+    return .derived;
+}
+
+fn sourceTypeLabel(source_type: source_tracker_mod.SourceProvenance.SourceType) []const u8 {
+    return @tagName(source_type);
+}
+
+fn revisionOutcomeLabel(outcome: revision_loop_mod.RevisionOutcome) []const u8 {
+    return @tagName(outcome);
+}
+
+const SessionLintFinding = struct {
+    severity: knowledge_lint_mod.LintSeverity,
+    rule: knowledge_lint_mod.LintFinding.LintRule,
+    message: []const u8,
+    location: ?[]const u8 = null,
+    suggestion: ?[]const u8 = null,
+
+    fn deinit(self: *SessionLintFinding, allocator: std.mem.Allocator) void {
+        if (self.location) |location| allocator.free(location);
+        if (self.suggestion) |suggestion| allocator.free(suggestion);
+    }
+};
+
+fn computeRevisionChangeRatio(prev: []const u8, curr: []const u8) f64 {
+    if (prev.len == 0 and curr.len == 0) return 0.0;
+    if (prev.len == 0 or curr.len == 0) return 1.0;
+
+    const len_diff = if (prev.len > curr.len) prev.len - curr.len else curr.len - prev.len;
+    const max_len = @max(prev.len, curr.len);
+    const sample_size = @min(@as(usize, 256), @min(prev.len, curr.len));
+
+    var diff_count: usize = 0;
+    if (sample_size > 0) {
+        const step = @max(@as(usize, 1), @min(prev.len, curr.len) / sample_size);
+        var i: usize = 0;
+        while (i < @min(prev.len, curr.len)) : (i += step) {
+            if (prev[i] != curr[i]) diff_count += 1;
+        }
+    }
+
+    const len_ratio = @as(f64, @floatFromInt(len_diff)) / @as(f64, @floatFromInt(max_len));
+    const char_ratio = if (sample_size > 0)
+        @as(f64, @floatFromInt(diff_count)) / @as(f64, @floatFromInt(sample_size))
+    else
+        0.0;
+    return (len_ratio + char_ratio) / 2.0;
+}
+
 const args_mod = @import("args");
 const registry_mod = @import("registry");
 const config_mod = @import("config");
@@ -85,12 +154,14 @@ const slash_commands_mod = @import("slash_commands");
 const intensity_mod = @import("intensity");
 const hotswap_mod = @import("model_hotswap");
 const summarizer_mod = @import("session_summarizer");
+const revision_loop_mod = @import("revision_loop");
 const color_mod = @import("color");
 const tiered_loader_mod = @import("tiered_loader");
 const convergence_mod = @import("convergence");
 const adversarial_mod = @import("adversarial_review");
 const source_tracker_mod = @import("source_tracker");
 const knowledge_lint_mod = @import("knowledge_lint");
+const custom_commands_mod = @import("custom_commands.zig");
 const spinner_mod = @import("spinner");
 const markdown_mod = @import("markdown_renderer");
 const error_display_mod = @import("error_display");
@@ -585,6 +656,10 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer slash_registry.deinit();
     try slash_registry.registerDefaults();
 
+    var custom_command_loader = custom_commands_mod.CustomCommandLoader.init(allocator);
+    defer custom_command_loader.deinit();
+    custom_command_loader.loadFromDirectory("commands") catch {};
+
     var hooks = LifecycleHooks.init(allocator);
     defer hooks.deinit();
     try registerCoreChatHooks(&hooks);
@@ -625,7 +700,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     out("=== Interactive Chat Mode (Streaming) ===\n", .{});
     out("Provider: {s} | Model: {s}\n", .{ current_provider_name, current_model_name });
     out("Type your message and press Enter. Press Ctrl+C to exit.\n", .{});
-    out("Commands: /help /clear /model /thinking /cost /compact /exit\n", .{});
+    out("Commands: /help /clear /model /thinking /cost /compact /commands /revise /lint /sources /exit\n", .{});
     out("Shortcuts: /h /c /m /q\n", .{});
     out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
     out("--------------------------------------------\n\n", .{});
@@ -720,6 +795,331 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         if (std.mem.eql(u8, user_message, "/thinking")) {
             stream_options.show_thinking = !stream_options.show_thinking;
             out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/commands")) {
+            out("\n=== Custom Commands ===\n", .{});
+            if (custom_command_loader.commands.items.len == 0) {
+                out("  No custom commands loaded from ./commands\n", .{});
+            } else {
+                for (custom_command_loader.commands.items) |cmd| {
+                    out("  /{s}", .{cmd.name});
+                    if (cmd.arg_names.len > 0) {
+                        out(" ", .{});
+                        for (cmd.arg_names, 0..) |arg_name, i| {
+                            if (i > 0) out(" ", .{});
+                            out("<{s}>", .{arg_name});
+                        }
+                    }
+                    if (cmd.description.len > 0) {
+                        out(" - {s}", .{cmd.description});
+                    }
+                    out("\n", .{});
+                }
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/revise")) {
+            const assistant_index = findLastAssistantMessageIndex(messages.items) orelse {
+                out("{s}No response to revise{s}\n", .{ Style.warning.start(), Style.warning.reset() });
+                continue;
+            };
+
+            const last_response = messages.items[assistant_index].content orelse {
+                out("{s}No response to revise{s}\n", .{ Style.warning.start(), Style.warning.reset() });
+                continue;
+            };
+
+            const revision_config = revision_loop_mod.RevisionConfig{};
+
+            var current_output = allocator.dupe(u8, last_response) catch |err| {
+                out("{s}Revision setup failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                continue;
+            };
+            defer allocator.free(current_output);
+
+            var total_revisions: u32 = 1;
+            var final_change_ratio: f64 = 1.0;
+            var outcome: ?revision_loop_mod.RevisionOutcome = null;
+            var zero_change_rounds: u32 = 0;
+            var revise_failed = false;
+            while (outcome == null and total_revisions < revision_config.max_revisions) {
+                const prompt = std.fmt.allocPrint(allocator,
+                    \\Revise the following assistant response. Improve clarity, accuracy, completeness, and concision without changing its intent. Preserve useful formatting. Return only the revised response.
+                    \\
+                    \\{s}
+                , .{current_output}) catch |err| {
+                    out("{s}Revision prompt failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    revise_failed = true;
+                    break;
+                };
+                defer allocator.free(prompt);
+
+                const response = client.sendChat(prompt) catch |err| {
+                    out("{s}Revision request failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    revise_failed = true;
+                    break;
+                };
+
+                if (response.choices.len == 0) {
+                    out("{s}Revision request returned no choices{s}\n", .{ Style.err.start(), Style.err.reset() });
+                    revise_failed = true;
+                    break;
+                }
+
+                const revised_content = response.choices[0].message.content orelse "";
+                if (revised_content.len == 0) {
+                    out("{s}Revision request returned empty content{s}\n", .{ Style.err.start(), Style.err.reset() });
+                    revise_failed = true;
+                    break;
+                }
+
+                const next_output = allocator.dupe(u8, revised_content) catch |err| {
+                    out("{s}Revision output copy failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    revise_failed = true;
+                    break;
+                };
+                const previous_output = current_output;
+                final_change_ratio = computeRevisionChangeRatio(previous_output, next_output);
+                allocator.free(current_output);
+                current_output = next_output;
+
+                total_revisions += 1;
+                if (final_change_ratio == 0.0) {
+                    zero_change_rounds += 1;
+                } else {
+                    zero_change_rounds = 0;
+                }
+
+                if (zero_change_rounds >= revision_config.stall_rounds) {
+                    outcome = .stalled;
+                } else if (final_change_ratio < revision_config.convergence_threshold) {
+                    outcome = .converged;
+                }
+
+                if (response.usage) |usage| {
+                    total_input_tokens += usage.prompt_tokens;
+                    total_output_tokens += usage.completion_tokens;
+                }
+                request_count += 1;
+            }
+
+            if (!revise_failed and outcome == null and total_revisions >= revision_config.max_revisions) {
+                outcome = .max_revisions;
+            }
+
+            const best_output = current_output;
+            if (messages.items[assistant_index].content) |content| {
+                allocator.free(content);
+            }
+            messages.items[assistant_index].content = allocator.dupe(u8, best_output) catch |err| {
+                out("{s}Failed to store revised response: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                continue;
+            };
+
+            out("\n{s}Assistant (revised):{s} ", .{ Style.prompt_assistant.start(), Style.prompt_assistant.reset() });
+            markdown_mod.MarkdownRenderer.render(best_output);
+            out("\n", .{});
+
+            if (revise_failed and outcome == null) {
+                out("{s}[revise: interrupted after {d} passes | final change: {d:.3}]{s}\n", .{
+                    Style.warning.start(),
+                    total_revisions,
+                    final_change_ratio,
+                    Style.warning.reset(),
+                });
+            } else if (outcome) |final_outcome| {
+                out("{s}[revise: {d} passes | outcome: {s} | final change: {d:.3}]{s}\n", .{
+                    Style.dimmed.start(),
+                    total_revisions,
+                    revisionOutcomeLabel(final_outcome),
+                    final_change_ratio,
+                    Style.dimmed.reset(),
+                });
+            } else {
+                out("{s}[revise: {d} passes]{s}\n", .{ Style.dimmed.start(), total_revisions, Style.dimmed.reset() });
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/lint")) {
+            if (messages.items.len == 0) {
+                out("{s}Not available in this context{s}\n", .{ Style.warning.start(), Style.warning.reset() });
+                continue;
+            }
+
+            var findings = array_list_compat.ArrayList(SessionLintFinding).init(allocator);
+            defer {
+                for (findings.items) |*finding| {
+                    finding.deinit(allocator);
+                }
+                findings.deinit();
+            }
+
+            for (messages.items, 0..) |msg, i| {
+                const content = msg.content orelse "";
+                const location = std.fmt.allocPrint(allocator, "msg_{d}", .{i + 1}) catch |err| {
+                    out("{s}Knowledge lint setup failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    findings.clearRetainingCapacity();
+                    continue;
+                };
+
+                if (i + 1 == messages.items.len) {
+                    findings.append(.{
+                        .severity = .info,
+                        .rule = .orphan,
+                        .message = "Latest session entry is not referenced by a later turn",
+                        .location = location,
+                        .suggestion = null,
+                    }) catch {
+                        allocator.free(location);
+                    };
+                } else if (std.mem.eql(u8, msg.role, "assistant")) {
+                    allocator.free(location);
+                } else {
+                    allocator.free(location);
+                }
+
+                if (std.mem.eql(u8, msg.role, "assistant") and content.len > 0) {
+                    const unattributed_location = std.fmt.allocPrint(allocator, "msg_{d}", .{i + 1}) catch continue;
+                    findings.append(.{
+                        .severity = .warning,
+                        .rule = .unattributed,
+                        .message = "Assistant response lacks explicit source citations in session history",
+                        .location = unattributed_location,
+                        .suggestion = allocator.dupe(u8, "/sources") catch null,
+                    }) catch {
+                        allocator.free(unattributed_location);
+                    };
+                }
+
+                if (i > 0) {
+                    const prev_content = messages.items[i - 1].content orelse "";
+                    if (content.len > 0 and std.mem.eql(u8, content, prev_content)) {
+                        const duplicate_location = std.fmt.allocPrint(allocator, "msg_{d}", .{i + 1}) catch continue;
+                        findings.append(.{
+                            .severity = .info,
+                            .rule = .duplicate,
+                            .message = "Session entry duplicates the previous turn verbatim",
+                            .location = duplicate_location,
+                            .suggestion = null,
+                        }) catch {
+                            allocator.free(duplicate_location);
+                        };
+                    }
+                }
+            }
+
+            var critical: u32 = 0;
+            var warnings: u32 = 0;
+            for (findings.items) |finding| {
+                switch (finding.severity) {
+                    .critical => critical += 1,
+                    .warning => warnings += 1,
+                    .info => {},
+                }
+            }
+            const total_checked: u32 = @intCast(messages.items.len);
+            const pass_rate = if (total_checked > 0)
+                @max(0.0, (@as(f64, @floatFromInt(total_checked)) - @as(f64, @floatFromInt(critical)) * 2.0 - @as(f64, @floatFromInt(warnings)) * 0.5) / @as(f64, @floatFromInt(total_checked)) * 100.0)
+            else
+                100.0;
+
+            out("\n=== Knowledge Lint ===\n", .{});
+            out("  Checked: {d} | Findings: {d} | Pass rate: {d:.1}%\n", .{
+                total_checked,
+                findings.items.len,
+                pass_rate,
+            });
+
+            if (findings.items.len == 0) {
+                out("  {s}No issues found{s}\n", .{ Style.success.start(), Style.success.reset() });
+                continue;
+            }
+
+            for (findings.items) |finding| {
+                const style = switch (finding.severity) {
+                    .critical => Style.err,
+                    .warning => Style.warning,
+                    .info => Style.dimmed,
+                };
+                out("  {s}[{s}/{s}]{s} {s}", .{
+                    style.start(),
+                    @tagName(finding.severity),
+                    @tagName(finding.rule),
+                    style.reset(),
+                    finding.message,
+                });
+                if (finding.location) |location| {
+                    out(" ({s})", .{location});
+                }
+                out("\n", .{});
+                if (finding.suggestion) |suggestion| {
+                    out("    suggestion: {s}\n", .{suggestion});
+                }
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/sources")) {
+            if (messages.items.len == 0) {
+                out("{s}Not available in this context{s}\n", .{ Style.warning.start(), Style.warning.reset() });
+                continue;
+            }
+
+            var tracker = source_tracker_mod.SourceTracker.init(allocator);
+            defer tracker.deinit();
+
+            for (messages.items, 0..) |msg, i| {
+                const content = msg.content orelse "";
+                var provenance = source_tracker_mod.SourceProvenance.init(
+                    allocator,
+                    sourceTypeForRole(msg.role),
+                    if (std.mem.eql(u8, msg.role, "assistant")) current_model_name else if (std.mem.eql(u8, msg.role, "user")) "interactive-session" else msg.role,
+                ) catch |err| {
+                    out("{s}Source tracking failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    continue;
+                };
+                _ = provenance.withConfidence(if (std.mem.eql(u8, msg.role, "assistant")) 0.85 else 1.0);
+
+                const id = std.fmt.allocPrint(allocator, "msg_{d}", .{i + 1}) catch |err| {
+                    provenance.deinit();
+                    out("{s}Source tracking failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    continue;
+                };
+                defer allocator.free(id);
+
+                tracker.record(id, content, provenance) catch |err| {
+                    provenance.deinit();
+                    out("{s}Source tracking failed: {}{s}\n", .{ Style.err.start(), err, Style.err.reset() });
+                    continue;
+                };
+            }
+
+            const report = tracker.provenanceReport();
+            out("\n=== Source Tracking ===\n", .{});
+            out("  Total entries: {d}\n", .{report.total_entries});
+            out("  Sources: user={d} ai={d} tool={d} file={d} web={d} wiki={d} derived={d}\n", .{
+                report.user_sources,
+                report.ai_sources,
+                report.tool_sources,
+                report.file_sources,
+                report.web_sources,
+                report.wiki_sources,
+                report.derived_sources,
+            });
+            out("  Average confidence: {d:.2}\n", .{report.avg_confidence});
+
+            for (tracker.entries.items) |entry| {
+                out("  - {s} [{s}] origin={s} confidence={d:.2}\n", .{
+                    entry.id,
+                    sourceTypeLabel(entry.provenance.source_type),
+                    entry.provenance.origin,
+                    entry.provenance.confidence,
+                });
+            }
             continue;
         }
 
