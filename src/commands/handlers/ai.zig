@@ -30,12 +30,18 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
     const provider_name = if (profile_opt) |*p| p.default_provider else config.default_provider;
     const model_name = if (profile_opt) |*p| p.default_model else config.default_model;
 
+    if (provider_name.len == 0) {
+        try runFirstTimeSetup(allocator, config);
+        return;
+    }
+
     var registry = registry_mod.ProviderRegistry.init(allocator);
     defer registry.deinit();
     try registry.registerAllProviders();
 
     const provider = registry.getProvider(provider_name) orelse {
         stdout_print("Error: Provider '{s}' not found\n", .{provider_name});
+        stdout_print("Run 'crushcode list --providers' to see available providers.\n", .{});
         return error.ProviderNotFound;
     };
 
@@ -273,5 +279,144 @@ pub fn handleFetchModels(args: args_mod.Args, config: *config_mod.Config) !void 
     stdout_print("Live Models for {s} ({d} total):\n\n", .{ provider_name, models.len });
     for (models, 0..) |model, i| {
         stdout_print("  {d}. {s}\n", .{ i + 1, model });
+    }
+}
+
+fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !void {
+    const stdout = file_compat.File.stdout().writer();
+    const stdin = file_compat.File.stdin();
+    const stdin_reader = stdin.reader();
+
+    stdout.print(
+        \\
+        \\╔══════════════════════════════════════════╗
+        \\║       Crushcode v0.2.2 — First Setup     ║
+        \\╚══════════════════════════════════════════╝
+        \\
+        \\Welcome! Let's configure your default AI provider.
+        \\
+    , .{}) catch {};
+
+    const popular = [_][]const u8{ "zai", "openrouter", "openai", "anthropic", "deepseek", "ollama" };
+    const needs_key = [_]bool{ true, true, true, true, true, false };
+
+    stdout.print("Popular providers:\n\n", .{}) catch {};
+    for (popular, 1..) |name, i| {
+        const key_note: []const u8 = if (needs_key[i - 1]) "(requires API key)" else "(local, no key needed)";
+        stdout_print("  {d}. {s} {s}\n", .{ i, name, key_note });
+    }
+    stdout_print("\n  Or type any provider name (gemini, xai, mistral, groq, etc.)\n", .{});
+
+    stdout.print("\nChoose provider [1-6 or name]: ", .{}) catch {};
+    const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256) catch {
+        stdout_print("\nSetup cancelled.\n", .{});
+        return;
+    };
+    if (line) |input| {
+        defer allocator.free(input);
+        const choice = std.mem.trim(u8, input, " \t\r\n");
+        if (choice.len == 0) {
+            stdout_print("Setup cancelled.\n", .{});
+            return;
+        }
+
+        var provider_name: []const u8 = choice;
+        inline for (popular, 1..) |name, idx| {
+            if (idx == std.fmt.parseInt(u8, choice, 10) catch 0) {
+                provider_name = name;
+            }
+        }
+
+        var api_key_buf: [512]u8 = undefined;
+        var api_key: []const u8 = "";
+
+        var registry = registry_mod.ProviderRegistry.init(allocator);
+        defer registry.deinit();
+        try registry.registerAllProviders();
+
+        const is_local = std.mem.eql(u8, provider_name, "ollama") or
+            std.mem.eql(u8, provider_name, "lm_studio") or
+            std.mem.eql(u8, provider_name, "llama_cpp");
+
+        if (!is_local) {
+            const existing = config.getApiKey(provider_name) orelse "";
+            if (existing.len > 0 and !std.mem.startsWith(u8, existing, "sk-your") and !std.mem.startsWith(u8, existing, "xai-your") and !std.mem.startsWith(u8, existing, "gsk_your") and !std.mem.startsWith(u8, existing, "AIzaSy") and !std.mem.startsWith(u8, existing, "your-")) {
+                stdout_print("\nAPI key for {s} already configured.\n", .{provider_name});
+                api_key = existing;
+            } else {
+                stdout_print("\nEnter API key for {s}: ", .{provider_name});
+                const key_input = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 512) catch {
+                    stdout_print("\nSetup cancelled.\n", .{});
+                    return;
+                };
+                if (key_input) |ki| {
+                    defer allocator.free(ki);
+                    const trimmed = std.mem.trim(u8, ki, " \t\r\n");
+                    if (trimmed.len > 0) {
+                        @memcpy(api_key_buf[0..trimmed.len], trimmed);
+                        api_key = api_key_buf[0..trimmed.len];
+                    }
+                }
+            }
+        }
+
+        if (!is_local and api_key.len == 0) {
+            stdout_print("\nNo API key provided. Setup cancelled.\n", .{});
+            return;
+        }
+
+        if (api_key.len > 0) {
+            try config.setApiKey(provider_name, api_key);
+        }
+
+        config.default_provider = try allocator.dupe(u8, provider_name);
+        config.default_model = try allocator.dupe(u8, "");
+
+        const config_path = config_mod.getConfigPath(allocator) catch {
+            stdout_print("\nConfigured {s} as default provider.\n", .{provider_name});
+            return;
+        };
+        defer allocator.free(config_path);
+
+        var config_content = array_list_compat.ArrayList(u8).init(allocator);
+        defer config_content.deinit();
+        const w = config_content.writer();
+
+        try w.print("# Crushcode Configuration\n\n", .{});
+        try w.print("default_provider = \"{s}\"\n", .{provider_name});
+        if (config.default_model.len > 0) {
+            try w.print("default_model = \"{s}\"\n", .{config.default_model});
+        }
+        try w.print("\n[api_keys]\n", .{});
+
+        var key_iter = config.api_keys.iterator();
+        while (key_iter.next()) |entry| {
+            try w.print("{s} = \"{s}\"\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+        }
+
+        const config_dir = std.fs.path.dirname(config_path) orelse "";
+        std.fs.cwd().makePath(config_dir) catch {};
+        const file = std.fs.cwd().createFile(config_path, .{}) catch {
+            stdout_print("\nConfigured {s} as default provider.\n", .{provider_name});
+            return;
+        };
+        defer file.close();
+        file.writeAll(config_content.items) catch {};
+
+        stdout_print(
+            \\
+            \\✓ Setup complete!
+            \\
+            \\  Provider: {s}
+            \\  Config:   {s}
+            \\
+            \\Quick start:
+            \\  crushcode chat "hello"           — send a message
+            \\  crushcode chat                    — interactive mode
+            \\  crushcode fetch-models {s}        — list available models
+            \\
+        , .{ provider_name, config_path, provider_name });
+    } else {
+        stdout_print("Setup cancelled.\n", .{});
     }
 }
