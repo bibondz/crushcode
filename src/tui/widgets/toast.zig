@@ -27,6 +27,15 @@ pub const Severity = enum {
         };
     }
 
+    pub fn label(self: Severity) []const u8 {
+        return switch (self) {
+            .info => "INFO",
+            .success => "OK",
+            .warning => "WARN",
+            .err => "ERR",
+        };
+    }
+
     pub fn fgColor(self: Severity, theme: *const theme_mod.Theme) vaxis.Color {
         return switch (self) {
             .info => theme.accent,
@@ -221,13 +230,27 @@ pub const ToastStackWidget = struct {
 
         const bg = severity.bgColor(theme);
 
-        // Build segments: [icon] [space] [message] [bar]
+        // Build segments: [icon] [space] [label] [space] [message] [bar]
         var seg_count: usize = 0;
-        const segs = try arena.alloc(vaxis.Segment, 4);
+        const segs = try arena.alloc(vaxis.Segment, 6);
 
         // Icon
         segs[seg_count] = .{
             .text = severity.icon(),
+            .style = .{ .fg = severity.fgColor(theme), .bg = bg, .bold = true },
+        };
+        seg_count += 1;
+
+        // Space
+        segs[seg_count] = .{
+            .text = " ",
+            .style = .{ .bg = bg },
+        };
+        seg_count += 1;
+
+        // Severity label (text identifier for color-blind accessibility)
+        segs[seg_count] = .{
+            .text = severity.label(),
             .style = .{ .fg = severity.fgColor(theme), .bg = bg, .bold = true },
         };
         seg_count += 1;

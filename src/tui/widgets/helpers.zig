@@ -91,9 +91,9 @@ pub fn shouldRenderMessageContent(message: *const widget_types.Message) bool {
 
 pub fn toolCallStatusIcon(status: widget_types.ToolCallStatus) []const u8 {
     return switch (status) {
-        .pending => "●",
-        .success => "✓",
-        .failed => "×",
+        .pending => "● RUN",
+        .success => "✓ OK",
+        .failed => "× FAIL",
     };
 }
 

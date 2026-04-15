@@ -151,7 +151,18 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8, md_theme: M
             try appendRepeatedLiteral(&segments, allocator, "─", rule_width, hr_style);
             try appendNewline(&segments, allocator, has_newline, hr_style);
         } else if (parseHeaderLine(line)) |header| {
-            try appendSegment(&segments, allocator, header, header_style);
+            // Visual differentiation by header level
+            const prefix: []const u8 = switch (header.level) {
+                1 => "▓ ",
+                2 => "▒ ",
+                3 => "░ ",
+                4 => "▸ ",
+                5 => "◦ ",
+                6 => "· ",
+                else => "",
+            };
+            try appendSegment(&segments, allocator, prefix, header_style);
+            try appendInline(&segments, allocator, header.content, header_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, header_style);
         } else if (parseTaskListLine(line)) |task| {
             try appendIndent(&segments, allocator, task.level, "  ", default_style);
@@ -600,10 +611,21 @@ fn consumeIdentifier(line: []const u8, start: usize) usize {
     return index;
 }
 
-fn parseHeaderLine(line: []const u8) ?[]const u8 {
-    if (std.mem.startsWith(u8, line, "## ")) return std.mem.trimLeft(u8, line[3..], " ");
-    if (std.mem.startsWith(u8, line, "# ")) return std.mem.trimLeft(u8, line[2..], " ");
-    return null;
+const HeaderLine = struct {
+    level: usize,
+    content: []const u8,
+};
+
+fn parseHeaderLine(line: []const u8) ?HeaderLine {
+    if (line.len < 2 or line[0] != '#') return null;
+    var level: usize = 0;
+    var idx: usize = 0;
+    while (idx < line.len and idx < 6 and line[idx] == '#') {
+        level += 1;
+        idx += 1;
+    }
+    if (idx >= line.len or line[idx] != ' ') return null;
+    return .{ .level = level, .content = std.mem.trimLeft(u8, line[idx + 1 ..], " ") };
 }
 
 fn parseBlockquoteLine(line: []const u8) ?BlockquoteLine {

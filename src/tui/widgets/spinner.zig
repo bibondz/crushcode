@@ -8,6 +8,9 @@ const vxfw = vaxis.vxfw;
 /// Braille animation frames for the spinner.
 pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
+/// ASCII fallback frames for terminals without Unicode support.
+pub const ascii_frames = [_][]const u8{ "-", "\\", "|", "/" };
+
 /// Gradient colors cycled during normal (non-stalled) spinning.
 /// NOTE: These are fallback defaults; frameColor() uses theme fields when available.
 const gradient_defaults = [_]vaxis.Color{
@@ -39,6 +42,7 @@ pub const AnimatedSpinner = struct {
     last_token_ms: i64,
     stalled: bool,
     tick_count: usize,
+    unicode: bool,
 
     /// Token counter (updated externally)
     token_count: u64,
@@ -56,12 +60,21 @@ pub const AnimatedSpinner = struct {
             .stalled = false,
             .tick_count = 0,
             .token_count = 0,
+            .unicode = true,
         };
+    }
+
+    /// Initialize spinner with explicit Unicode support flag.
+    pub fn initWithUnicode(theme: *const theme_mod.Theme, unicode: bool) Self {
+        var s = init(theme);
+        s.unicode = unicode;
+        return s;
     }
 
     /// Advance animation frame. Call every ~100ms.
     pub fn tick(self: *Self) void {
-        self.frame_idx = (self.frame_idx + 1) % braille_frames.len;
+        const max_frames: usize = if (self.unicode) braille_frames.len else ascii_frames.len;
+        self.frame_idx = (self.frame_idx + 1) % max_frames;
         self.tick_count += 1;
 
         // Check stalled: no token received for stall_threshold_ms
@@ -90,7 +103,10 @@ pub const AnimatedSpinner = struct {
 
     /// Get current spinner character.
     pub fn frame(self: *const Self) []const u8 {
-        return braille_frames[self.frame_idx];
+        if (self.unicode) {
+            return braille_frames[self.frame_idx % braille_frames.len];
+        }
+        return ascii_frames[self.frame_idx % ascii_frames.len];
     }
 
     /// Get the color for the current frame.

@@ -81,7 +81,7 @@ pub const PermissionDialogWidget = struct {
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(4 + tool_surface.size.height), .col = 2 }, .surface = args_surface });
 
-        const footer_line = "[y] yes   [n] no   [a] always";
+        const footer_line = "[y] Yes   [n] No   [a] Always   [Esc] Cancel";
         const footer = vxfw.Text{
             .text = footer_line,
             .style = .{ .fg = self.context.theme.tool_success, .bold = true },

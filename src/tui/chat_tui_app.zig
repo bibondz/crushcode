@@ -232,6 +232,7 @@ pub const Model = struct {
     resume_prompt_path: ?[]const u8,
     sidebar_visible: bool = false,
     scroll_mode: bool = false,
+    show_help: bool = false,
     auto_scroll: bool = true,
     selected_message_index: ?usize = null,
     workers: std.ArrayList(WorkerItem),
@@ -1153,6 +1154,14 @@ pub const Model = struct {
                     return;
                 }
 
+                // Ctrl+H or ? toggles help overlay
+                if (key.matches('h', .{ .ctrl = true })) {
+                    self.show_help = !self.show_help;
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
                 // Scroll mode: Ctrl+N toggles scroll mode for message navigation
                 if (key.matches('n', .{ .ctrl = true })) {
                     if (self.setup_phase == 0 and !self.show_palette) {
@@ -1166,14 +1175,22 @@ pub const Model = struct {
                     return;
                 }
 
-                // Escape exits scroll mode (when not in palette/session list)
-                if (self.scroll_mode and key.matches(vaxis.Key.escape, .{})) {
-                    self.scroll_mode = false;
-                    self.auto_scroll = true;
-                    self.selected_message_index = null;
-                    ctx.consumeEvent();
-                    ctx.redraw = true;
-                    return;
+                // Escape exits scroll mode or help overlay (when not in palette/session list)
+                if (key.matches(vaxis.Key.escape, .{})) {
+                    if (self.show_help) {
+                        self.show_help = false;
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (self.scroll_mode) {
+                        self.scroll_mode = false;
+                        self.auto_scroll = true;
+                        self.selected_message_index = null;
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
                 }
 
                 // Scroll mode navigation keys
@@ -1444,7 +1461,11 @@ pub const Model = struct {
                 scroll_indicator,
             });
         const status_widget = vxfw.Text{
-            .text = status_text,
+            .text = if (status_text.len > main_width) blk: {
+                const trunc_len = if (main_width > 1) main_width - 1 else 0;
+                const truncated = try std.fmt.allocPrint(ctx.arena, "{s}…", .{if (status_text.len > trunc_len) status_text[0..trunc_len] else status_text});
+                break :blk truncated;
+            } else status_text,
             .style = .{ .fg = self.current_theme.status_fg, .bg = self.current_theme.status_bg },
             .softwrap = false,
             .width_basis = .parent,
@@ -1588,6 +1609,68 @@ pub const Model = struct {
                     .surface = toast_surface,
                 });
             }
+        }
+
+        // Render help overlay
+        if (self.show_help) {
+            const help_width: u16 = @min(max.width -| 4, @as(u16, 48));
+            const help_rows = [_][]const u8{
+                "Keyboard Shortcuts",
+                "",
+                "Ctrl+N    Scroll mode",
+                "  j/k      Scroll line",
+                "  PgDn/PgUp Half page",
+                "  G/g      Bottom/Top",
+                "  Enter    Select message",
+                "  y        Copy (yank)",
+                "  e        Edit to input",
+                "  q/Esc    Exit scroll",
+                "",
+                "Ctrl+P    Command palette",
+                "Ctrl+B    Toggle sidebar",
+                "Ctrl+H    This help",
+                "Ctrl+C    Quit",
+                "",
+                "Enter     Send message",
+                "Shift+Enter New line",
+                "/         Command input",
+                "Tab       Accept suggest",
+                "Esc       Close overlay",
+            };
+            const help_height: u16 = help_rows.len + 2; // +2 border
+            const help_origin_row: u16 = if (max.height > help_height) (max.height - help_height) / 2 else 0;
+            const help_origin_col: u16 = if (max.width > help_width) (max.width - help_width) / 2 else 0;
+
+            var help_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = help_width, .height = help_height });
+            @memset(help_surface.buffer, .{ .style = .{ .bg = self.current_theme.header_bg } });
+            const help_border: vaxis.Style = .{ .fg = self.current_theme.border };
+            widget_helpers.drawBorder(&help_surface, help_border);
+
+            for (help_rows, 0..) |row_text, i| {
+                if (i == 0) {
+                    // Title
+                    const title_text = vxfw.Text{
+                        .text = row_text,
+                        .style = .{ .fg = self.current_theme.header_fg, .bold = true },
+                        .softwrap = false,
+                        .width_basis = .parent,
+                    };
+                    const title_surface = try title_text.draw(ctx.withConstraints(.{ .width = help_width - 4, .height = 1 }, .{ .width = help_width - 4, .height = 1 }));
+                    try child_list.append(ctx.arena, .{ .origin = .{ .row = help_origin_row + 1 + @as(u16, @intCast(i)), .col = help_origin_col + 2 }, .surface = title_surface });
+                } else if (row_text.len > 0) {
+                    const is_key = row_text[0] != ' ';
+                    const row_style: vaxis.Style = if (is_key) .{ .fg = self.current_theme.accent } else .{ .fg = self.current_theme.dimmed };
+                    const text_widget = vxfw.Text{
+                        .text = row_text,
+                        .style = row_style,
+                        .softwrap = false,
+                        .width_basis = .parent,
+                    };
+                    const row_surface = try text_widget.draw(ctx.withConstraints(.{ .width = help_width - 4, .height = 1 }, .{ .width = help_width - 4, .height = 1 }));
+                    try child_list.append(ctx.arena, .{ .origin = .{ .row = help_origin_row + 1 + @as(u16, @intCast(i)), .col = help_origin_col + 2 }, .surface = row_surface });
+                }
+            }
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = help_origin_row, .col = help_origin_col }, .surface = help_surface });
         }
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);

@@ -226,12 +226,26 @@ pub const MultiLineInputWidget = struct {
                     }
                 }
 
-                // Bottom border
+                // Bottom border with key hints
                 const bottom_row: u16 = popup_start + 1 + @as(u16, @intCast(visible));
                 surface.writeCell(0, bottom_row, .{ .char = .{ .grapheme = "└", .width = 1 }, .style = border_style });
                 surface.writeCell(max_width - 1, bottom_row, .{ .char = .{ .grapheme = "┘", .width = 1 }, .style = border_style });
                 for (1..@intCast(max_width - 1)) |c| {
                     surface.writeCell(@intCast(c), bottom_row, border_bg);
+                }
+                // Key hints in bottom border
+                const hints = " Tab↵ ↑↓ Esc ";
+                var hint_col: u16 = 2;
+                var hiter = vaxis.unicode.graphemeIterator(hints);
+                while (hiter.next()) |grapheme| {
+                    const g = grapheme.bytes(hints);
+                    const w: u8 = @intCast(ctx.stringWidth(g));
+                    if (hint_col + w >= max_width - 1) break;
+                    surface.writeCell(hint_col, bottom_row, .{
+                        .char = .{ .grapheme = g, .width = w },
+                        .style = .{ .fg = self.theme.dimmed, .bg = self.theme.border },
+                    });
+                    hint_col += w;
                 }
             }
         }
