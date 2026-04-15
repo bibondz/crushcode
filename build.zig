@@ -39,6 +39,12 @@ pub fn build(b: *std.Build) !void {
     const optimize = b.standardOptimizeOption(.{});
     const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
 
+    // Patch vaxis tty.zig to fallback to stdin when /dev/tty is unavailable (WSL fix)
+    // The patch replaces the hardcoded `try posix.open("/dev/tty", ...)` with a
+    // raw openat syscall that silently falls back to STDIN_FILENO on failure,
+    // avoiding the stack-trace dump that Zig's posix.open triggers on ENXIO.
+    patchVaxisTty(b, vaxis_dep);
+
     const compat_array_list_mod = simpleMod(b, "src/compat/array_list.zig", target, optimize);
     const compat_file_mod = simpleMod(b, "src/compat/file.zig", target, optimize);
     const env_mod = simpleMod(b, "src/config/env.zig", target, optimize);
@@ -489,4 +495,34 @@ pub fn build(b: *std.Build) !void {
     const mcp_e2e_tests = b.addTest(.{ .root_module = mcp_client_mod });
     const e2e_step = b.step("test-e2e", "Run E2E tests with MCP server (requires RUN_MCP_E2E_TESTS=1)");
     e2e_step.dependOn(&mcp_e2e_tests.step);
+}
+
+/// Patch vaxis tty.zig to gracefully handle /dev/tty unavailable on WSL.
+/// Replaces the raw `try posix.open("/dev/tty")` with a syscall that falls
+/// back to STDIN_FILENO without dumping a stack trace.
+fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency) void {
+    const tty_src = vaxis_dep.path("src/tty.zig").getPath3(b, null);
+    const tty_path = tty_src.root_dir.path orelse return;
+
+    const file = std.fs.cwd().openFile(tty_path, .{ .mode = .read_write }) catch return;
+    defer file.close();
+
+    const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;
+    defer b.allocator.free(contents);
+
+    const needle = "const fd = try posix.open(\"/dev/tty\", .{ .ACCMODE = .RDWR }, 0);";
+    if (std.mem.indexOf(u8, contents, needle)) |_| {
+        const patch =
+            \\        const fd: posix.fd_t = blk: {
+            \\            const rc = std.os.linux.openat(std.os.linux.AT.FDCWD, "/dev/tty", .{ .ACCMODE = .RDWR }, 0);
+            \\            const signed: isize = @bitCast(rc);
+            \\            if (signed < 0) break :blk posix.STDIN_FILENO;
+            \\            break :blk @intCast(rc);
+            \\        };
+        ;
+        const new_contents = std.mem.replaceOwned(u8, b.allocator, contents, needle, patch) catch return;
+        file.seekTo(0) catch return;
+        file.setEndPos(0) catch return;
+        file.writeAll(new_contents) catch return;
+    }
 }
