@@ -332,11 +332,13 @@ test "CustomCommand - render with {{args}} placeholder" {
 }
 
 test "CustomCommand - render with named placeholder" {
+    const arg_names = try testing.allocator.dupe([]const u8, &[_][]const u8{ "env", "region" });
+    defer testing.allocator.free(arg_names);
     const cmd = CustomCommand{
         .allocator = testing.allocator,
         .name = "deploy",
         .description = "Deploy",
-        .arg_names = &.{ "env", "region" },
+        .arg_names = arg_names,
         .model = null,
         .template = "Deploy to {{env}} in {{region}}",
         .file_path = "deploy.md",
@@ -348,11 +350,13 @@ test "CustomCommand - render with named placeholder" {
 }
 
 test "CustomCommand - render with missing arg returns empty" {
+    const arg_names = try testing.allocator.dupe([]const u8, &[_][]const u8{"env"});
+    defer testing.allocator.free(arg_names);
     const cmd = CustomCommand{
         .allocator = testing.allocator,
         .name = "test",
         .description = "Test",
-        .arg_names = &.{"env"},
+        .arg_names = arg_names,
         .model = null,
         .template = "Deploy to {{env}} {{region}}",
         .file_path = "test.md",

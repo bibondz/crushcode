@@ -212,3 +212,53 @@ pub fn isSupportedSlashCommand(value: []const u8) bool {
         std.mem.startsWith(u8, value, "/delete") or
         std.mem.startsWith(u8, value, "/theme");
 }
+
+// --- Tests ---
+
+test "setupProviderIndex - known providers" {
+    try std.testing.expectEqual(@as(usize, 0), setupProviderIndex("openrouter"));
+}
+
+test "setupProviderIndex - unknown returns 0" {
+    try std.testing.expectEqual(@as(usize, 0), setupProviderIndex("nonexistent"));
+}
+
+test "setupProviderAllowsEmptyKey - ollama only" {
+    try std.testing.expect(setupProviderAllowsEmptyKey("ollama"));
+    try std.testing.expect(!setupProviderAllowsEmptyKey("openai"));
+    try std.testing.expect(!setupProviderAllowsEmptyKey("anthropic"));
+    try std.testing.expect(!setupProviderAllowsEmptyKey("openrouter"));
+}
+
+test "setupDefaultModel - known providers" {
+    try std.testing.expectEqualStrings("gpt-4o", setupDefaultModel("openai"));
+    try std.testing.expectEqualStrings("claude-3-5-sonnet-20241022", setupDefaultModel("anthropic"));
+    try std.testing.expectEqualStrings("gemma4:31b-cloud", setupDefaultModel("ollama"));
+}
+
+test "setupDefaultModel - unknown returns default" {
+    try std.testing.expectEqualStrings("default", setupDefaultModel("unknown_provider"));
+}
+
+test "isSupportedSlashCommand - exact matches" {
+    try std.testing.expect(isSupportedSlashCommand("/clear"));
+    try std.testing.expect(isSupportedSlashCommand("/sessions"));
+    try std.testing.expect(isSupportedSlashCommand("/model"));
+    try std.testing.expect(isSupportedSlashCommand("/help"));
+    try std.testing.expect(isSupportedSlashCommand("/compact"));
+    try std.testing.expect(isSupportedSlashCommand("/thinking"));
+    try std.testing.expect(isSupportedSlashCommand("/ls"));
+}
+
+test "isSupportedSlashCommand - prefix matches" {
+    try std.testing.expect(isSupportedSlashCommand("/resume abc"));
+    try std.testing.expect(isSupportedSlashCommand("/delete session-1"));
+    try std.testing.expect(isSupportedSlashCommand("/theme dark"));
+    try std.testing.expect(isSupportedSlashCommand("/theme"));
+}
+
+test "isSupportedSlashCommand - unsupported commands" {
+    try std.testing.expect(!isSupportedSlashCommand("/unknown"));
+    try std.testing.expect(!isSupportedSlashCommand("clear"));
+    try std.testing.expect(!isSupportedSlashCommand(""));
+}

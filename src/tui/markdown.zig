@@ -716,3 +716,133 @@ fn parseNestedOrderedListLine(line: []const u8) ?NestedOrderedListLine {
     const ordered = parseOrderedListLine(trimmed) orelse return null;
     return .{ .level = leading_spaces / 2, .prefix = ordered.prefix, .content = ordered.content };
 }
+
+// --- Tests ---
+
+test "parseHeaderLine - H1" {
+    const h = parseHeaderLine("# Hello").?;
+    try std.testing.expectEqual(@as(usize, 1), h.level);
+    try std.testing.expectEqualStrings("Hello", h.content);
+}
+
+test "parseHeaderLine - H2" {
+    const h = parseHeaderLine("## World").?;
+    try std.testing.expectEqual(@as(usize, 2), h.level);
+    try std.testing.expectEqualStrings("World", h.content);
+}
+
+test "parseHeaderLine - H3" {
+    const h = parseHeaderLine("### Section").?;
+    try std.testing.expectEqual(@as(usize, 3), h.level);
+    try std.testing.expectEqualStrings("Section", h.content);
+}
+
+test "parseHeaderLine - H4" {
+    const h = parseHeaderLine("#### Sub").?;
+    try std.testing.expectEqual(@as(usize, 4), h.level);
+    try std.testing.expectEqualStrings("Sub", h.content);
+}
+
+test "parseHeaderLine - H5" {
+    const h = parseHeaderLine("##### Deep").?;
+    try std.testing.expectEqual(@as(usize, 5), h.level);
+    try std.testing.expectEqualStrings("Deep", h.content);
+}
+
+test "parseHeaderLine - H6" {
+    const h = parseHeaderLine("###### Deepest").?;
+    try std.testing.expectEqual(@as(usize, 6), h.level);
+    try std.testing.expectEqualStrings("Deepest", h.content);
+}
+
+test "parseHeaderLine - returns null for non-header" {
+    try std.testing.expect(parseHeaderLine("plain text") == null);
+    try std.testing.expect(parseHeaderLine("####### seven") == null);
+    try std.testing.expect(parseHeaderLine("#no space") == null);
+    try std.testing.expect(parseHeaderLine("") == null);
+}
+
+test "parseHeaderLine - trims leading spaces from content" {
+    const h = parseHeaderLine("#   Hello   ").?;
+    try std.testing.expectEqual(@as(usize, 1), h.level);
+    try std.testing.expectEqualStrings("Hello   ", h.content);
+}
+
+test "parseBlockquoteLine - single level" {
+    const q = parseBlockquoteLine("> Hello").?;
+    try std.testing.expectEqual(@as(usize, 1), q.level);
+    try std.testing.expectEqualStrings("Hello", q.content);
+}
+
+test "parseBlockquoteLine - nested level" {
+    const q = parseBlockquoteLine(">> Nested").?;
+    try std.testing.expectEqual(@as(usize, 2), q.level);
+    try std.testing.expectEqualStrings("Nested", q.content);
+}
+
+test "parseBlockquoteLine - triple nested" {
+    const q = parseBlockquoteLine(">>> Deep quote").?;
+    try std.testing.expectEqual(@as(usize, 3), q.level);
+    try std.testing.expectEqualStrings("Deep quote", q.content);
+}
+
+test "parseBlockquoteLine - returns null for non-blockquote" {
+    try std.testing.expect(parseBlockquoteLine("plain") == null);
+    try std.testing.expect(parseBlockquoteLine("") == null);
+}
+
+test "parseTaskListLine - done task" {
+    const t = parseTaskListLine("- [x] completed").?;
+    try std.testing.expect(t.done);
+    try std.testing.expectEqual(@as(usize, 0), t.level);
+    try std.testing.expectEqualStrings("completed", t.content);
+}
+
+test "parseTaskListLine - undone task" {
+    const t = parseTaskListLine("- [ ] pending").?;
+    try std.testing.expect(!t.done);
+    try std.testing.expectEqualStrings("pending", t.content);
+}
+
+test "parseTaskListLine - returns null for non-task" {
+    try std.testing.expect(parseTaskListLine("- regular item") == null);
+    try std.testing.expect(parseTaskListLine("plain text") == null);
+}
+
+test "parseHorizontalRuleLine - valid rules" {
+    try std.testing.expect(parseHorizontalRuleLine("---") != null);
+    try std.testing.expect(parseHorizontalRuleLine("___") != null);
+    try std.testing.expect(parseHorizontalRuleLine("***") != null);
+    try std.testing.expect(parseHorizontalRuleLine("----------") != null);
+}
+
+test "parseHorizontalRuleLine - returns null for short or invalid" {
+    try std.testing.expect(parseHorizontalRuleLine("--") == null);
+    try std.testing.expect(parseHorizontalRuleLine("- -") == null);
+    try std.testing.expect(parseHorizontalRuleLine("text") == null);
+}
+
+test "parseUnorderedListLine - dash and asterisk" {
+    try std.testing.expectEqualStrings("item", parseUnorderedListLine("- item").?);
+    try std.testing.expectEqualStrings("thing", parseUnorderedListLine("* thing").?);
+    try std.testing.expect(parseUnorderedListLine("+ plus") == null);
+    try std.testing.expect(parseUnorderedListLine("no list") == null);
+}
+
+test "parseOrderedListLine - numbered" {
+    const ol = parseOrderedListLine("1. first").?;
+    try std.testing.expectEqualStrings("1. ", ol.prefix);
+    try std.testing.expectEqualStrings("first", ol.content);
+}
+
+test "parseOrderedListLine - multi digit" {
+    const ol = parseOrderedListLine("12. item").?;
+    try std.testing.expectEqualStrings("12. ", ol.prefix);
+    try std.testing.expectEqualStrings("item", ol.content);
+}
+
+test "parseOrderedListLine - returns null for invalid" {
+    try std.testing.expect(parseOrderedListLine("1.no space") == null);
+    try std.testing.expect(parseOrderedListLine("text") == null);
+    try std.testing.expect(parseOrderedListLine(". empty") == null);
+}

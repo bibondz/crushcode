@@ -291,3 +291,69 @@ pub fn getTheme(name: []const u8) ?*const Theme {
 pub fn defaultTheme() *const Theme {
     return &themes[0];
 }
+
+// --- Tests ---
+
+test "Theme - getTheme returns dark by name" {
+    const t = getTheme("dark").?;
+    try std.testing.expectEqualStrings("dark", t.name);
+}
+
+test "Theme - getTheme returns light by name" {
+    const t = getTheme("light").?;
+    try std.testing.expectEqualStrings("light", t.name);
+}
+
+test "Theme - getTheme returns mono by name" {
+    const t = getTheme("mono").?;
+    try std.testing.expectEqualStrings("mono", t.name);
+}
+
+test "Theme - getTheme returns null for unknown" {
+    try std.testing.expect(getTheme("solarized") == null);
+    try std.testing.expect(getTheme("") == null);
+}
+
+test "Theme - defaultTheme is dark" {
+    const dt = defaultTheme();
+    try std.testing.expectEqualStrings("dark", dt.name);
+}
+
+test "Theme - themes array has 3 entries" {
+    try std.testing.expectEqual(@as(usize, 3), themes.len);
+}
+
+test "Theme - all themes have unique names" {
+    for (&themes, 0..) |*t, i| {
+        for (&themes, 0..) |*u, j| {
+            if (i != j) {
+                try std.testing.expect(!std.mem.eql(u8, t.name, u.name));
+            }
+        }
+    }
+}
+
+test "Theme - dark theme has distinct user and assistant colors" {
+    const t = getTheme("dark").?;
+    try std.testing.expect(!std.meta.eql(t.user_fg, t.assistant_fg));
+}
+
+test "Theme - light theme has distinct user and assistant colors" {
+    const t = getTheme("light").?;
+    try std.testing.expect(!std.meta.eql(t.user_fg, t.assistant_fg));
+}
+
+test "Theme - mono theme uses default colors" {
+    const t = getTheme("mono").?;
+    try std.testing.expect(std.meta.eql(t.user_fg, vaxis.Color.default));
+    try std.testing.expect(std.meta.eql(t.assistant_fg, vaxis.Color.default));
+    try std.testing.expect(std.meta.eql(t.error_fg, vaxis.Color.default));
+}
+
+test "Theme - all themes have non-empty labels" {
+    for (&themes) |t| {
+        try std.testing.expect(t.name.len > 0);
+        try std.testing.expect(t.user_label.len > 0);
+        try std.testing.expect(t.assistant_label.len > 0);
+    }
+}

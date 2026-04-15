@@ -295,3 +295,66 @@ pub const ToastStackWidget = struct {
         return buf;
     }
 };
+
+// --- Tests ---
+
+test "Severity.icon returns non-empty strings" {
+    try std.testing.expect(Severity.icon(.info).len > 0);
+    try std.testing.expect(Severity.icon(.success).len > 0);
+    try std.testing.expect(Severity.icon(.warning).len > 0);
+    try std.testing.expect(Severity.icon(.err).len > 0);
+}
+
+test "Severity.label returns correct labels" {
+    try std.testing.expectEqualStrings("INFO", Severity.label(.info));
+    try std.testing.expectEqualStrings("OK", Severity.label(.success));
+    try std.testing.expectEqualStrings("WARN", Severity.label(.warning));
+    try std.testing.expectEqualStrings("ERR", Severity.label(.err));
+}
+
+test "Severity.fgColor returns theme-appropriate colors" {
+    const theme = @import("theme").defaultTheme();
+    try std.testing.expect(std.meta.eql(Severity.fgColor(.info, theme), theme.accent));
+    try std.testing.expect(std.meta.eql(Severity.fgColor(.success, theme), theme.tool_success));
+    try std.testing.expect(std.meta.eql(Severity.fgColor(.err, theme), theme.tool_error));
+}
+
+test "Severity.bgColor returns theme-appropriate colors" {
+    const theme = @import("theme").defaultTheme();
+    try std.testing.expect(std.meta.eql(Severity.bgColor(.info, theme), theme.toast_info_bg));
+    try std.testing.expect(std.meta.eql(Severity.bgColor(.success, theme), theme.toast_success_bg));
+    try std.testing.expect(std.meta.eql(Severity.bgColor(.err, theme), theme.toast_error_bg));
+}
+
+test "Toast.init sets defaults" {
+    const t = Toast.init("Hello", .info);
+    try std.testing.expectEqualStrings("Hello", t.message);
+    try std.testing.expect(t.severity == .info);
+    try std.testing.expectEqual(@as(i64, default_duration_ms), t.duration_ms);
+}
+
+test "ToastStack - push and isActive" {
+    var stack = ToastStack.init(std.testing.allocator, @import("theme").defaultTheme());
+    defer stack.deinit();
+    try std.testing.expect(!stack.isActive());
+    try stack.push("test", .info);
+    try std.testing.expect(stack.isActive());
+}
+
+test "ToastStack - visible caps at max_visible" {
+    var stack = ToastStack.init(std.testing.allocator, @import("theme").defaultTheme());
+    defer stack.deinit();
+    var i: usize = 0;
+    while (i < max_visible + 3) : (i += 1) {
+        try stack.push("msg", .info);
+    }
+    const vis = stack.visible();
+    try std.testing.expectEqual(@as(usize, max_visible), vis.len);
+}
+
+test "ToastStack - visible returns empty for empty stack" {
+    var stack = ToastStack.init(std.testing.allocator, @import("theme").defaultTheme());
+    defer stack.deinit();
+    const vis = stack.visible();
+    try std.testing.expectEqual(@as(usize, 0), vis.len);
+}

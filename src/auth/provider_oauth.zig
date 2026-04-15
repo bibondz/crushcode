@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 const env_config = @import("env");
 const http_client = @import("http_client");
 const json_extract = @import("json_extract");
@@ -104,8 +105,9 @@ pub const ProviderOAuth = struct {
         var callback_server = try startCallbackServer(self.allocator, self.config.redirect_port);
         defer callback_server.deinit();
 
-        std.log.info("Please open this URL in your browser:\n{s}", .{auth_url});
-        std.log.info("Waiting for OAuth callback on port {d}...", .{callback_server.port});
+        const stdout = file_compat.File.stdout().writer();
+        stdout.print("Please open this URL in your browser:\n{s}\n", .{auth_url}) catch {};
+        stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch {};
 
         const callback_result = try waitForCallback(&callback_server, state, self.allocator);
         defer self.allocator.free(callback_result.code);

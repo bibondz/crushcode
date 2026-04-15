@@ -222,3 +222,117 @@ pub const SpinnerWidget = struct {
         ));
     }
 };
+
+// --- Tests ---
+
+test "AnimatedSpinner - init defaults" {
+    const theme = @import("theme").defaultTheme();
+    const s = AnimatedSpinner.init(theme);
+    try std.testing.expectEqual(@as(usize, 0), s.frame_idx);
+    try std.testing.expectEqual(@as(u64, 0), s.token_count);
+    try std.testing.expect(!s.stalled);
+    try std.testing.expect(s.unicode);
+}
+
+test "AnimatedSpinner - tick advances frame" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    const initial = s.frame_idx;
+    s.tick();
+    try std.testing.expect(s.frame_idx != initial);
+}
+
+test "AnimatedSpinner - feedToken resets stalled and increments count" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    s.stalled = true;
+    s.feedToken();
+    try std.testing.expect(!s.stalled);
+    try std.testing.expectEqual(@as(u64, 1), s.token_count);
+    s.feedToken();
+    try std.testing.expectEqual(@as(u64, 2), s.token_count);
+}
+
+test "AnimatedSpinner - elapsedSeconds is non-negative" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    const elapsed = s.elapsedSeconds();
+    try std.testing.expect(elapsed >= 0.0);
+}
+
+test "AnimatedSpinner - frame returns non-empty braille when unicode" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    s.unicode = true;
+    const f = s.frame();
+    try std.testing.expect(f.len > 0);
+}
+
+test "AnimatedSpinner - frame returns ASCII when not unicode" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.initWithUnicode(theme, false);
+    s.frame_idx = 0;
+    const f = s.frame();
+    try std.testing.expectEqualStrings("-", f);
+    s.tick();
+    const f2 = s.frame();
+    try std.testing.expectEqualStrings("\\", f2);
+}
+
+test "AnimatedSpinner - frameColor uses stalled fg when stalled" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    s.stalled = true;
+    const color = s.frameColor();
+    try std.testing.expect(std.meta.eql(color, theme.spinner_stalled_fg));
+}
+
+test "AnimatedSpinner - frameColor cycles gradient when not stalled" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    s.stalled = false;
+    s.tick_count = 0;
+    const color = s.frameColor();
+    try std.testing.expect(std.meta.eql(color, theme.spinner_g1));
+}
+
+test "AnimatedSpinner - initWithUnicode sets flag" {
+    const theme = @import("theme").defaultTheme();
+    const s = AnimatedSpinner.initWithUnicode(theme, false);
+    try std.testing.expect(!s.unicode);
+    const s2 = AnimatedSpinner.initWithUnicode(theme, true);
+    try std.testing.expect(s2.unicode);
+}
+
+test "AnimatedSpinner - formatElapsed under 60s returns decimal" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    const text = try s.formatElapsed(std.testing.allocator);
+    defer std.testing.allocator.free(text);
+    try std.testing.expect(text.len > 0);
+}
+
+test "AnimatedSpinner - ASCII frames cycle through 4 values" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.initWithUnicode(theme, false);
+    _ = s.frame();
+    s.tick();
+    _ = s.frame();
+    s.tick();
+    _ = s.frame();
+    s.tick();
+    _ = s.frame();
+    // Completed one full cycle without crash
+}
+
+test "AnimatedSpinner - gradient colors cycle through theme fields" {
+    const theme = @import("theme").defaultTheme();
+    var s = AnimatedSpinner.init(theme);
+    s.stalled = false;
+    // tick_count=0 should give g1
+    try std.testing.expect(std.meta.eql(s.frameColor(), theme.spinner_g1));
+    s.tick_count = 1;
+    try std.testing.expect(std.meta.eql(s.frameColor(), theme.spinner_g2));
+    s.tick_count = 6;
+    try std.testing.expect(std.meta.eql(s.frameColor(), theme.spinner_g7));
+}

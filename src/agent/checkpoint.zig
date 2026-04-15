@@ -170,7 +170,7 @@ pub const CheckpointManager = struct {
     }
 
     /// Create a new checkpoint from current state
-    pub fn create(self: *CheckpointManager, messages: []const struct { role: []const u8, content: []const u8 }, tool_calls: u32, tokens_used: u32) !Checkpoint {
+    pub fn create(self: *CheckpointManager, messages: []const Checkpoint.CheckpointMessage, tool_calls: u32, tokens_used: u32) !Checkpoint {
         const timestamp = std.time.timestamp();
 
         // Generate ID from timestamp
@@ -206,7 +206,7 @@ test "CheckpointManager - create and save" {
     std.fs.cwd().deleteTree(tmp_dir) catch {};
 
     var mgr = CheckpointManager.init(allocator, tmp_dir);
-    const messages = [_]struct { role: []const u8, content: []const u8 }{
+    const messages = [_]Checkpoint.CheckpointMessage{
         .{ .role = "user", .content = "Hello" },
         .{ .role = "assistant", .content = "Hi there!" },
     };
@@ -217,7 +217,9 @@ test "CheckpointManager - create and save" {
     try mgr.save(&cp);
 
     // Verify file exists
-    const file = try std.fs.cwd().openFile(tmp_dir ++ "/checkpoint_" ++ cp.id ++ ".json", .{});
+    const file_path = try std.fmt.allocPrint(allocator, "{s}/checkpoint_{s}.json", .{ tmp_dir, cp.id });
+    defer allocator.free(file_path);
+    const file = try std.fs.cwd().openFile(file_path, .{});
     file.close();
 
     // Clean up
@@ -231,7 +233,7 @@ test "CheckpointManager - save and load" {
     std.fs.cwd().deleteTree(tmp_dir) catch {};
 
     var mgr = CheckpointManager.init(allocator, tmp_dir);
-    const messages = [_]struct { role: []const u8, content: []const u8 }{
+    const messages = [_]Checkpoint.CheckpointMessage{
         .{ .role = "user", .content = "Test message" },
         .{ .role = "assistant", .content = "Test response" },
     };

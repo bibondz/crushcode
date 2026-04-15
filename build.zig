@@ -481,6 +481,7 @@ pub fn build(b: *std.Build) !void {
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
         auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,      widget_palette_mod,
         widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    multiline_input_mod,       migrate_mod,             update_mod,
+        custom_commands_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -496,11 +497,23 @@ pub fn build(b: *std.Build) !void {
         graph_parser_mod,
         graph_mod,
         agent_loop_mod,
-        workflow_mod,
+        memory_mod,
         compaction_mod,
+        checkpoint_mod,
+        workflow_mod,
         scaffold_mod,
         toml_mod,
         tui_mod,
+        config_mod,
+        provider_config_mod,
+        backup_mod,
+        auth_mod,
+        tools_mod,
+        skills_loader_mod,
+        custom_commands_mod,
+        color_mod,
+        source_tracker_mod,
+        provider_oauth_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);

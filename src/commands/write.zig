@@ -235,6 +235,6 @@ pub fn handleEdit(args: [][]const u8) !void {
         return;
     }
 
-    out("Edit file: {s}\n", .{path});
-    out("(Full editor integration coming soon)\n", .{});
+    out("Not yet implemented: edit\n", .{});
+    out("  Use 'crushcode write <file> <content>' to write files.\n", .{});
 }

@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 
 pub const FileReadError = error{
     FileNotFound,
@@ -19,8 +20,9 @@ pub const FileContent = struct {
     }
 
     pub fn print(self: *const FileContent) void {
-        std.log.info("=== {s} ({d} bytes) ===", .{ self.path, self.size });
-        std.log.info("{s}", .{self.content});
+        const stdout = file_compat.File.stdout().writer();
+        stdout.print("=== {s} ({d} bytes) ===\n\n", .{ self.path, self.size }) catch {};
+        stdout.print("{s}\n", .{self.content}) catch {};
     }
 };
 

@@ -434,7 +434,20 @@ test "ToolRegistry - alias resolution" {
         .allocator = allocator,
         .name = "shell",
         .description = "Execute commands",
-        .aliases = &.{ "exec", "run" },
+        .aliases = &.{},
+        .category = .shell,
+        .permissions = &.{},
+        .feature_flag = null,
+        .enabled = true,
+        .concurrent_safe = false,
+    };
+    const aliases = try allocator.dupe([]const u8, &[_][]const u8{ "exec", "run" });
+    defer allocator.free(aliases);
+    const tool_with_aliases = Tool{
+        .allocator = allocator,
+        .name = "shell-alias",
+        .description = "Execute commands",
+        .aliases = aliases,
         .category = .shell,
         .permissions = &.{},
         .feature_flag = null,
@@ -443,6 +456,7 @@ test "ToolRegistry - alias resolution" {
     };
 
     try registry.register(tool);
+    try registry.register(tool_with_aliases);
 
     // Direct lookup
     try std.testing.expect(registry.get("shell") != null);

@@ -97,19 +97,6 @@ pub fn runBackground(command: []const u8, allocator: std.mem.Allocator) !u32 {
 
 /// Handle jobs command from CLI
 pub fn handleJobs(_: [][]const u8) !void {
-    // For now, just list available job control syntax
-    out(
-        \\Job Control
-        \\
-        \\Usage: 
-        \\  crushcode shell 'command &'    - Run command in background
-        \\  crushcode jobs                - List background jobs (future)
-        \\  crushcode fg <job-id>          - Bring job to foreground (future)
-        \\  crushcode bg <job-id>          - Resume job in background (future)
-        \\  crushcode kill <job-id>       - Terminate job (future)
-        \\
-        \\Example:
-        \\  crushcode shell 'sleep 100 &' 
-        \\
-    , .{});
+    out("Not yet implemented: jobs\n", .{});
+    out("  Background job control is planned for a future release.\n", .{});
 }

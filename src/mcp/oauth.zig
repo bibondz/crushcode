@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const file_compat = @import("file_compat");
 const env_config = @import("env");
 const http_client = @import("http_client");
 const json_extract = @import("json_extract");
@@ -88,8 +89,9 @@ pub fn authenticateWithOAuth(
     var callback_server = try startCallbackServer(allocator);
     defer callback_server.deinit();
 
-    std.log.info("Please open this URL in your browser: {s}", .{auth_url});
-    std.log.info("Waiting for OAuth callback on port {d}...", .{callback_server.port});
+    const stdout = file_compat.File.stdout().writer();
+    stdout.print("Please open this URL in your browser: {s}\n", .{auth_url}) catch {};
+    stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch {};
 
     const callback_result = try waitForCallback(&callback_server, state, allocator);
     defer allocator.free(callback_result.code);

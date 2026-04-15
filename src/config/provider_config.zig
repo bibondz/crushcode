@@ -1,5 +1,4 @@
 const std = @import("std");
-const registry_mod = @import("registry.zig");
 const toml_mod = @import("toml");
 
 pub const ProviderConfig = struct {
