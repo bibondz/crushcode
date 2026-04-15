@@ -21,6 +21,8 @@ const widget_palette = @import("widget_palette");
 const widget_permission = @import("widget_permission");
 const widget_setup = @import("widget_setup");
 const widget_spinner = @import("widget_spinner");
+const widget_gradient = @import("widget_gradient");
+const widget_toast = @import("widget_toast");
 
 const vxfw = vaxis.vxfw;
 
@@ -197,6 +199,7 @@ pub const Model = struct {
     workers: std.ArrayList(WorkerItem),
     next_worker_id: u32 = 0,
     spinner: ?widget_spinner.AnimatedSpinner = null,
+    toast_stack: widget_toast.ToastStack,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -277,6 +280,8 @@ pub const Model = struct {
             .resume_prompt_path = null,
             .sidebar_visible = false,
             .workers = std.ArrayList(WorkerItem).empty,
+            .spinner = null,
+            .toast_stack = undefined,
         };
         errdefer model.destroy();
 
@@ -286,6 +291,7 @@ pub const Model = struct {
         model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
         model.workers = try std.ArrayList(WorkerItem).initCapacity(allocator, 4);
         model.spinner = null;
+        model.toast_stack = widget_toast.ToastStack.init(allocator, model.current_theme);
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -346,6 +352,7 @@ pub const Model = struct {
         }
         self.history.deinit(self.allocator);
         self.registry.deinit();
+        self.toast_stack.deinit();
         self.pricing_table.deinit();
         self.budget_mgr.deinit();
         if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
@@ -1120,6 +1127,8 @@ pub const Model = struct {
         if (self.spinner) |*spinner| {
             spinner.tick();
         }
+        // Tick toast stack each frame for auto-expiration
+        self.toast_stack.tick();
 
         self.lock.lock();
         defer self.lock.unlock();
@@ -1131,7 +1140,8 @@ pub const Model = struct {
         const files_height: u16 = if (self.recent_files.items.len > 0) 1 else 0;
         const status_height: u16 = 1;
         const input_height: u16 = 1;
-        const body_height = max.height -| (header_height + files_height + status_height + input_height);
+        const gradient_height: u16 = 1;
+        const body_height = max.height -| (header_height + gradient_height + files_height + status_height + input_height);
 
         const full_title = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
@@ -1149,6 +1159,13 @@ pub const Model = struct {
         const header_surface = try header.draw(ctx.withConstraints(
             .{ .width = main_width, .height = header_height },
             .{ .width = main_width, .height = header_height },
+        ));
+
+        // Draw gradient branding "Crushcode" below header
+        const gradient_title = widget_gradient.GradientText.init("Crushcode", .crushcode, true);
+        const gradient_surface = try gradient_title.draw(ctx.withConstraints(
+            .{ .width = main_width, .height = 1 },
+            .{ .width = main_width, .height = 1 },
         ));
 
         const body_surface = blk: {
@@ -1252,7 +1269,8 @@ pub const Model = struct {
         var child_list = std.ArrayList(vxfw.SubSurface).empty;
         defer child_list.deinit(ctx.arena);
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = body_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = gradient_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + 1), .col = 0 }, .surface = body_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height), .col = 0 }, .surface = status_surface });
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height + status_height), .col = 0 }, .surface = input_surface });
 
@@ -1360,6 +1378,21 @@ pub const Model = struct {
                 .{ .width = main_width, .height = 1 },
             ));
             try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = files_surface });
+        }
+
+        // Render toast notifications
+        if (self.toast_stack.isActive()) {
+            const toast_widget = widget_toast.ToastStackWidget{ .stack = &self.toast_stack };
+            const toast_surface = try toast_widget.draw(ctx.withConstraints(
+                .{ .width = main_width, .height = 0 },
+                .{ .width = main_width, .height = max.height },
+            ));
+            if (toast_surface.size.height > 0) {
+                try child_list.append(ctx.arena, .{
+                    .origin = .{ .row = max.height -| toast_surface.size.height - 1, .col = 0 },
+                    .surface = toast_surface,
+                });
+            }
         }
 
         const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
@@ -2031,7 +2064,13 @@ pub const Model = struct {
         const cost = self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), @intCast(@min(input_tokens, std.math.maxInt(u32))), @intCast(@min(output_tokens, std.math.maxInt(u32))));
         self.budget_mgr.recordCost(cost);
         if (self.budget_mgr.shouldAlert()) {
-            self.budget_mgr.printAlert();
+            const status = self.budget_mgr.checkBudget();
+            const severity: widget_toast.Severity = if (status.isOverBudget()) .err else .warning;
+            const message = if (status.isOverBudget())
+                std.fmt.allocPrint(self.allocator, "Budget exceeded: ${d:.2}", .{self.budget_mgr.session_spent}) catch "Budget exceeded"
+            else
+                std.fmt.allocPrint(self.allocator, "Budget alert: ${d:.2} ({d:.0}% used)", .{ self.budget_mgr.session_spent, status.percent_used * 100.0 }) catch "Budget alert";
+            self.toast_stack.push(message, severity) catch {};
         }
         self.request_active = false;
         self.request_done = true;
