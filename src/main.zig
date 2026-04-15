@@ -4,6 +4,7 @@ const args_mod = @import("args");
 const commands = @import("handlers");
 const config_mod = @import("config");
 const registry = @import("cli_registry");
+const update_mod = @import("update");
 
 pub const std_options = std.Options{
     .log_level = .warn,
@@ -111,6 +112,22 @@ pub fn main() !void {
 
     // Skip config cleanup for now - see if basic commands work
     // defer config.deinit();
+
+    // Auto-check for updates — runs once per 24 hours, never blocks startup
+    {
+        if (update_mod.Updater.checkForUpdate(allocator)) |maybe_version| {
+            if (maybe_version) |new_version| {
+                const stdout = file_compat.File.stdout().writer();
+                stdout.print("\n  ┌──────────────────────────────────────────────────┐\n", .{}) catch {};
+                stdout.print("  │  Update available: v0.6.0 → v{s}", .{new_version}) catch {};
+                stdout.print("  │  Run 'crushcode update' to upgrade                │\n", .{}) catch {};
+                stdout.print("  └──────────────────────────────────────────────────┘\n\n", .{}) catch {};
+                allocator.free(new_version);
+            }
+        } else |_| {
+            // Silently ignore network errors — don't block startup
+        }
+    }
 
     // No command provided — launch interactive TUI chat by default
     if (!parsed_args.has_command) {

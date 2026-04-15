@@ -419,6 +419,7 @@ pub fn build(b: *std.Build) !void {
         imp("capability_catalog", capability_catalog_mod), imp("graph", graph_mod),                 imp("agent_loop", agent_loop_mod),
         imp("workflow", workflow_mod),                     imp("compaction", compaction_mod),       imp("scaffold", scaffold_mod),
         imp("mcp_client", mcp_client_mod),                 imp("mcp_discovery", mcp_discovery_mod), imp("mcp_bridge", mcp_bridge_mod),
+        imp("update", update_mod),
     });
     addImports(tool_handlers_mod, &.{imp("capability_catalog", capability_catalog_mod)});
     addImports(experimental_handlers_mod, &.{
