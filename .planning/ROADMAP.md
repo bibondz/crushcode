@@ -276,8 +276,99 @@ v0.6.0 Phase 16 → Phase 17 → Phase 18 → Phase 19 → Phase 20
         (registry)  (widgets)  (spinner)  (gradient)  (diff+typewriter)
 ```
 
+## v0.7.0 — Full AI Agent (Integration + Intelligence)
+
+**ปัญหา**: ทุก component มีแล้ว แต่ไม่ได้ wire เข้าด้วยกัน — MCP tools ไม่ถึง agent loop, context compaction ไม่ทำงาน, system prompt ยัง basic, diff algorithm เป็น stub
+
+### Phase 21: MCP → Agent Loop + Tool Unification
+**Goal:** Wire MCP tools into TUI agent loop so AI can use ANY discovered MCP server tool; unify duplicate tool implementations
+**ปัญหา**: TUI's `executeInlineTool()` dispatches only 6 hardcoded tools. MCP client can discover/call tools but TUI never routes to it. 250 lines of duplicate inline tool code.
+**ทำ**:
+- Create unified `ToolDispatcher` that checks builtin tools first, then MCP tools
+- Wire MCPBridge into TUI Model init (discover + connect servers on startup)
+- Replace `executeInlineTool()` with call to shared `tool_executors.zig`
+- Add MCP tool schemas to system prompt `## Available Tools` section
+- Show MCP server status in sidebar
+- ไฟล์: modify `chat_tui_app.zig` (wire MCP, replace inline tools), `tool_executors.zig` (add MCP dispatch)
+
+**Plans:** 2 plans
+Plans:
+- [ ] 21-01-PLAN.md — MCP tool dispatch + unify tool implementations
+- [ ] 21-02-PLAN.md — MCP server lifecycle (auto-discover, connect, health-check) + sidebar status
+
+### Phase 22: Smart Context + Auto-Compact
+**Goal:** Relevance-scored context selection and automatic context compaction when window fills
+**ปัญหา**: Knowledge graph dumps ALL indexed files into system prompt. No token budget awareness. `/compact` returns "not implemented" even though compaction.zig has full logic.
+**ทำ**:
+- Wire `ContextCompactor` from compaction.zig into TUI streaming loop
+- Add token budget tracking — auto-compact when >70% context used
+- Implement `/compact` slash command using existing `compact()` method
+- Relevance-based context selection — score files by query similarity, not dump all
+- Token-aware system prompt — truncate context to fit within model limits
+- Show context usage in header: `ctx: 45% | 14 files`
+- ไฟล์: modify `chat_tui_app.zig` (wire compaction, auto-compact trigger), `graph/graph.zig` (relevance scoring)
+
+**Plans:** 2 plans
+Plans:
+- [ ] 22-01-PLAN.md — Wire compaction + auto-compact trigger + /compact command
+- [ ] 22-02-PLAN.md — Relevance-based context selection + token-aware system prompt
+
+### Phase 23: Myers Diff + Edit Preview
+**Goal:** Real diff algorithm and edit preview before applying changes
+**ปัญหา**: visualizer.zig is naive line-by-line compare that breaks on insertions/deletions. AI edits files directly with no preview — user can't see what will change.
+**ทำ**:
+- Implement Myers diff algorithm in `src/diff/myers.zig` (O(ND) diff)
+- Replace naive visualizer with Myers-based hunk generation
+- Edit preview: show diff before apply, user confirms with [y/n]
+- Wire `validated_edit.zig` hash-based edits into TUI edit tool (detect concurrent changes)
+- Show diff in TUI with proper coloring (+ green, - red, context dimmed)
+- ไฟล์: new `src/diff/myers.zig`, modify `src/diff/visualizer.zig`, modify TUI edit tool
+
+**Plans:** 2 plans
+Plans:
+- [ ] 23-01-PLAN.md — Myers diff algorithm + hunk generation
+- [ ] 23-02-PLAN.md — Edit preview flow (diff display + confirm/reject) + hash validation
+
+### Phase 24: System Prompt Engineering + Project Config
+**Goal:** Rich system prompt with project-specific instructions, AGENTS.md support, and .crushcode/ project config
+**ปัญหา**: System prompt is just "You are a helpful AI coding assistant" + raw compressed context. No project-specific instructions, no coding guidelines, no AGENTS.md support.
+**ทำ**:
+- Load `AGENTS.md` from project root → inject into system prompt
+- Support `.crushcode/instructions.md` for custom project instructions
+- Enhance base system prompt with coding best practices (tool usage guidelines, edit safety, etc.)
+- Project detection: auto-detect language, framework, build system
+- Dynamic tool descriptions based on project type (Zig projects get `zig build` tips, etc.)
+- ไฟล์: modify `chat_tui_app.zig` (prompt building), new `src/config/project.zig` (project detection)
+
+**Plans:** 1 plan
+Plans:
+- [ ] 24-01-PLAN.md — Rich system prompt + AGENTS.md + project config
+
+### Phase 25: Lifecycle Hooks + Code Quality
+**Goal:** Wire lifecycle hooks into agent loop and clean up code quality issues
+**ปัญหา**: Lifecycle hooks framework exists (196 lines, 10 phases, 3 tiers) but ZERO hooks registered and ZERO call sites in production code. Also: ast_grep.zig branded as "AST" but just substring search.
+**ทำ**:
+- Wire `LifecycleHooks` into TUI agent loop: pre_request, post_request, pre_tool, post_tool, on_error
+- Implement core hooks: token tracking, error logging, tool timing
+- Rename ast_grep.zig to `pattern_search.zig` (honest naming) or implement real AST matching
+- Clean up dead code and unused edge types in graph/types.zig
+- ไฟล์: modify `chat_tui_app.zig` (hook call sites), `hooks/lifecycle.zig` (register core hooks), rename `ast_grep.zig`
+
+**Plans:** 1 plan
+Plans:
+- [ ] 25-01-PLAN.md — Wire lifecycle hooks + honest rename + code cleanup
+
+---
+
+## ลำดับการทำ
+```
+v0.7.0 Phase 21 → Phase 22 → Phase 23 → Phase 24 → Phase 25
+         (MCP wire)  (context)  (diff)  (prompt)  (hooks)
+```
+
 ## ไม่ทำ (defer indefinitely)
 - Voice input
 - Vim mode
 - Package managers (deb/rpm/brew) — install command พอ
 - IDE bridge (VS Code / JetBrains)
+- Real AST parsing (tree-sitter) — pattern search พอสำหรับ v0.7.0
