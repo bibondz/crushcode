@@ -72,6 +72,7 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(registry_mod, &.{imp("providers_file", providers_file_mod)});
 
+    const migrate_mod = createMod(b, "src/config/migrate.zig", target, optimize, &.{imp("env", env_mod)});
     const auth_mod = createMod(b, "src/config/auth.zig", target, optimize, &.{imp("env", env_mod)});
     const profile_mod = createMod(b, "src/config/profile.zig", target, optimize, &.{imp("env", env_mod)});
     const connect_mod = createMod(b, "src/commands/connect.zig", target, optimize, &.{
@@ -350,6 +351,7 @@ pub fn build(b: *std.Build) !void {
 
     const backup_mod = simpleMod(b, "src/config/backup.zig", target, optimize);
     addImports(config_mod, &.{imp("backup", backup_mod)});
+    addImports(config_mod, &.{imp("migrate", migrate_mod)});
 
     const main_mod = createMod(b, "src/main.zig", target, optimize, &.{
         imp("args", cli_mod),                        imp("handlers", handlers_mod), imp("config", config_mod),
@@ -455,7 +457,7 @@ pub fn build(b: *std.Build) !void {
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
         auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,      widget_palette_mod,
-        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,
+        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    migrate_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

@@ -392,6 +392,14 @@ pub fn createDefaultConfig(config_path: []const u8) !void {
 }
 
 pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
+    // Run migration from legacy ~/.crushcode/ if needed
+    const migrate = @import("migrate");
+    if (migrate.needsMigration(allocator)) {
+        migrate.runMigration(allocator) catch |err| {
+            std.log.warn("Migration failed: {} — continuing with existing config", .{err});
+        };
+    }
+
     const config_path = try getConfigPath(allocator);
     defer allocator.free(config_path);
 
