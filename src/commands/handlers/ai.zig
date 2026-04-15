@@ -97,48 +97,168 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
 pub fn handleFallback(_: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
+    // Load config to get real API keys
+    var config = config_mod.loadOrCreateConfig(allocator) catch {
+        stdout_print("Error: Could not load configuration.\n", .{});
+        return;
+    };
+    defer config.deinit();
+
+    var reg = registry_mod.ProviderRegistry.init(allocator);
+    defer reg.deinit();
+    try reg.registerAllProviders();
+
+    // Build fallback chain from providers that have API keys configured
     var chain = fallback_mod.FallbackChain.init(allocator);
     defer chain.deinit();
 
-    try chain.addEntry("openrouter", "openai/gpt-5.4");
-    try chain.addEntry("anthropic", "claude-3.5-sonnet");
-    try chain.addEntry("ollama", "llama3");
+    const provider_names = try reg.listProviders();
+    defer allocator.free(provider_names);
+
+    for (provider_names) |name| {
+        const api_key = config.getApiKey(name) orelse "";
+        const is_local = if (reg.getProvider(name)) |p| p.config.is_local else false;
+        // Only add providers that have a real API key or are local
+        if (api_key.len > 0 or is_local) {
+            const provider = reg.getProvider(name) orelse continue;
+            const model = if (provider.config.models.len > 0) provider.config.models[0] else "default";
+            try chain.addEntry(name, model);
+        }
+    }
+
+    if (chain.isEmpty()) {
+        stdout_print("No configured providers found. Run 'crushcode connect' to set up a provider.\n", .{});
+        return;
+    }
+
+    stdout_print("\n=== Fallback Chain Connectivity Test ===\n\n", .{});
     chain.printChain();
+    stdout_print("\nTesting connectivity:\n", .{});
+    stdout_print("  PROVIDER             MODEL                             STATUS       DETAILS\n", .{});
+    stdout_print("  --------             -----                             ------       -------\n", .{});
 
-    var registry = registry_mod.ProviderRegistry.init(allocator);
-    defer registry.deinit();
-    try registry.registerAllProviders();
+    const entries = chain.getEntries();
+    for (entries, 1..) |entry, index| {
+        const provider = reg.getProvider(entry.provider);
+        if (provider == null) {
+            stdout_print("  {d}. {s} / {s}: unknown — Provider not registered\n", .{ index, entry.provider, entry.model });
+            continue;
+        }
 
-    stdout_print("\nConnectivity check:\n", .{});
-    for (chain.getEntries(), 1..) |entry, index| {
-        const status = if (registry.getProvider(entry.provider) != null) "available" else "missing";
-        stdout_print("  {d}. {s}/{s}: {s}\n", .{ index, entry.provider, entry.model, status });
+        const prov = provider.?;
+        const api_key = config.getApiKey(entry.provider) orelse "";
+
+        // Attempt real connectivity test — send a tiny prompt
+        const test_result: struct { status: []const u8, detail: []const u8 } = blk: {
+            if (api_key.len == 0 and !prov.config.is_local) {
+                break :blk .{ .status = "no key", .detail = "No API key configured" };
+            }
+
+            var client = core_api.AIClient.init(allocator, prov, entry.model, api_key) catch |err| {
+                const detail = std.fmt.allocPrint(allocator, "Init failed: {any}", .{err}) catch "Init failed";
+                break :blk .{ .status = "error", .detail = detail };
+            };
+            defer client.deinit();
+
+            // Send a minimal test message
+            const response = client.sendChat("Reply with exactly: ok") catch |err| {
+                const detail = std.fmt.allocPrint(allocator, "{any}", .{err}) catch "Connection failed";
+                break :blk .{ .status = "failed", .detail = detail };
+            };
+
+            const has_content = response.choices.len > 0;
+            const detail: []const u8 = if (has_content) "Connected successfully" else "Empty response";
+            break :blk .{ .status = "ok", .detail = detail };
+        };
+
+        stdout_print("  {d}. {s}/{s}: {s} — {s}\n", .{ index, entry.provider, entry.model, test_result.status, test_result.detail });
+    }
+
+    stdout_print("\n  Chain entries: {d} | Primary: ", .{chain.count()});
+    if (chain.getPrimary()) |primary| {
+        stdout_print("{s}/{s}\n", .{ primary.provider, primary.model });
+    } else {
+        stdout_print("(none)\n", .{});
     }
 }
 
 pub fn handleParallel(_: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
-    var executor = parallel_mod.ParallelExecutor.init(allocator, 3);
+    // Load config for real API keys
+    var config = config_mod.loadOrCreateConfig(allocator) catch {
+        stdout_print("Error: Could not load configuration.\n", .{});
+        return;
+    };
+    defer config.deinit();
+
+    var reg = registry_mod.ProviderRegistry.init(allocator);
+    defer reg.deinit();
+    try reg.registerAllProviders();
+
+    // Collect providers that have API keys configured
+    var configured = array_list_compat.ArrayList(struct { name: []const u8, model: []const u8, api_key: []const u8 }).init(allocator);
+    defer configured.deinit();
+
+    const provider_names = try reg.listProviders();
+    defer allocator.free(provider_names);
+
+    for (provider_names) |name| {
+        const api_key = config.getApiKey(name) orelse "";
+        const is_local = if (reg.getProvider(name)) |p| p.config.is_local else false;
+        if (api_key.len > 0 or is_local) {
+            const provider = reg.getProvider(name) orelse continue;
+            const model = if (provider.config.models.len > 0) provider.config.models[0] else "default";
+            try configured.append(.{ .name = name, .model = model, .api_key = api_key });
+        }
+    }
+
+    if (configured.items.len == 0) {
+        stdout_print("No configured providers found. Run 'crushcode connect' to set up.\n", .{});
+        return;
+    }
+
+    const max_concurrent: u32 = if (configured.items.len > 3) 3 else @intCast(configured.items.len);
+    var executor = parallel_mod.ParallelExecutor.init(allocator, max_concurrent);
     defer executor.deinit();
 
-    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4", "", .research);
-    defer allocator.free(task_one);
+    // Submit real tasks to each configured provider
+    const prompts = [_][]const u8{
+        "In one sentence, describe the purpose of AI coding assistants.",
+        "In one sentence, explain what makes a good programming language.",
+        "In one sentence, describe the benefits of open source software.",
+    };
 
-    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet", "", .review);
-    defer allocator.free(task_two);
+    stdout_print("\n=== Parallel Execution Demo ===\n", .{});
+    stdout_print("Submitting {d} tasks across {d} providers (max {d} concurrent)...\n\n", .{ configured.items.len, configured.items.len, max_concurrent });
 
-    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3", "", .quick);
-    defer allocator.free(task_three);
-
-    if (executor.getTask(task_one)) |task| {
-        task.status = .running;
+    var submitted: usize = 0;
+    for (configured.items, 0..) |prov, i| {
+        const prompt = prompts[i % prompts.len];
+        const task_id = executor.submit(prompt, prov.name, prov.model, prov.api_key, .general) catch |err| {
+            stdout_print("  Failed to submit to {s}/{s}: {}\n", .{ prov.name, prov.model, err });
+            continue;
+        };
+        defer allocator.free(task_id);
+        stdout_print("  Submitted: {s} ({s}/{s})\n", .{ prompt[0..@min(prompt.len, 50)], prov.name, prov.model });
+        submitted += 1;
     }
-    try executor.recordResult(task_one, "Repository status collected", true);
-    _ = executor.cancel(task_two);
+
+    if (submitted == 0) {
+        stdout_print("No tasks were submitted.\n", .{});
+        return;
+    }
+
+    stdout_print("\nWaiting for tasks to complete...\n", .{});
+    executor.waitForAll();
+    executor.reapCompleted();
+
+    // Print real executor status
     executor.printStatus();
-    stdout_print("\nCan accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
-    stdout_print("Recorded results: {d}\n", .{executor.getResults().len});
+    executor.printSummary();
+
+    stdout_print("\n  Can accept more tasks: {s}\n", .{if (executor.canAcceptMore()) "yes" else "no"});
+    stdout_print("  Completed results: {d}\n", .{executor.getResults().len});
 }
 
 pub fn handleAgents(args: args_mod.Args) !void {
@@ -152,6 +272,49 @@ pub fn handleAgents(args: args_mod.Args) !void {
     };
 
     const max_concurrent = args.max_agents;
+
+    // Load config for real API keys
+    var config = config_mod.loadOrCreateConfig(allocator) catch {
+        stdout_print("Error: Could not load configuration.\n", .{});
+        return;
+    };
+    defer config.deinit();
+
+    var reg = registry_mod.ProviderRegistry.init(allocator);
+    defer reg.deinit();
+    try reg.registerAllProviders();
+
+    // Determine provider/model/api_key from config
+    const provider_name = blk: {
+        if (config.default_provider.len > 0) break :blk config.default_provider;
+        // Fallback to first provider with an API key
+        const names = try reg.listProviders();
+        defer allocator.free(names);
+        for (names) |name| {
+            const key = config.getApiKey(name) orelse "";
+            if (key.len > 0) break :blk name;
+        }
+        break :blk "";
+    };
+
+    if (provider_name.len == 0) {
+        stdout_print("Error: No provider configured. Run 'crushcode connect' to set up.\n", .{});
+        return;
+    }
+
+    const api_key = config.getApiKey(provider_name) orelse "";
+    const is_local = if (reg.getProvider(provider_name)) |p| p.config.is_local else false;
+    if (api_key.len == 0 and !is_local) {
+        stdout_print("Error: No API key for '{s}'. Run 'crushcode connect {s}' to configure.\n", .{ provider_name, provider_name });
+        return;
+    }
+
+    const model_name = blk: {
+        if (config.default_model.len > 0) break :blk config.default_model;
+        const provider = reg.getProvider(provider_name) orelse break :blk "default";
+        if (provider.config.models.len > 0) break :blk provider.config.models[0];
+        break :blk "default";
+    };
 
     var executor = parallel_mod.ParallelExecutor.init(allocator, max_concurrent);
     defer executor.deinit();
@@ -185,10 +348,10 @@ pub fn handleAgents(args: args_mod.Args) !void {
         return;
     }
 
-    for (categories.items) |cat| {
-        const default_provider = parallel_mod.getDefaultProviderForCategory(cat);
-        const default_model = parallel_mod.getDefaultModelForCategory(cat);
+    stdout_print("\n=== Multi-Agent Spawner ===\n", .{});
+    stdout_print("Provider: {s} | Model: {s} | Max concurrent: {d}\n\n", .{ provider_name, model_name, max_concurrent });
 
+    for (categories.items) |cat| {
         const task_desc = switch (cat) {
             .visual_engineering => "Review and improve UI components",
             .ultrabrain => "Analyze complex architecture decisions",
@@ -199,14 +362,23 @@ pub fn handleAgents(args: args_mod.Args) !void {
             .research => "Research patterns and documentation",
         };
 
-        const task_id = try executor.submit(task_desc, default_provider, default_model, "", cat);
-        stdout_print("Spawned agent: {s} ({s}/{s})\n", .{ @tagName(cat), default_provider, default_model });
-        allocator.free(task_id);
+        const task_id = executor.submit(task_desc, provider_name, model_name, api_key, cat) catch |err| {
+            stdout_print("  Failed to spawn {s} agent: {}\n", .{ @tagName(cat), err });
+            continue;
+        };
+        defer allocator.free(task_id);
+        stdout_print("  Spawned: {s} — {s} ({s}/{s})\n", .{ @tagName(cat), task_desc, provider_name, model_name });
     }
 
     stdout_print("\nTotal agents spawned: {d}\n", .{categories.items.len});
     stdout_print("Max concurrent: {d}\n", .{max_concurrent});
-    stdout_print("\nUse 'crushcode parallel' to see status\n", .{});
+    stdout_print("\nWaiting for all agents to complete...\n", .{});
+
+    executor.waitForAll();
+    executor.reapCompleted();
+
+    executor.printStatus();
+    executor.printSummary();
 }
 
 pub fn handleConnect(args: args_mod.Args) !void {

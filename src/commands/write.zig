@@ -222,19 +222,87 @@ pub fn handleWrite(args: [][]const u8) !void {
 
 pub fn handleEdit(args: [][]const u8) !void {
     if (args.len < 1) {
-        out("Usage: crushcode edit <file> [--create]\n", .{});
+        out("Usage: crushcode edit <file> --old \"old text\" --new \"new text\"\n", .{});
+        out("       crushcode edit <file> --create\n", .{});
         return;
     }
 
+    const allocator = std.heap.page_allocator;
     const path = args[0];
-    const create = if (args.len > 1 and std.mem.eql(u8, args[1], "--create")) true else false;
+    var old_string: ?[]const u8 = null;
+    var new_string: ?[]const u8 = null;
+    var create = false;
 
-    if (!create and !fileExists(path)) {
-        out("Error: File does not exist: {s}\n", .{path});
-        out("Use --create to create a new file\n", .{});
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--old") or std.mem.eql(u8, args[i], "-o")) {
+            if (i + 1 < args.len) {
+                old_string = args[i + 1];
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, args[i], "--new") or std.mem.eql(u8, args[i], "-n")) {
+            if (i + 1 < args.len) {
+                new_string = args[i + 1];
+                i += 1;
+            }
+        } else if (std.mem.eql(u8, args[i], "--create")) {
+            create = true;
+        }
+    }
+
+    // --create mode: create empty file
+    if (create) {
+        if (fileExists(path)) {
+            out("File already exists: {s}\n", .{path});
+            return;
+        }
+        const file = try fs.cwd().createFile(path, .{});
+        file.close();
+        out("Created: {s}\n", .{path});
         return;
     }
 
-    out("Not yet implemented: edit\n", .{});
-    out("  Use 'crushcode write <file> <content>' to write files.\n", .{});
+    // search-replace mode
+    if (old_string != null and new_string != null) {
+        if (!fileExists(path)) {
+            out("Error: File does not exist: {s}\n", .{path});
+            out("Use --create to create a new file\n", .{});
+            return;
+        }
+
+        const file = try fs.cwd().openFile(path, .{});
+        defer file.close();
+        const stat = try file.stat();
+        const content = try file.readToEndAlloc(allocator, stat.size);
+        defer allocator.free(content);
+
+        const old = old_string.?;
+        const pos = std.mem.indexOf(u8, content, old) orelse {
+            out("Error: Old string not found in file: {s}\n", .{path});
+            return;
+        };
+
+        const after_first = pos + old.len;
+        if (std.mem.indexOf(u8, content[after_first..], old)) |_| {
+            out("Error: Multiple matches found, old string must be unique\n", .{});
+            return;
+        }
+
+        var new_content = array_list_compat.ArrayList(u8).init(allocator);
+        defer new_content.deinit();
+        try new_content.appendSlice(content[0..pos]);
+        try new_content.appendSlice(new_string.?);
+        try new_content.appendSlice(content[after_first..]);
+
+        const out_file = try fs.cwd().createFile(path, .{});
+        defer out_file.close();
+        try out_file.writeAll(new_content.items);
+
+        out("Edited {s}: replaced {d} chars with {d} chars\n", .{ path, old.len, new_string.?.len });
+        return;
+    }
+
+    // no flags: show usage
+    out("Usage: crushcode edit <file> --old \"old text\" --new \"new text\"\n", .{});
+    out("       crushcode edit <file> --create\n", .{});
 }
