@@ -1,20 +1,41 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 
-const default_style: vaxis.Style = .{ .fg = .{ .index = 15 } };
-const header_style: vaxis.Style = .{ .fg = .{ .index = 15 }, .bold = true };
-const inline_code_style: vaxis.Style = .{ .fg = .{ .index = 14 } };
-const code_block_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .bg = .{ .index = 236 }, .dim = true };
-const code_keyword_style: vaxis.Style = .{ .fg = .{ .index = 14 }, .bg = .{ .index = 236 }, .bold = true };
-const code_string_style: vaxis.Style = .{ .fg = .{ .index = 2 }, .bg = .{ .index = 236 } };
-const code_comment_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .bg = .{ .index = 236 }, .dim = true };
-const code_number_style: vaxis.Style = .{ .fg = .{ .index = 11 }, .bg = .{ .index = 236 } };
-const blockquote_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .dim = true };
-const link_style: vaxis.Style = .{ .fg = .{ .index = 14 } };
-const table_border_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .dim = true };
-const hr_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .dim = true };
-const task_done_style: vaxis.Style = .{ .fg = .{ .index = 2 } };
-const task_undone_style: vaxis.Style = .{ .fg = .{ .index = 8 } };
+pub const MarkdownTheme = struct {
+    default_fg: vaxis.Color,
+    header_fg: vaxis.Color,
+    inline_code_fg: vaxis.Color,
+    code_bg: vaxis.Color,
+    code_fg: vaxis.Color,
+    keyword_fg: vaxis.Color,
+    string_fg: vaxis.Color,
+    comment_fg: vaxis.Color,
+    number_fg: vaxis.Color,
+    blockquote_fg: vaxis.Color,
+    link_fg: vaxis.Color,
+    table_border_fg: vaxis.Color,
+    task_done_fg: vaxis.Color,
+    task_undone_fg: vaxis.Color,
+};
+
+pub fn markdownThemeFromAppTheme(theme: *const @import("theme").Theme) MarkdownTheme {
+    return .{
+        .default_fg = theme.md_default_fg,
+        .header_fg = theme.md_header_fg,
+        .inline_code_fg = theme.md_inline_code_fg,
+        .code_bg = theme.md_code_bg,
+        .code_fg = theme.md_code_fg,
+        .keyword_fg = theme.md_keyword_fg,
+        .string_fg = theme.md_string_fg,
+        .comment_fg = theme.md_comment_fg,
+        .number_fg = theme.md_number_fg,
+        .blockquote_fg = theme.md_blockquote_fg,
+        .link_fg = theme.md_link_fg,
+        .table_border_fg = theme.md_table_border_fg,
+        .task_done_fg = theme.md_task_done_fg,
+        .task_undone_fg = theme.md_task_undone_fg,
+    };
+}
 
 const zig_keywords = [_][]const u8{ "pub", "fn", "const", "var", "try", "return", "if", "else", "switch", "while", "for", "struct", "enum", "error", "defer", "break", "continue" };
 const python_keywords = [_][]const u8{ "def", "class", "import", "from", "return", "if", "else", "elif", "for", "while", "try", "except", "with", "async", "await" };
@@ -62,7 +83,23 @@ const InlineLink = struct {
     end: usize,
 };
 
-pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8) ![]vaxis.Segment {
+pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8, md_theme: MarkdownTheme) ![]vaxis.Segment {
+    // Build styles from theme
+    const default_style: vaxis.Style = .{ .fg = md_theme.default_fg };
+    const header_style: vaxis.Style = .{ .fg = md_theme.header_fg, .bold = true };
+    const inline_code_fg = md_theme.inline_code_fg;
+    const code_block_style: vaxis.Style = .{ .fg = md_theme.code_fg, .bg = md_theme.code_bg, .dim = true };
+    const code_keyword_style: vaxis.Style = .{ .fg = md_theme.keyword_fg, .bg = md_theme.code_bg, .bold = true };
+    const code_string_style: vaxis.Style = .{ .fg = md_theme.string_fg, .bg = md_theme.code_bg };
+    const code_comment_style: vaxis.Style = .{ .fg = md_theme.comment_fg, .bg = md_theme.code_bg, .dim = true };
+    const code_number_style: vaxis.Style = .{ .fg = md_theme.number_fg, .bg = md_theme.code_bg };
+    const blockquote_style: vaxis.Style = .{ .fg = md_theme.blockquote_fg, .dim = true };
+    const link_style: vaxis.Style = .{ .fg = md_theme.link_fg };
+    const table_border_style: vaxis.Style = .{ .fg = md_theme.table_border_fg, .dim = true };
+    const hr_style: vaxis.Style = .{ .fg = md_theme.table_border_fg, .dim = true };
+    const task_done_style: vaxis.Style = .{ .fg = md_theme.task_done_fg };
+    const task_undone_style: vaxis.Style = .{ .fg = md_theme.task_undone_fg };
+
     var segments = std.ArrayList(vaxis.Segment).empty;
     errdefer segments.deinit(allocator);
 
@@ -94,7 +131,7 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8) ![]vaxis.Se
                 if (code_language_kind == .plain) {
                     try appendSegment(&segments, allocator, line, code_block_style);
                 } else {
-                    try appendHighlightedCodeLine(&segments, allocator, line, code_language_kind);
+                    try appendHighlightedCodeLine(&segments, allocator, line, code_language_kind, code_block_style, code_keyword_style, code_string_style, code_comment_style, code_number_style);
                 }
                 try appendNewline(&segments, allocator, has_newline, code_block_style);
             }
@@ -104,11 +141,11 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8) ![]vaxis.Se
             code_language = std.mem.trim(u8, line[3..], " \t");
             code_language_kind = parseCodeLanguage(code_language);
         } else if (isTableLine(line)) {
-            line_start = try parseTableBlock(&segments, allocator, text, line_start);
+            line_start = try parseTableBlock(&segments, allocator, text, line_start, default_style, header_style, table_border_style);
             continue;
         } else if (parseBlockquoteLine(line)) |quote| {
             try appendIndent(&segments, allocator, quote.level, "┃ ", blockquote_style);
-            try appendInline(&segments, allocator, quote.content, blockquote_style);
+            try appendInline(&segments, allocator, quote.content, blockquote_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, blockquote_style);
         } else if (parseHorizontalRuleLine(line)) |rule_width| {
             try appendRepeatedLiteral(&segments, allocator, "─", rule_width, hr_style);
@@ -119,28 +156,28 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8) ![]vaxis.Se
         } else if (parseTaskListLine(line)) |task| {
             try appendIndent(&segments, allocator, task.level, "  ", default_style);
             try appendSegment(&segments, allocator, if (task.done) "☑ " else "☐ ", if (task.done) task_done_style else task_undone_style);
-            try appendInline(&segments, allocator, task.content, default_style);
+            try appendInline(&segments, allocator, task.content, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         } else if (parseNestedUnorderedListLine(line)) |nested| {
             try appendIndent(&segments, allocator, nested.level, "  ", default_style);
             try appendSegment(&segments, allocator, "• ", default_style);
-            try appendInline(&segments, allocator, nested.content, default_style);
+            try appendInline(&segments, allocator, nested.content, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         } else if (parseNestedOrderedListLine(line)) |nested| {
             try appendIndent(&segments, allocator, nested.level, "  ", default_style);
             try appendSegment(&segments, allocator, nested.prefix, default_style);
-            try appendInline(&segments, allocator, nested.content, default_style);
+            try appendInline(&segments, allocator, nested.content, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         } else if (parseUnorderedListLine(line)) |item| {
             try appendSegment(&segments, allocator, "• ", default_style);
-            try appendInline(&segments, allocator, item, default_style);
+            try appendInline(&segments, allocator, item, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         } else if (parseOrderedListLine(line)) |ordered| {
             try appendSegment(&segments, allocator, ordered.prefix, default_style);
-            try appendInline(&segments, allocator, ordered.content, default_style);
+            try appendInline(&segments, allocator, ordered.content, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         } else {
-            try appendInline(&segments, allocator, line, default_style);
+            try appendInline(&segments, allocator, line, default_style, inline_code_fg, link_style);
             try appendNewline(&segments, allocator, has_newline, default_style);
         }
 
@@ -151,7 +188,7 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8) ![]vaxis.Se
     return segments.toOwnedSlice(allocator);
 }
 
-fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, base_style: vaxis.Style) !void {
+fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, base_style: vaxis.Style, inline_code_fg: vaxis.Color, link_sty: vaxis.Style) !void {
     var cursor: usize = 0;
     var plain_start: usize = 0;
 
@@ -159,7 +196,7 @@ fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allo
         if (text[cursor] == '`') {
             if (std.mem.indexOfScalarPos(u8, text, cursor + 1, '`')) |end| {
                 try appendPlainRange(segments, allocator, text, plain_start, cursor, base_style);
-                try appendSegment(segments, allocator, text[cursor + 1 .. end], mergeStyle(base_style, .{ .fg = inline_code_style.fg }));
+                try appendSegment(segments, allocator, text[cursor + 1 .. end], mergeStyle(base_style, .{ .fg = inline_code_fg }));
                 cursor = end + 1;
                 plain_start = cursor;
                 continue;
@@ -168,7 +205,7 @@ fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allo
 
         if (parseInlineLink(text, cursor)) |link| {
             try appendPlainRange(segments, allocator, text, plain_start, cursor, base_style);
-            try appendInline(segments, allocator, link.label, mergeStyle(base_style, link_style));
+            try appendInline(segments, allocator, link.label, mergeStyle(base_style, link_sty), inline_code_fg, link_sty);
             cursor = link.end;
             plain_start = cursor;
             continue;
@@ -200,21 +237,21 @@ fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allo
     try appendPlainRange(segments, allocator, text, plain_start, text.len, base_style);
 }
 
-fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage) !void {
+fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage, code_block_sty: vaxis.Style, code_keyword_sty: vaxis.Style, code_string_sty: vaxis.Style, code_comment_sty: vaxis.Style, code_number_sty: vaxis.Style) !void {
     var cursor: usize = 0;
     var plain_start: usize = 0;
 
     while (cursor < line.len) {
         if (isCommentStart(line, cursor)) {
-            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_style);
-            try appendSegment(segments, allocator, line[cursor..], code_comment_style);
+            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+            try appendSegment(segments, allocator, line[cursor..], code_comment_sty);
             return;
         }
 
         if (isQuote(line[cursor])) {
             const end = consumeString(line, cursor);
-            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_style);
-            try appendSegment(segments, allocator, line[cursor..end], code_string_style);
+            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+            try appendSegment(segments, allocator, line[cursor..end], code_string_sty);
             cursor = end;
             plain_start = cursor;
             continue;
@@ -222,8 +259,8 @@ fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator:
 
         if (isNumberStart(line, cursor)) {
             const end = consumeNumber(line, cursor);
-            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_style);
-            try appendSegment(segments, allocator, line[cursor..end], code_number_style);
+            try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+            try appendSegment(segments, allocator, line[cursor..end], code_number_sty);
             cursor = end;
             plain_start = cursor;
             continue;
@@ -233,8 +270,8 @@ fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator:
             const end = consumeIdentifier(line, cursor);
             const token = line[cursor..end];
             if (isKeyword(language, token)) {
-                try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_style);
-                try appendSegment(segments, allocator, token, code_keyword_style);
+                try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+                try appendSegment(segments, allocator, token, code_keyword_sty);
                 cursor = end;
                 plain_start = cursor;
                 continue;
@@ -247,7 +284,7 @@ fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator:
         cursor += 1;
     }
 
-    try appendPlainRange(segments, allocator, line, plain_start, line.len, code_block_style);
+    try appendPlainRange(segments, allocator, line, plain_start, line.len, code_block_sty);
 }
 
 fn appendPlainRange(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, start: usize, end: usize, style: vaxis.Style) !void {
@@ -289,7 +326,7 @@ fn mergeStyle(base: vaxis.Style, overlay: vaxis.Style) vaxis.Style {
     return style;
 }
 
-fn parseTableBlock(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, block_start: usize) !usize {
+fn parseTableBlock(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, block_start: usize, default_sty: vaxis.Style, header_sty: vaxis.Style, table_border_sty: vaxis.Style) !usize {
     var rows = std.ArrayList(TableRow).empty;
     defer rows.deinit(allocator);
 
@@ -337,31 +374,31 @@ fn parseTableBlock(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.A
 
     for (rows.items, 0..) |row, row_index| {
         if (row.is_separator) {
-            try appendSegment(segments, allocator, "│", table_border_style);
+            try appendSegment(segments, allocator, "│", table_border_sty);
 
             var column: usize = 0;
             while (column < max_columns) : (column += 1) {
-                try appendRepeatedLiteral(segments, allocator, "─", widths[column] + 2, table_border_style);
-                try appendSegment(segments, allocator, "│", table_border_style);
+                try appendRepeatedLiteral(segments, allocator, "─", widths[column] + 2, table_border_sty);
+                try appendSegment(segments, allocator, "│", table_border_sty);
             }
 
-            try appendNewline(segments, allocator, row.has_newline, table_border_style);
+            try appendNewline(segments, allocator, row.has_newline, table_border_sty);
             continue;
         }
 
-        const row_style = if (has_header and row_index == 0) header_style else default_style;
-        try appendSegment(segments, allocator, "│ ", table_border_style);
+        const row_style = if (has_header and row_index == 0) header_sty else default_sty;
+        try appendSegment(segments, allocator, "│ ", table_border_sty);
 
         var column: usize = 0;
         while (column < max_columns) : (column += 1) {
             const cell = tableCellAt(row.line, column) orelse "";
-            try appendInline(segments, allocator, cell, row_style);
+            try appendInline(segments, allocator, cell, row_style, row_style.fg, .{ .fg = row_style.fg });
             try appendRepeatedLiteral(segments, allocator, " ", widths[column] - inlineDisplayWidth(cell), row_style);
 
             if (column + 1 < max_columns) {
-                try appendSegment(segments, allocator, " │ ", table_border_style);
+                try appendSegment(segments, allocator, " │ ", table_border_sty);
             } else {
-                try appendSegment(segments, allocator, " │", table_border_style);
+                try appendSegment(segments, allocator, " │", table_border_sty);
             }
         }
 

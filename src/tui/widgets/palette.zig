@@ -173,7 +173,7 @@ pub const SessionListWidget = struct {
     }
 
     pub fn draw(self: *const SessionListWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         var width: u16 = @min(max.width -| 4, @as(u16, 96));
         if (width < 40) width = @min(max.width, @as(u16, 40));
         if (width == 0) width = max.width;
@@ -255,7 +255,7 @@ pub const ResumePromptWidget = struct {
     }
 
     pub fn draw(self: *const ResumePromptWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         var width: u16 = @min(max.width -| 4, @as(u16, 72));
         if (width < 36) width = @min(max.width, @as(u16, 36));
         if (width == 0) width = max.width;
@@ -287,7 +287,7 @@ pub const ResumePromptWidget = struct {
         };
         const info_surface = try info.draw(ctx.withConstraints(
             .{ .width = inner_width, .height = 0 },
-            .{ .width = inner_width, .height = null },
+            .{ .width = inner_width, .height = 9999 },
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = info_surface });
 
@@ -340,7 +340,7 @@ pub const CommandPaletteWidget = struct {
     }
 
     pub fn draw(self: *const CommandPaletteWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         var width: u16 = @min(max.width -| 4, @as(u16, 72));
         if (width < 28) width = @min(max.width, @as(u16, 28));
         if (width == 0) width = max.width;

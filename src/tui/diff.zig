@@ -1,23 +1,40 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 
-const file_header_style: vaxis.Style = .{ .fg = .{ .index = 14 }, .bold = true };
-const hunk_header_style: vaxis.Style = .{ .fg = .{ .index = 14 }, .dim = true };
-const removed_style: vaxis.Style = .{ .fg = .{ .index = 9 } };
-const added_style: vaxis.Style = .{ .fg = .{ .index = 10 } };
-const context_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .dim = true };
-const line_number_style: vaxis.Style = .{ .fg = .{ .index = 8 }, .dim = true };
+pub const DiffTheme = struct {
+    file_header_fg: vaxis.Color,
+    hunk_header_fg: vaxis.Color,
+    removed_fg: vaxis.Color,
+    added_fg: vaxis.Color,
+    context_fg: vaxis.Color,
+};
 
-/// Highlighted word styles — brighter/underlined for changed words within diff lines.
-const removed_word_style: vaxis.Style = .{ .fg = .{ .index = 9 }, .bold = true, .ul_style = .single };
-const added_word_style: vaxis.Style = .{ .fg = .{ .index = 10 }, .bold = true, .ul_style = .single };
+pub fn diffThemeFromAppTheme(theme: *const @import("theme").Theme) DiffTheme {
+    return .{
+        .file_header_fg = theme.diff_file_header_fg,
+        .hunk_header_fg = theme.diff_hunk_header_fg,
+        .removed_fg = theme.diff_removed_fg,
+        .added_fg = theme.diff_added_fg,
+        .context_fg = theme.diff_context_fg,
+    };
+}
 
 const HunkHeader = struct {
     old_start: usize,
     new_start: usize,
 };
 
-pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines: usize) ![]vaxis.Segment {
+pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines: usize, diff_theme: DiffTheme) ![]vaxis.Segment {
+    // Build styles from theme
+    const file_header_style: vaxis.Style = .{ .fg = diff_theme.file_header_fg, .bold = true };
+    const hunk_header_style: vaxis.Style = .{ .fg = diff_theme.hunk_header_fg, .dim = true };
+    const removed_style: vaxis.Style = .{ .fg = diff_theme.removed_fg };
+    const added_style: vaxis.Style = .{ .fg = diff_theme.added_fg };
+    const context_style: vaxis.Style = .{ .fg = diff_theme.context_fg, .dim = true };
+    const line_number_style: vaxis.Style = .{ .fg = diff_theme.context_fg, .dim = true };
+    const removed_word_style: vaxis.Style = .{ .fg = diff_theme.removed_fg, .bold = true, .ul_style = .single };
+    const added_word_style: vaxis.Style = .{ .fg = diff_theme.added_fg, .bold = true, .ul_style = .single };
+
     const text = normalizeDiffText(diff_text);
 
     var segments = std.ArrayList(vaxis.Segment).empty;
@@ -52,13 +69,13 @@ pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines:
         const line = all_lines.items[idx];
 
         if (std.mem.startsWith(u8, line, "---") or std.mem.startsWith(u8, line, "+++")) {
-            try appendLineNumber(&segments, allocator, null);
+            try appendLineNumber(&segments, allocator, null, line_number_style);
             try appendSegment(&segments, allocator, line, file_header_style);
             try appendSegment(&segments, allocator, "\n", file_header_style);
         } else if (parseHunkHeader(line)) |header| {
             old_line = header.old_start;
             new_line = header.new_start;
-            try appendLineNumber(&segments, allocator, null);
+            try appendLineNumber(&segments, allocator, null, line_number_style);
             try appendSegment(&segments, allocator, line, hunk_header_style);
             try appendSegment(&segments, allocator, "\n", hunk_header_style);
         } else if (line.len > 0 and line[0] == '-' and !std.mem.startsWith(u8, line, "---")) {
@@ -86,13 +103,13 @@ pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines:
                 const new_content = plus_line[1..];
 
                 // Word-diff the removed line
-                try appendLineNumber(&segments, allocator, old_line);
+                try appendLineNumber(&segments, allocator, old_line, line_number_style);
                 try appendWordDiffSegments(&segments, allocator, old_content, removed_style, removed_word_style, "-");
                 try appendSegment(&segments, allocator, "\n", removed_style);
                 if (old_line) |value| old_line = value + 1;
 
                 // Word-diff the first added line
-                try appendLineNumber(&segments, allocator, new_line);
+                try appendLineNumber(&segments, allocator, new_line, line_number_style);
                 try appendWordDiffSegments(&segments, allocator, new_content, added_style, added_word_style, "+");
                 try appendSegment(&segments, allocator, "\n", added_style);
                 if (new_line) |value| new_line = value + 1;
@@ -100,7 +117,7 @@ pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines:
                 // Additional '+' lines as regular added
                 var k: usize = plus_start + 1;
                 while (k < plus_start + plus_count) : (k += 1) {
-                    try appendLineNumber(&segments, allocator, new_line);
+                    try appendLineNumber(&segments, allocator, new_line, line_number_style);
                     try appendSegment(&segments, allocator, all_lines.items[k], added_style);
                     try appendSegment(&segments, allocator, "\n", added_style);
                     if (new_line) |value| new_line = value + 1;
@@ -112,18 +129,18 @@ pub fn parseDiff(allocator: std.mem.Allocator, diff_text: []const u8, max_lines:
             }
 
             // No word-diff pairing — emit normally
-            try appendLineNumber(&segments, allocator, old_line);
+            try appendLineNumber(&segments, allocator, old_line, line_number_style);
             try appendSegment(&segments, allocator, line, removed_style);
             try appendSegment(&segments, allocator, "\n", removed_style);
             if (old_line) |value| old_line = value + 1;
         } else if (line.len > 0 and line[0] == '+' and !std.mem.startsWith(u8, line, "+++")) {
-            try appendLineNumber(&segments, allocator, new_line);
+            try appendLineNumber(&segments, allocator, new_line, line_number_style);
             try appendSegment(&segments, allocator, line, added_style);
             try appendSegment(&segments, allocator, "\n", added_style);
             if (new_line) |value| new_line = value + 1;
         } else {
             const line_number = if (line.len > 0 and line[0] == ' ') old_line else null;
-            try appendLineNumber(&segments, allocator, line_number);
+            try appendLineNumber(&segments, allocator, line_number, line_number_style);
             try appendSegment(&segments, allocator, line, context_style);
             try appendSegment(&segments, allocator, "\n", context_style);
             if (line.len == 0 or line[0] == ' ') {
@@ -204,12 +221,12 @@ fn parseNumber(text: []const u8, index: *usize) ?usize {
     return std.fmt.parseUnsigned(usize, text[start..index.*], 10) catch null;
 }
 
-fn appendLineNumber(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, number: ?usize) !void {
+fn appendLineNumber(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, number: ?usize, ln_style: vaxis.Style) !void {
     const text = if (number) |value|
         try std.fmt.allocPrint(allocator, "{d: >4} ", .{value})
     else
         try allocator.dupe(u8, "     ");
-    try appendSegment(segments, allocator, text, line_number_style);
+    try appendSegment(segments, allocator, text, ln_style);
 }
 
 fn appendSegment(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, text: []const u8, style: vaxis.Style) !void {

@@ -125,6 +125,9 @@ pub fn build(b: *std.Build) !void {
     addImports(diff_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const theme_mod = simpleMod(b, "src/tui/theme.zig", target, optimize);
     addImports(theme_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
+    // Allow markdown.zig and diff.zig to access theme.zig for theme-aware styling
+    addImports(tui_markdown_mod, &.{imp("theme", theme_mod)});
+    addImports(diff_mod, &.{imp("theme", theme_mod)});
     const tui_mod = simpleMod(b, "src/tui/mod.zig", target, optimize);
     addImports(tui_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     addImports(tui_mod, &.{ imp("markdown", tui_markdown_mod), imp("diff", diff_mod), imp("usage_pricing", usage_pricing_mod), imp("theme", theme_mod), imp("session", session_mod) });
@@ -233,9 +236,13 @@ pub fn build(b: *std.Build) !void {
         imp("theme", theme_mod),
         imp("widget_helpers", widget_helpers_mod),
     });
+    const multiline_input_mod = createMod(b, "src/tui/widgets/multiline_input.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+    });
     const widget_input_mod = createMod(b, "src/tui/widgets/input.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
+        imp("multiline_input", multiline_input_mod),
     });
     const widget_sidebar_mod = createMod(b, "src/tui/widgets/sidebar.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
@@ -261,23 +268,29 @@ pub fn build(b: *std.Build) !void {
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
         imp("widget_types", widget_types_mod),
+        imp("widget_helpers", widget_helpers_mod),
     });
     const widget_spinner_mod = createMod(b, "src/tui/widgets/spinner.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
     });
     const widget_gradient_mod = createMod(b, "src/tui/widgets/gradient.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
     });
     const widget_toast_mod = createMod(b, "src/tui/widgets/toast.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
     });
     const widget_typewriter_mod = createMod(b, "src/tui/widgets/typewriter.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
     });
+    addImports(widget_messages_mod, &.{imp("typewriter", widget_typewriter_mod)});
     addImports(tui_mod, &.{
         imp("widget_types", widget_types_mod),
         imp("widget_helpers", widget_helpers_mod),
@@ -467,7 +480,7 @@ pub fn build(b: *std.Build) !void {
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
         auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,      widget_palette_mod,
-        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    migrate_mod,               update_mod,
+        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    multiline_input_mod,       migrate_mod,             update_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

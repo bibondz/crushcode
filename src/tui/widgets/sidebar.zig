@@ -187,8 +187,8 @@ pub const SidebarWidget = struct {
                 const status_style: vaxis.Style = switch (w_item.status) {
                     .pending => .{ .fg = theme.dimmed },
                     .running => .{ .fg = theme.accent },
-                    .done => .{ .fg = .{ .index = 10 } },
-                    .@"error" => .{ .fg = .{ .index = 1 } },
+                    .done => .{ .fg = theme.tool_success },
+                    .@"error" => .{ .fg = theme.tool_error },
                     .cancelled => .{ .fg = theme.dimmed },
                 };
                 idx += 1;

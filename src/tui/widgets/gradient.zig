@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
+const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
@@ -81,7 +82,7 @@ pub const GradientText = struct {
     /// Build gradient segments. Each Unicode codepoint gets its own color.
     /// Returns a Surface.
     pub fn draw(self: *const @This(), ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         const width = max.width;
 
         if (self.text.len == 0) {

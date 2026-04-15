@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
+const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
@@ -100,7 +101,8 @@ pub const TypewriterState = struct {
         self.complete = (self.revealed >= self.total_codepoints);
     }
 
-    /// Advance reveal by one character if enough time has elapsed.
+    /// Advance reveal by one or more characters if enough time has elapsed.
+    /// When behind (fast streaming / dropped frames), reveals multiple chars per tick.
     /// Call periodically (~50ms intervals).
     pub fn tick(self: *Self) void {
         if (self.complete) return;
@@ -113,9 +115,17 @@ pub const TypewriterState = struct {
             self.last_blink_ms = now;
         }
 
-        // Advance reveal
+        // Advance reveal — catch up if behind
         if (now - self.last_reveal_ms >= self.next_delay_ms) {
-            self.revealed += 1;
+            const elapsed = now - self.last_reveal_ms;
+            const ticks_behind = @divTrunc(elapsed, self.next_delay_ms);
+            const remaining = self.total_codepoints -| self.revealed;
+            const chars_to_reveal: usize = if (ticks_behind > 1)
+                @min(@as(usize, @intCast(ticks_behind)), remaining)
+            else
+                1;
+
+            self.revealed = @min(self.revealed + chars_to_reveal, self.total_codepoints);
             self.last_reveal_ms = now;
             self.next_delay_ms = randomDelay(&self.rng_state);
 
@@ -217,7 +227,7 @@ pub const TypewriterWidget = struct {
 
     pub fn draw(self: *const TypewriterWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const s = self.state;
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         const width = max.width;
 
         const revealed = s.revealedText();

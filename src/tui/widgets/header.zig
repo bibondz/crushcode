@@ -1,7 +1,6 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
-const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
@@ -31,21 +30,11 @@ pub const HeaderWidget = struct {
         };
         const title_surface = try title.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
 
-        const line = try widget_helpers.repeated(ctx.arena, "─", width);
-        const separator = vxfw.Text{
-            .text = line,
-            .style = .{ .fg = self.theme.border, .bg = self.theme.header_bg, .dim = true },
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        const separator_surface = try separator.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 2 });
+        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
         @memset(surface.buffer, .{ .style = bg_style });
 
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
+        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
         children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = title_surface };
-        children[1] = .{ .origin = .{ .row = 1, .col = 0 }, .surface = separator_surface };
 
         return .{
             .size = surface.size,

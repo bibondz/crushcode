@@ -35,7 +35,7 @@ pub const PermissionDialogWidget = struct {
             return vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = 0, .height = 0 });
         };
 
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         var width: u16 = @min(max.width -| 4, @as(u16, 84));
         if (width < 36) width = @min(max.width, @as(u16, 36));
         if (width == 0) width = max.width;
@@ -65,7 +65,7 @@ pub const PermissionDialogWidget = struct {
         };
         const tool_surface = try tool_text.draw(ctx.withConstraints(
             .{ .width = inner_width, .height = 0 },
-            .{ .width = inner_width, .height = null },
+            .{ .width = inner_width, .height = 9999 },
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = tool_surface });
 
@@ -77,7 +77,7 @@ pub const PermissionDialogWidget = struct {
         };
         const args_surface = try args_text.draw(ctx.withConstraints(
             .{ .width = inner_width, .height = 0 },
-            .{ .width = inner_width, .height = null },
+            .{ .width = inner_width, .height = 9999 },
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(4 + tool_surface.size.height), .col = 2 }, .surface = args_surface });
 

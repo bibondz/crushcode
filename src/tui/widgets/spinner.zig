@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
+const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
@@ -8,7 +9,8 @@ const vxfw = vaxis.vxfw;
 pub const braille_frames = [_][]const u8{ "⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏" };
 
 /// Gradient colors cycled during normal (non-stalled) spinning.
-const gradient_colors = [_]vaxis.Color{
+/// NOTE: These are fallback defaults; frameColor() uses theme fields when available.
+const gradient_defaults = [_]vaxis.Color{
     .{ .index = 12 }, // bright cyan
     .{ .index = 14 }, // bright blue
     .{ .index = 13 }, // bright magenta
@@ -94,9 +96,18 @@ pub const AnimatedSpinner = struct {
     /// Get the color for the current frame.
     pub fn frameColor(self: *const Self) vaxis.Color {
         if (self.stalled) {
-            return .{ .index = 9 }; // bright red when stalled
+            return self.theme.spinner_stalled_fg;
         }
-        return gradient_colors[self.tick_count % gradient_colors.len];
+        const theme_gradient = [_]vaxis.Color{
+            self.theme.spinner_g1,
+            self.theme.spinner_g2,
+            self.theme.spinner_g3,
+            self.theme.spinner_g4,
+            self.theme.spinner_g5,
+            self.theme.spinner_g6,
+            self.theme.spinner_g7,
+        };
+        return theme_gradient[self.tick_count % theme_gradient.len];
     }
 
     /// Format elapsed time as "Xm Ys" or "Y.Zs".
@@ -132,7 +143,7 @@ pub const SpinnerWidget = struct {
 
     fn draw(self: *const SpinnerWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const s = self.spinner;
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         const width = max.width;
 
         const frame_char = s.frame();

@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
+const widget_helpers = @import("widget_helpers");
 const widget_types = @import("widget_types");
 
 const vxfw = vaxis.vxfw;
@@ -20,6 +21,7 @@ pub const SetupContext = struct {
 pub const SetupProviderRowWidget = struct {
     provider_name: []const u8,
     selected: bool,
+    theme: *const theme_mod.Theme,
 
     pub fn widget(self: *const SetupProviderRowWidget) vxfw.Widget {
         return .{
@@ -37,8 +39,8 @@ pub const SetupProviderRowWidget = struct {
         const width = ctx.max.width orelse ctx.min.width;
         const text = vxfw.RichText{
             .text = &.{
-                .{ .text = if (self.selected) "› " else "  ", .style = if (self.selected) .{ .fg = .{ .index = 39 }, .bold = true } else .{ .fg = .{ .index = 8 }, .dim = true } },
-                .{ .text = self.provider_name, .style = if (self.selected) .{ .fg = .{ .index = 15 }, .bold = true } else .{ .fg = .{ .index = 15 } } },
+                .{ .text = if (self.selected) "› " else "  ", .style = if (self.selected) .{ .fg = self.theme.setup_selected_fg, .bold = true } else .{ .fg = self.theme.setup_dim_fg, .dim = true } },
+                .{ .text = self.provider_name, .style = if (self.selected) .{ .fg = self.theme.setup_text_fg, .bold = true } else .{ .fg = self.theme.setup_text_fg } },
             },
             .softwrap = false,
             .width_basis = .parent,
@@ -63,22 +65,23 @@ pub const SetupWizardWidget = struct {
     }
 
     pub fn draw(self: *const SetupWizardWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         const width = max.width;
         var child_list = std.ArrayList(vxfw.SubSurface).empty;
         defer child_list.deinit(ctx.arena);
 
         var row: u16 = 0;
-        try appendSetupText(ctx, &child_list, &row, width, "Welcome to Crushcode!", .{ .fg = .{ .index = 15 }, .bold = true });
+        const theme = self.context.theme;
+        try appendSetupText(ctx, &child_list, &row, width, "Welcome to Crushcode!", .{ .fg = theme.setup_text_fg, .bold = true });
         row += 1;
 
         switch (self.context.setup_phase) {
             1 => {
-                try appendSetupText(ctx, &child_list, &row, width, "Choose a provider:", .{ .fg = .{ .index = 15 }, .bold = true });
-                try appendSetupText(ctx, &child_list, &row, width, "Use ↑↓ to choose, then press Enter.", .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, "Choose a provider:", .{ .fg = theme.setup_text_fg, .bold = true });
+                try appendSetupText(ctx, &child_list, &row, width, "Use ↑↓ to choose, then press Enter.", .{ .fg = theme.setup_dim_fg, .dim = true });
                 row += 1;
                 for (setup_provider_data, 0..) |provider_name, idx| {
-                    const provider_row = SetupProviderRowWidget{ .provider_name = provider_name, .selected = idx == self.context.setup_provider_index };
+                    const provider_row = SetupProviderRowWidget{ .provider_name = provider_name, .selected = idx == self.context.setup_provider_index, .theme = theme };
                     const provider_surface = try provider_row.draw(ctx.withConstraints(
                         .{ .width = width, .height = 1 },
                         .{ .width = width, .height = 1 },
@@ -89,28 +92,28 @@ pub const SetupWizardWidget = struct {
             },
             2 => {
                 const title = try std.fmt.allocPrint(ctx.arena, "Enter your API key for {s}:", .{self.context.provider_name});
-                try appendSetupText(ctx, &child_list, &row, width, title, .{ .fg = .{ .index = 15 }, .bold = true });
+                try appendSetupText(ctx, &child_list, &row, width, title, .{ .fg = theme.setup_text_fg, .bold = true });
                 if (setupProviderAllowsEmptyKey(self.context.provider_name)) {
-                    try appendSetupText(ctx, &child_list, &row, width, "This provider can use a blank key. Press Enter to continue.", .{ .fg = .{ .index = 8 }, .dim = true });
+                    try appendSetupText(ctx, &child_list, &row, width, "This provider can use a blank key. Press Enter to continue.", .{ .fg = theme.setup_dim_fg, .dim = true });
                 } else {
-                    try appendSetupText(ctx, &child_list, &row, width, "Paste the key, then press Enter.", .{ .fg = .{ .index = 8 }, .dim = true });
+                    try appendSetupText(ctx, &child_list, &row, width, "Paste the key, then press Enter.", .{ .fg = theme.setup_dim_fg, .dim = true });
                 }
             },
             3 => {
-                try appendSetupText(ctx, &child_list, &row, width, "Enter default model (or press Enter for default):", .{ .fg = .{ .index = 15 }, .bold = true });
+                try appendSetupText(ctx, &child_list, &row, width, "Enter default model (or press Enter for default):", .{ .fg = theme.setup_text_fg, .bold = true });
                 const provider_line = try std.fmt.allocPrint(ctx.arena, "Provider: {s}", .{self.context.provider_name});
-                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = theme.setup_dim_fg, .dim = true });
                 const default_line = try std.fmt.allocPrint(ctx.arena, "Default: {s}", .{setupDefaultModel(self.context.provider_name)});
-                try appendSetupText(ctx, &child_list, &row, width, default_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, default_line, .{ .fg = theme.setup_dim_fg, .dim = true });
             },
             4 => {
-                try appendSetupText(ctx, &child_list, &row, width, "Setup complete! Press Enter to start chatting.", .{ .fg = .{ .index = 10 }, .bold = true });
+                try appendSetupText(ctx, &child_list, &row, width, "Setup complete! Press Enter to start chatting.", .{ .fg = theme.setup_success_fg, .bold = true });
                 const provider_line = try std.fmt.allocPrint(ctx.arena, "Provider: {s}", .{self.context.provider_name});
-                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, provider_line, .{ .fg = theme.setup_dim_fg, .dim = true });
                 const model_line = try std.fmt.allocPrint(ctx.arena, "Model: {s}", .{self.context.model_name});
-                try appendSetupText(ctx, &child_list, &row, width, model_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, model_line, .{ .fg = theme.setup_dim_fg, .dim = true });
                 const config_line = try std.fmt.allocPrint(ctx.arena, "Config: {s}", .{try setupConfigPath(ctx.arena)});
-                try appendSetupText(ctx, &child_list, &row, width, config_line, .{ .fg = .{ .index = 8 }, .dim = true });
+                try appendSetupText(ctx, &child_list, &row, width, config_line, .{ .fg = theme.setup_dim_fg, .dim = true });
             },
             else => {},
         }
@@ -123,7 +126,7 @@ pub const SetupWizardWidget = struct {
                 &row,
                 width,
                 self.context.setup_feedback,
-                if (self.context.setup_feedback_is_error) .{ .fg = .{ .index = 1 }, .bold = true } else .{ .fg = .{ .index = 10 }, .dim = true },
+                if (self.context.setup_feedback_is_error) .{ .fg = theme.setup_error_fg, .bold = true } else .{ .fg = theme.setup_success_fg, .dim = true },
             );
         }
 
@@ -161,7 +164,7 @@ pub fn appendSetupText(
     };
     const surface = try widget.draw(ctx.withConstraints(
         .{ .width = width, .height = 0 },
-        .{ .width = width, .height = null },
+        .{ .width = width, .height = 9999 },
     ));
     try child_list.append(ctx.arena, .{ .origin = .{ .row = row.*, .col = 0 }, .surface = surface });
     row.* += surface.size.height;

@@ -6,6 +6,16 @@ const widget_types = @import("widget_types");
 
 const vxfw = vaxis.vxfw;
 
+/// Safe alternative to ctx.max.size() — returns default dimensions
+/// when the constraint is unbounded (null). ScrollView sends null
+/// max constraints for unbounded children.
+pub fn maxOrFallback(ctx: vxfw.DrawContext, default_width: u16, default_height: u16) vxfw.Size {
+    return .{
+        .width = ctx.max.width orelse default_width,
+        .height = ctx.max.height orelse default_height,
+    };
+}
+
 // --- Message role helpers ---
 
 pub fn messageRoleStyle(theme: *const theme_mod.Theme, role: []const u8) vaxis.Style {
@@ -53,6 +63,24 @@ pub fn messageRoleLabel(theme: *const theme_mod.Theme, role: []const u8) []const
     if (std.mem.eql(u8, role, "system")) return "System";
     if (std.mem.eql(u8, role, "tool")) return "Tool";
     return role;
+}
+
+pub fn messageRoleIcon(role: []const u8) []const u8 {
+    if (std.mem.eql(u8, role, "user")) return "◉";
+    if (std.mem.eql(u8, role, "assistant")) return "◈";
+    if (std.mem.eql(u8, role, "error")) return "✕";
+    if (std.mem.eql(u8, role, "system")) return "◉";
+    if (std.mem.eql(u8, role, "tool")) return "⚙";
+    return "●";
+}
+
+pub fn messageRoleIconStyle(theme: *const theme_mod.Theme, role: []const u8) vaxis.Style {
+    if (std.mem.eql(u8, role, "user")) return .{ .fg = theme.role_user_icon, .bold = true };
+    if (std.mem.eql(u8, role, "assistant")) return .{ .fg = theme.role_assistant_icon, .bold = true };
+    if (std.mem.eql(u8, role, "error")) return .{ .fg = theme.role_error_icon, .bold = true };
+    if (std.mem.eql(u8, role, "system")) return .{ .fg = theme.tool_pending, .bold = true };
+    if (std.mem.eql(u8, role, "tool")) return .{ .fg = theme.role_tool_icon, .bold = true };
+    return .{ .fg = theme.dimmed, .bold = true };
 }
 
 // --- Tool call helpers ---
@@ -196,6 +224,33 @@ pub fn drawBorder(surface: *vxfw.Surface, style: vaxis.Style) void {
     surface.writeCell(width - 1, 0, .{ .char = .{ .grapheme = "┐", .width = 1 }, .style = style });
     surface.writeCell(0, height - 1, .{ .char = .{ .grapheme = "└", .width = 1 }, .style = style });
     surface.writeCell(width - 1, height - 1, .{ .char = .{ .grapheme = "┘", .width = 1 }, .style = style });
+
+    if (width > 2) {
+        for (1..width - 1) |col| {
+            surface.writeCell(@intCast(col), 0, horizontal);
+            surface.writeCell(@intCast(col), height - 1, horizontal);
+        }
+    }
+    if (height > 2) {
+        for (1..height - 1) |row| {
+            surface.writeCell(0, @intCast(row), vertical);
+            surface.writeCell(width - 1, @intCast(row), vertical);
+        }
+    }
+}
+
+/// Draw a rounded border using ╭ ╮ ╰ ╯ │ ─ box-drawing characters.
+pub fn drawRoundedBorder(surface: *vxfw.Surface, style: vaxis.Style) void {
+    const width = surface.size.width;
+    const height = surface.size.height;
+    if (width < 2 or height < 2) return;
+
+    const horizontal: vaxis.Cell = .{ .char = .{ .grapheme = "─", .width = 1 }, .style = style };
+    const vertical: vaxis.Cell = .{ .char = .{ .grapheme = "│", .width = 1 }, .style = style };
+    surface.writeCell(0, 0, .{ .char = .{ .grapheme = "╭", .width = 1 }, .style = style });
+    surface.writeCell(width - 1, 0, .{ .char = .{ .grapheme = "╮", .width = 1 }, .style = style });
+    surface.writeCell(0, height - 1, .{ .char = .{ .grapheme = "╰", .width = 1 }, .style = style });
+    surface.writeCell(width - 1, height - 1, .{ .char = .{ .grapheme = "╯", .width = 1 }, .style = style });
 
     if (width > 2) {
         for (1..width - 1) |col| {

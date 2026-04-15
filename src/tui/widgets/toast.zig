@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
+const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
@@ -30,17 +31,17 @@ pub const Severity = enum {
         return switch (self) {
             .info => theme.accent,
             .success => theme.tool_success,
-            .warning => .{ .rgb = .{ 0xFF, 0xAA, 0x00 } },
+            .warning => theme.toast_warning_fg,
             .err => theme.tool_error,
         };
     }
 
-    pub fn bgColor(self: Severity) vaxis.Color {
+    pub fn bgColor(self: Severity, theme: *const theme_mod.Theme) vaxis.Color {
         return switch (self) {
-            .info => .{ .rgb = .{ 0x1a, 0x2a, 0x3a } },
-            .success => .{ .rgb = .{ 0x1a, 0x2e, 0x1a } },
-            .warning => .{ .rgb = .{ 0x2e, 0x2a, 0x1a } },
-            .err => .{ .rgb = .{ 0x2e, 0x1a, 0x1a } },
+            .info => theme.toast_info_bg,
+            .success => theme.toast_success_bg,
+            .warning => theme.toast_warning_bg,
+            .err => theme.toast_error_bg,
         };
     }
 };
@@ -177,7 +178,7 @@ pub const ToastStackWidget = struct {
             };
         }
 
-        const max = ctx.max.size();
+        const max = widget_helpers.maxOrFallback(ctx, 80, 24);
         const width = max.width;
         const toast_height: u16 = 1;
         const total_height: u16 = @intCast(vis.len * toast_height);
@@ -218,6 +219,8 @@ pub const ToastStackWidget = struct {
 
         const bar_text = try buildProgressBar(arena, filled, empty);
 
+        const bg = severity.bgColor(theme);
+
         // Build segments: [icon] [space] [message] [bar]
         var seg_count: usize = 0;
         const segs = try arena.alloc(vaxis.Segment, 4);
@@ -225,28 +228,28 @@ pub const ToastStackWidget = struct {
         // Icon
         segs[seg_count] = .{
             .text = severity.icon(),
-            .style = .{ .fg = severity.fgColor(theme), .bg = severity.bgColor(), .bold = true },
+            .style = .{ .fg = severity.fgColor(theme), .bg = bg, .bold = true },
         };
         seg_count += 1;
 
         // Space
         segs[seg_count] = .{
             .text = " ",
-            .style = .{ .bg = severity.bgColor() },
+            .style = .{ .bg = bg },
         };
         seg_count += 1;
 
         // Message
         segs[seg_count] = .{
             .text = toast.message,
-            .style = .{ .fg = .{ .index = 15 }, .bg = severity.bgColor() },
+            .style = .{ .fg = theme.toast_msg_fg, .bg = bg },
         };
         seg_count += 1;
 
         // Progress bar
         segs[seg_count] = .{
             .text = bar_text,
-            .style = .{ .fg = severity.fgColor(theme), .bg = severity.bgColor(), .dim = true },
+            .style = .{ .fg = severity.fgColor(theme), .bg = bg, .dim = true },
         };
         seg_count += 1;
 

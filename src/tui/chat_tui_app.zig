@@ -76,10 +76,23 @@ const MessageWidget = struct {
     }
 
     fn draw(self: *const MessageWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
+        // Determine if this is the streaming assistant message
+        const is_streaming_target = (self.message_index == self.model.messages.items.len - 1 and
+            self.model.assistant_stream_index != null and
+            std.mem.eql(u8, self.model.messages.items[self.message_index].role, "assistant"));
+
+        // Pass typewriter only for the actively streaming message
+        const tw: ?*widget_typewriter.TypewriterState = if (is_streaming_target and self.model.typewriter != null)
+            @constCast(&self.model.typewriter.?)
+        else
+            null;
+
         const inner = widget_messages.MessageWidget{
             .messages = self.model.messages.items,
             .message_index = self.message_index,
             .theme = self.model.current_theme,
+            .typewriter = tw,
+            .awaiting_first_token = if (is_streaming_target) self.model.awaiting_first_token else false,
         };
         return inner.draw(ctx);
     }
@@ -110,6 +123,7 @@ const SidebarWidget = widget_sidebar.SidebarWidget;
 const SidebarContext = widget_sidebar.SidebarContext;
 
 const InputWidget = widget_input.InputWidget;
+const MultiLineInputWidget = widget_input.MultiLineInputWidget;
 
 const Command = widget_palette.Command;
 const palette_command_data = widget_palette.palette_command_data;
@@ -121,6 +135,23 @@ const CommandPaletteWidget = widget_palette.CommandPaletteWidget;
 const collectFilteredCommandIndices = widget_palette.collectFilteredCommandIndices;
 const commandDescriptionGap = widget_palette.commandDescriptionGap;
 const formatSessionTimestamp = widget_palette.formatSessionTimestamp;
+
+/// Slash command names used for autocomplete suggestions in the input field.
+const slash_command_names = [_][]const u8{
+    "/clear",
+    "/sessions",
+    "/ls",
+    "/exit",
+    "/model",
+    "/thinking",
+    "/compact",
+    "/theme dark",
+    "/theme light",
+    "/theme mono",
+    "/workers",
+    "/kill",
+    "/help",
+};
 
 const PermissionContext = widget_permission.PermissionContext;
 const PermissionDialogWidget = widget_permission.PermissionDialogWidget;
@@ -153,7 +184,7 @@ pub const Model = struct {
     client: ?core.AIClient,
     messages: std.ArrayList(Message),
     history: std.ArrayList(core.ChatMessage),
-    input: vxfw.TextField,
+    input: widget_input.MultiLineInputState,
     show_palette: bool,
     palette_input: vxfw.TextField,
     palette_commands: []const Command,
@@ -200,6 +231,9 @@ pub const Model = struct {
     resume_prompt_session: ?session_mod.Session,
     resume_prompt_path: ?[]const u8,
     sidebar_visible: bool = false,
+    scroll_mode: bool = false,
+    auto_scroll: bool = true,
+    selected_message_index: ?usize = null,
     workers: std.ArrayList(WorkerItem),
     next_worker_id: u32 = 0,
     spinner: ?widget_spinner.AnimatedSpinner = null,
@@ -252,7 +286,7 @@ pub const Model = struct {
             .client = null,
             .messages = std.ArrayList(Message).empty,
             .history = std.ArrayList(core.ChatMessage).empty,
-            .input = vxfw.TextField.init(allocator),
+            .input = widget_input.MultiLineInputState.init(allocator),
             .show_palette = false,
             .palette_input = vxfw.TextField.init(allocator),
             .palette_commands = &palette_command_data,
@@ -321,6 +355,8 @@ pub const Model = struct {
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
+        model.input.prompt = "❯ ";
+        model.input.suggestion_list = &slash_command_names;
         model.palette_input.userdata = model;
         model.palette_input.onChange = onPaletteChange;
         model.palette_input.onSubmit = onPaletteSubmit;
@@ -360,15 +396,6 @@ pub const Model = struct {
         }
         self.input.deinit();
         self.palette_input.deinit();
-        self.clearPaletteFilter();
-        for (self.recent_files.items) |file| self.allocator.free(file);
-        self.recent_files.deinit(self.allocator);
-        self.fallback_chain.deinit();
-        for (self.fallback_providers.items) |provider| self.freeFallbackProvider(provider);
-        self.fallback_providers.deinit(self.allocator);
-        if (self.pending_permission) |pending| self.freePendingPermission(pending);
-        for (self.always_allow_tools.items) |tool_name| self.allocator.free(tool_name);
-        self.always_allow_tools.deinit(self.allocator);
         for (self.messages.items) |message| {
             freeDisplayMessage(self.allocator, message);
         }
@@ -947,6 +974,7 @@ pub const Model = struct {
 
     fn applyThemeStyles(self: *Model) void {
         self.input.style = .{ .fg = self.current_theme.header_fg };
+        self.input.prompt = "❯ ";
         self.palette_input.style = .{ .fg = self.current_theme.header_fg };
         self.scroll_bars = .{
             .scroll_view = self.scroll_view,
@@ -1125,6 +1153,109 @@ pub const Model = struct {
                     return;
                 }
 
+                // Scroll mode: Ctrl+N toggles scroll mode for message navigation
+                if (key.matches('n', .{ .ctrl = true })) {
+                    if (self.setup_phase == 0 and !self.show_palette) {
+                        self.scroll_mode = !self.scroll_mode;
+                        if (self.scroll_mode) {
+                            self.auto_scroll = false;
+                        }
+                    }
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
+                // Escape exits scroll mode (when not in palette/session list)
+                if (self.scroll_mode and key.matches(vaxis.Key.escape, .{})) {
+                    self.scroll_mode = false;
+                    self.auto_scroll = true;
+                    self.selected_message_index = null;
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
+                // Scroll mode navigation keys
+                if (self.scroll_mode and self.setup_phase == 0 and !self.show_palette) {
+                    const viewport_height = @max(self.scroll_view.last_height, 1);
+                    const half_page = @max(viewport_height / 2, 1);
+
+                    // j / Down — scroll down one line
+                    if (key.matches('j', .{}) or key.matches(vaxis.Key.down, .{})) {
+                        _ = self.scroll_view.scroll.linesDown(1);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // k / Up — scroll up one line
+                    if (key.matches('k', .{}) or key.matches(vaxis.Key.up, .{})) {
+                        _ = self.scroll_view.scroll.linesUp(1);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // Ctrl+D / PgDn — scroll down half page
+                    if (key.matches('d', .{ .ctrl = true }) or key.matches(vaxis.Key.page_down, .{})) {
+                        _ = self.scroll_view.scroll.linesDown(half_page);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // Ctrl+U / PgUp — scroll up half page
+                    if (key.matches('u', .{ .ctrl = true }) or key.matches(vaxis.Key.page_up, .{})) {
+                        _ = self.scroll_view.scroll.linesUp(half_page);
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // G (shift+g) — scroll to bottom, exit scroll mode
+                    if (key.matches('G', .{})) {
+                        const count = self.scroll_view.item_count orelse 0;
+                        if (count > 0) {
+                            self.scroll_view.cursor = count - 1;
+                            self.scroll_view.ensureScroll();
+                        }
+                        self.scroll_mode = false;
+                        self.auto_scroll = true;
+                        self.selected_message_index = null;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // g — scroll to top
+                    if (key.matches('g', .{})) {
+                        self.scroll_view.cursor = 0;
+                        self.scroll_view.scroll.top = 0;
+                        self.scroll_view.scroll.vertical_offset = 0;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // q — exit scroll mode
+                    if (key.matches('q', .{})) {
+                        self.scroll_mode = false;
+                        self.auto_scroll = true;
+                        self.selected_message_index = null;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                    // Enter — select/deselect message under cursor
+                    if (key.matches(vaxis.Key.enter, .{})) {
+                        try self.selectMessageAtCursor(ctx);
+                        return;
+                    }
+                    // y — yank (copy with role label) to clipboard
+                    if (key.matches('y', .{})) {
+                        try self.copySelectedMessage(ctx, false);
+                        return;
+                    }
+                    // c — copy content only to clipboard
+                    if (key.matches('c', .{})) {
+                        try self.copySelectedMessage(ctx, true);
+                        return;
+                    }
+                    // e — edit: copy message to input field
+                    if (key.matches('e', .{})) {
+                        try self.editSelectedMessage(ctx);
+                        return;
+                    }
+                }
+
                 if (self.setup_phase == 1) {
                     if (key.matches(vaxis.Key.up, .{})) {
                         self.moveSetupProviderSelection(-1);
@@ -1175,6 +1306,10 @@ pub const Model = struct {
         if (self.typewriter) |*tw| {
             tw.tick();
         }
+        // Clean up typewriter once animation finishes after streaming ends
+        if (self.typewriter != null and self.request_done and self.typewriter.?.complete) {
+            self.typewriter = null;
+        }
 
         self.lock.lock();
         defer self.lock.unlock();
@@ -1182,12 +1317,16 @@ pub const Model = struct {
         const max = ctx.max.size();
         const sidebar_width: u16 = 30;
         const main_width: u16 = if (self.sidebar_visible) max.width -| sidebar_width else max.width;
-        const header_height: u16 = 2;
-        const files_height: u16 = if (self.recent_files.items.len > 0) 1 else 0;
+        const header_height: u16 = 1;
         const status_height: u16 = 1;
-        const input_height: u16 = 1;
-        const gradient_height: u16 = 1;
-        const body_height = max.height -| (header_height + gradient_height + files_height + status_height + input_height);
+        // Dynamic input height: compute based on content and available width
+        const input_prompt_width: u16 = 4; // "❯ " display width
+        const input_text_width: u16 = max.width -| input_prompt_width;
+        const input_height: u16 = self.input.currentDisplayRows(input_text_width);
+        const body_height = max.height -| (header_height + status_height + input_height);
+        // Ensure body has at least 1 row — otherwise child widgets will
+        // receive a zero-height constraint and assert in ctx.max.size()
+        const safe_body_height: u16 = if (body_height > 0) body_height else 1;
 
         const full_title = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
@@ -1207,13 +1346,6 @@ pub const Model = struct {
             .{ .width = main_width, .height = header_height },
         ));
 
-        // Draw gradient branding "Crushcode" below header
-        const gradient_title = widget_gradient.GradientText.init("Crushcode", .crushcode, true);
-        const gradient_surface = try gradient_title.draw(ctx.withConstraints(
-            .{ .width = main_width, .height = 1 },
-            .{ .width = main_width, .height = 1 },
-        ));
-
         const body_surface = blk: {
             if (self.setup_phase != 0) {
                 const setup_context = SetupContext{
@@ -1227,8 +1359,8 @@ pub const Model = struct {
                 };
                 const wizard = SetupWizardWidget{ .context = &setup_context };
                 break :blk try wizard.draw(ctx.withConstraints(
-                    .{ .width = main_width, .height = body_height },
-                    .{ .width = main_width, .height = body_height },
+                    .{ .width = main_width, .height = safe_body_height },
+                    .{ .width = main_width, .height = safe_body_height },
                 ));
             } else {
                 var message_widgets = std.ArrayList(vxfw.Widget).empty;
@@ -1239,22 +1371,29 @@ pub const Model = struct {
                     if (message.tool_call_id != null and findToolCallBefore(self.messages.items, idx, message.tool_call_id.?) != null) {
                         continue;
                     }
-                    const message_widget = MessageWidget{ .model = self, .message_index = idx };
-                    try message_widgets.append(ctx.arena, message_widget.widget());
+                    // Heap-allocate to avoid dangling stack pointers — .widget() captures
+                    // the address via @constCast, so locals would be overwritten each iteration.
+                    const mw = try ctx.arena.create(MessageWidget);
+                    mw.* = .{ .model = self, .message_index = idx };
+                    try message_widgets.append(ctx.arena, mw.widget());
                     visible_count += 1;
                     if (visible_count < visibleMessageCount(self.messages.items)) {
-                        const gap = MessageGapWidget{};
+                        const gap = try ctx.arena.create(MessageGapWidget);
+                        gap.* = .{};
                         try message_widgets.append(ctx.arena, gap.widget());
-                        const separator = SeparatorWidget{ .theme = self.current_theme };
-                        try message_widgets.append(ctx.arena, separator.widget());
+                        const sep = try ctx.arena.create(SeparatorWidget);
+                        sep.* = .{ .theme = self.current_theme };
+                        try message_widgets.append(ctx.arena, sep.widget());
                     }
                 }
 
                 self.scroll_view.children = .{ .slice = message_widgets.items };
-                if (message_widgets.items.len > 0) {
+                if (self.auto_scroll and message_widgets.items.len > 0) {
                     self.scroll_view.item_count = @intCast(message_widgets.items.len);
                     self.scroll_view.cursor = @intCast(message_widgets.items.len - 1);
                     self.scroll_view.ensureScroll();
+                } else if (message_widgets.items.len > 0) {
+                    self.scroll_view.item_count = @intCast(message_widgets.items.len);
                 } else {
                     self.scroll_view.item_count = 0;
                     self.scroll_view.cursor = 0;
@@ -1263,21 +1402,28 @@ pub const Model = struct {
                 self.scroll_bars.estimated_content_height = estimateContentHeight(self);
 
                 const surface = try self.scroll_bars.draw(ctx.withConstraints(
-                    .{ .width = main_width, .height = body_height },
-                    .{ .width = main_width, .height = body_height },
+                    .{ .width = main_width, .height = safe_body_height },
+                    .{ .width = main_width, .height = safe_body_height },
                 ));
                 self.scroll_view = self.scroll_bars.scroll_view;
                 break :blk surface;
             }
         };
 
+        const scroll_indicator = if (self.scroll_mode) blk: {
+            if (self.selected_message_index) |msg_idx| {
+                break :blk std.fmt.allocPrint(ctx.arena, " │ SELECTED msg #{d} (y/c/e)", .{msg_idx + 1}) catch " │ SELECTED";
+            } else {
+                break :blk " │ SCROLL (j/k/↑↓ PgUp/PgDn g/G Enter q/Esc)";
+            }
+        } else "";
         const status_text = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Setup {d}/4 | {s}", .{
                 @min(self.setup_phase, @as(u8, 4)),
                 if (self.setup_phase == 1) "Choose a provider" else if (self.setup_phase == 2) "Enter your API key" else if (self.setup_phase == 3) "Choose a default model" else "Press Enter to continue",
             })
         else if (self.status_message.len > 0)
-            try std.fmt.allocPrint(ctx.arena, "{s} | Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
+            try std.fmt.allocPrint(ctx.arena, "{s} | Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}", .{
                 self.status_message,
                 self.total_input_tokens,
                 self.total_output_tokens,
@@ -1285,29 +1431,31 @@ pub const Model = struct {
                 self.request_count,
                 self.sessionMinutes(),
                 self.sessionSecondsPart(),
+                scroll_indicator,
             })
         else
-            try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s", .{
+            try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}", .{
                 self.total_input_tokens,
                 self.total_output_tokens,
                 self.estimatedCostUsd(),
                 self.request_count,
                 self.sessionMinutes(),
                 self.sessionSecondsPart(),
+                scroll_indicator,
             });
         const status_widget = vxfw.Text{
             .text = status_text,
-            .style = .{ .fg = self.current_theme.status_fg, .bg = self.current_theme.status_bg, .dim = true },
+            .style = .{ .fg = self.current_theme.status_fg, .bg = self.current_theme.status_bg },
             .softwrap = false,
             .width_basis = .parent,
         };
         const status_surface = try status_widget.draw(ctx.withConstraints(
-            .{ .width = max.width, .height = status_height },
-            .{ .width = max.width, .height = status_height },
+            .{ .width = main_width, .height = status_height },
+            .{ .width = main_width, .height = status_height },
         ));
 
-        const input_widget = InputWidget{ .prompt = self.currentInputPrompt(), .field = &self.input, .theme = self.current_theme };
-        const input_surface = try input_widget.draw(ctx.withConstraints(
+        const ml_input_widget = MultiLineInputWidget{ .prompt = self.currentInputPrompt(), .state = &self.input, .theme = self.current_theme };
+        const input_surface = try ml_input_widget.draw(ctx.withConstraints(
             .{ .width = max.width, .height = input_height },
             .{ .width = max.width, .height = input_height },
         ));
@@ -1315,10 +1463,11 @@ pub const Model = struct {
         var child_list = std.ArrayList(vxfw.SubSurface).empty;
         defer child_list.deinit(ctx.arena);
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = gradient_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + 1), .col = 0 }, .surface = body_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height), .col = 0 }, .surface = status_surface });
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height + status_height), .col = 0 }, .surface = input_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height), .col = 0 }, .surface = body_surface });
+        // Input first (above status bar)
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height), .col = 0 }, .surface = input_surface });
+        // Status bar at the very bottom
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height + input_height), .col = 0 }, .surface = status_surface });
 
         if (self.sidebar_visible) {
             const sidebar_context = SidebarContext{
@@ -1334,7 +1483,7 @@ pub const Model = struct {
                 .current_theme = self.current_theme,
             };
             const sidebar = SidebarWidget{ .context = &sidebar_context, .width = sidebar_width };
-            const sidebar_height: u16 = header_height + body_height;
+            const sidebar_height: u16 = header_height + safe_body_height;
             const sidebar_surface = try sidebar.draw(ctx.withConstraints(
                 .{ .width = sidebar_width, .height = sidebar_height },
                 .{ .width = sidebar_width, .height = sidebar_height },
@@ -1423,7 +1572,7 @@ pub const Model = struct {
                 .{ .width = main_width, .height = 1 },
                 .{ .width = main_width, .height = 1 },
             ));
-            try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height), .col = 0 }, .surface = files_surface });
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height), .col = 0 }, .surface = files_surface });
         }
 
         // Render toast notifications
@@ -1452,8 +1601,85 @@ pub const Model = struct {
         };
     }
 
+    /// Map the scroll_view cursor position to the actual message index in
+    /// self.messages. The scroll children list interleaves MessageWidget,
+    /// MessageGapWidget, SeparatorWidget — only every 3rd slot (at indices
+    /// 0, 3, 6, …) is a MessageWidget. The last visible message has no
+    /// trailing gap/sep. Returns null if cursor is not on a MessageWidget or
+    /// the index is out of range.
+    fn scrollCursorToMessageIndex(self: *const Model) ?usize {
+        const cursor = self.scroll_view.cursor;
+        // Only cursor positions divisible by 3 point at a MessageWidget
+        if (cursor % 3 != 0) return null;
+        const visible_idx = cursor / 3;
+
+        const messages = self.messages.items;
+        var count: usize = 0;
+        for (messages, 0..) |message, idx| {
+            if (message.tool_call_id != null and findToolCallBefore(messages, idx, message.tool_call_id.?) != null) continue;
+            if (count == visible_idx) return idx;
+            count += 1;
+        }
+        return null;
+    }
+
+    /// Select the message currently under the scroll cursor.
+    fn selectMessageAtCursor(self: *Model, ctx: *vxfw.EventContext) !void {
+        if (self.scrollCursorToMessageIndex()) |msg_idx| {
+            if (self.selected_message_index) |prev| {
+                if (prev == msg_idx) {
+                    // Toggle off if already selected
+                    self.selected_message_index = null;
+                    ctx.consumeAndRedraw();
+                    return;
+                }
+            }
+            self.selected_message_index = msg_idx;
+        }
+        ctx.consumeAndRedraw();
+    }
+
+    /// Copy selected message content to system clipboard.
+    fn copySelectedMessage(self: *Model, ctx: *vxfw.EventContext, content_only: bool) !void {
+        const msg_idx = self.selected_message_index orelse return;
+        if (msg_idx >= self.messages.items.len) return;
+
+        const message = self.messages.items[msg_idx];
+        const text = if (content_only)
+            message.content
+        else
+            try std.fmt.allocPrint(self.allocator, "[{s}]\n{s}", .{ message.role, message.content });
+
+        try ctx.copyToClipboard(text);
+        if (!content_only) self.allocator.free(text);
+
+        self.toast_stack.push("Copied to clipboard", .success) catch {};
+        ctx.consumeAndRedraw();
+    }
+
+    /// Copy selected message content into the input field for re-editing.
+    fn editSelectedMessage(self: *Model, ctx: *vxfw.EventContext) !void {
+        const msg_idx = self.selected_message_index orelse return;
+        if (msg_idx >= self.messages.items.len) return;
+
+        const content = self.messages.items[msg_idx].content;
+        try self.input.insertSliceAtCursor(content);
+
+        // Exit scroll mode and focus the input
+        self.scroll_mode = false;
+        self.auto_scroll = true;
+        self.selected_message_index = null;
+        self.toast_stack.push("Message copied to input", .info) catch {};
+        try ctx.requestFocus(self.input.widget());
+        ctx.consumeAndRedraw();
+    }
+
     fn handleSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
         self.reapWorkerIfDone();
+
+        // Reset scroll state on any user input submission
+        self.scroll_mode = false;
+        self.auto_scroll = true;
 
         if (self.setup_phase != 0) {
             try self.handleSetupSubmit(value, ctx);
@@ -1510,10 +1736,12 @@ pub const Model = struct {
 
     fn resetInputField(self: *Model) void {
         self.input.deinit();
-        self.input = vxfw.TextField.init(self.allocator);
+        self.input = widget_input.MultiLineInputState.init(self.allocator);
         self.input.style = .{ .fg = self.current_theme.header_fg };
         self.input.userdata = self;
         self.input.onSubmit = onSubmit;
+        self.input.prompt = "❯ ";
+        self.input.suggestion_list = &slash_command_names;
     }
 
     fn currentInputPrompt(self: *const Model) []const u8 {
@@ -2122,7 +2350,7 @@ pub const Model = struct {
         self.request_active = false;
         self.request_done = true;
         self.spinner = null;
-        self.typewriter = null;
+        // Keep typewriter alive so animation can finish naturally
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
@@ -2162,7 +2390,10 @@ pub const Model = struct {
         self.request_active = false;
         self.request_done = true;
         self.spinner = null;
-        self.typewriter = null;
+        // Reveal typewriter immediately on error so the error text is fully visible
+        if (self.typewriter) |*tw| {
+            tw.revealAll();
+        }
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
@@ -2184,10 +2415,15 @@ pub const Model = struct {
         if (self.awaiting_first_token) {
             self.replaceMessageUnlocked(index, "assistant", token, null, null) catch {};
             self.awaiting_first_token = false;
-            return;
+        } else {
+            self.appendToMessageUnlocked(index, token) catch {};
         }
 
-        self.appendToMessageUnlocked(index, token) catch {};
+        // Feed updated text to typewriter for progressive reveal
+        if (self.typewriter) |*tw| {
+            const msg = &self.messages.items[index];
+            tw.updateText(msg.content);
+        }
     }
 
     fn estimatedCostUsd(self: *const Model) f64 {
@@ -2230,9 +2466,30 @@ fn onPaletteChange(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []cons
 }
 
 fn onPaletteSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []const u8) anyerror!void {
-    _ = value;
     const ptr = userdata orelse return;
     const model: *Model = @ptrCast(@alignCast(ptr));
+
+    // If user typed text and pressed Enter, check if it matches any command exactly
+    if (value.len > 0) {
+        var filtered_indices: [widget_palette.palette_command_data.len]usize = undefined;
+        const filtered_count = widget_palette.collectFilteredCommandIndices(model.palette_commands, value, filtered_indices[0..]);
+
+        // If there's exactly one match and it's an exact name match, execute it
+        if (filtered_count == 1) {
+            const command = model.palette_commands[filtered_indices[0]];
+            if (std.mem.eql(u8, command.name, value)) {
+                try model.closePalette(ctx);
+                try model.executePaletteCommand(command.name, ctx);
+                return;
+            }
+        }
+
+        // If it's not an exact match, treat it as filter text and don't execute
+        // User can continue typing or use arrow keys to select
+        return;
+    }
+
+    // If no text was typed (user navigated with arrows and pressed Enter), execute selection
     try model.executePaletteSelection(ctx);
 }
 
