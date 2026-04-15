@@ -95,7 +95,7 @@ pub const Bridge = struct {
         _ = configs;
     }
 
-    pub fn executeTool(self: *Bridge, full_name: []const u8, arguments: []const u8) BridgeError![]const u8 {
+    pub fn executeTool(self: *Bridge, full_name: []const u8, arguments: []const u8) (BridgeError || error{OutOfMemory})![]const u8 {
         _ = arguments;
         const server_idx = self.tool_index.get(full_name) orelse return BridgeError.ToolNotFound;
         if (server_idx >= self.servers.items.len) return BridgeError.ServerNotFound;

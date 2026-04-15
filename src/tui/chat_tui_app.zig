@@ -29,6 +29,10 @@ const widget_spinner = @import("widget_spinner");
 const widget_gradient = @import("widget_gradient");
 const widget_toast = @import("widget_toast");
 const widget_typewriter = @import("widget_typewriter");
+const tool_executors = @import("chat_tool_executors");
+const mcp_bridge_mod = @import("mcp_bridge");
+const mcp_client_mod = @import("mcp_client");
+const array_list_compat = @import("array_list_compat");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -240,6 +244,7 @@ pub const Model = struct {
     spinner: ?widget_spinner.AnimatedSpinner = null,
     toast_stack: widget_toast.ToastStack,
     typewriter: ?widget_typewriter.TypewriterState = null,
+    mcp_bridge: ?*mcp_bridge_mod.Bridge = null,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -353,6 +358,31 @@ pub const Model = struct {
         model.spinner = null;
         model.toast_stack = widget_toast.ToastStack.init(allocator, model.current_theme);
         model.typewriter = null;
+
+        // Initialize MCP bridge (non-fatal if it fails)
+        {
+            var mcp_client = allocator.create(mcp_client_mod.MCPClient) catch null;
+            if (mcp_client) |mc| {
+                mc.* = mcp_client_mod.MCPClient.init(allocator);
+                var bridge = allocator.create(mcp_bridge_mod.Bridge) catch null;
+                if (bridge) |b| {
+                    b.* = mcp_bridge_mod.Bridge.init(allocator, mc) catch {
+                        allocator.destroy(b);
+                        allocator.destroy(mc);
+                        bridge = null;
+                        mcp_client = null;
+                    };
+                    if (bridge != null) {
+                        model.mcp_bridge = bridge;
+                    }
+                } else {
+                    allocator.destroy(mc);
+                }
+            }
+            if (model.mcp_bridge == null) {
+                std.log.warn("MCP bridge initialization skipped (non-fatal)", .{});
+            }
+        }
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -424,6 +454,10 @@ pub const Model = struct {
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
         self.allocator.free(self.api_key);
+        if (self.mcp_bridge) |bridge| {
+            bridge.deinit();
+            self.allocator.destroy(bridge);
+        }
         self.app.deinit();
         self.allocator.destroy(self.app);
         self.allocator.destroy(self);
@@ -864,8 +898,10 @@ pub const Model = struct {
             "You are a helpful AI coding assistant with access to the user's codebase.";
 
         if (self.codebase_context) |compressed_context| {
-            self.effective_system_prompt = try std.fmt.allocPrint(
-                self.allocator,
+            var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+            defer buf.deinit();
+            const w = buf.writer();
+            w.print(
                 \\{s}
                 \\
                 \\## Codebase Context
@@ -880,8 +916,56 @@ pub const Model = struct {
                 \\- edit(file_path, old_string, new_string)
             ,
                 .{ base_prompt, compressed_context },
-            );
+            ) catch {};
+            if (self.mcp_bridge) |bridge| {
+                const stats = bridge.getStats();
+                if (stats.tools > 0) {
+                    const schemas = bridge.getToolSchemas(self.allocator) catch null;
+                    if (schemas) |tool_schemas| {
+                        defer {
+                            for (tool_schemas) |s| {
+                                self.allocator.free(s.name);
+                                self.allocator.free(s.description);
+                                self.allocator.free(s.parameters);
+                            }
+                            self.allocator.free(tool_schemas);
+                        }
+                        w.print("\n\n## MCP Tools ({d} available)\n", .{tool_schemas.len}) catch {};
+                        for (tool_schemas) |schema| {
+                            w.print("- {s}\n", .{schema.description}) catch {};
+                        }
+                    }
+                }
+            }
+            self.effective_system_prompt = try buf.toOwnedSlice();
             return;
+        }
+
+        // No codebase context — just base prompt + MCP tools if available
+        if (self.mcp_bridge) |bridge| {
+            const stats = bridge.getStats();
+            if (stats.tools > 0) {
+                var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                const w = buf.writer();
+                w.print("{s}\n\n## MCP Tools ({d} available)\n", .{ base_prompt, stats.tools }) catch {};
+                const schemas = bridge.getToolSchemas(self.allocator) catch null;
+                if (schemas) |tool_schemas| {
+                    defer {
+                        for (tool_schemas) |s| {
+                            self.allocator.free(s.name);
+                            self.allocator.free(s.description);
+                            self.allocator.free(s.parameters);
+                        }
+                        self.allocator.free(tool_schemas);
+                    }
+                    for (tool_schemas) |schema| {
+                        w.print("- {s}\n", .{schema.description}) catch {};
+                    }
+                }
+                self.effective_system_prompt = try buf.toOwnedSlice();
+                return;
+            }
         }
 
         self.effective_system_prompt = try self.allocator.dupe(u8, base_prompt);
@@ -1491,6 +1575,7 @@ pub const Model = struct {
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height + input_height), .col = 0 }, .surface = status_surface });
 
         if (self.sidebar_visible) {
+            const mcp_status = self.getMCPServerStatus(ctx.arena);
             const sidebar_context = SidebarContext{
                 .recent_files = self.recent_files.items,
                 .request_count = self.request_count,
@@ -1502,6 +1587,7 @@ pub const Model = struct {
                 .workers = self.workers.items,
                 .theme_name = self.current_theme.name,
                 .current_theme = self.current_theme,
+                .mcp_servers = mcp_status,
             };
             const sidebar = SidebarWidget{ .context = &sidebar_context, .width = sidebar_width };
             const sidebar_height: u16 = header_height + safe_body_height;
@@ -2390,9 +2476,23 @@ pub const Model = struct {
             const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments);
             const result_text = if (!allowed)
                 try self.allocator.dupe(u8, "error: tool execution denied by user")
-            else
-                executeInlineTool(self.allocator, tool_call) catch |err|
-                    try std.fmt.allocPrint(self.allocator, "error: {s}", .{@errorName(err)});
+            else blk: {
+                // Try builtin first
+                if (executeInlineTool(self.allocator, tool_call)) |result|
+                    break :blk result
+                else |err| {
+                    // If unsupported, try MCP bridge
+                    if (err == error.UnsupportedTool) {
+                        if (self.mcp_bridge) |bridge| {
+                            if (bridge.executeTool(tool_call.name, tool_call.arguments)) |mcp_result|
+                                break :blk try self.allocator.dupe(u8, mcp_result)
+                            else |_|
+                                break :blk try std.fmt.allocPrint(self.allocator, "error: unsupported tool '{s}'", .{tool_call.name});
+                        }
+                    }
+                    break :blk try std.fmt.allocPrint(self.allocator, "error: {s}", .{@errorName(err)});
+                }
+            };
             defer self.allocator.free(result_text);
 
             self.lock.lock();
@@ -2519,6 +2619,19 @@ pub const Model = struct {
         const total_tokens = self.total_input_tokens + self.total_output_tokens;
         const percent = @min((total_tokens * 100) / 128_000, 100);
         return @intCast(percent);
+    }
+
+    fn getMCPServerStatus(self: *const Model, allocator: std.mem.Allocator) []const widget_sidebar.MCPServerStatus {
+        const bridge = self.mcp_bridge orelse return &.{};
+        var statuses = std.ArrayList(widget_sidebar.MCPServerStatus).initCapacity(allocator, bridge.servers.items.len) catch return &.{};
+        for (bridge.servers.items) |server| {
+            statuses.append(allocator, .{
+                .name = server.name,
+                .connected = server.connected,
+                .tool_count = @intCast(server.tools.len),
+            }) catch break;
+        }
+        return statuses.toOwnedSlice(allocator) catch return &.{};
     }
 
     fn sessionElapsedSeconds(self: *const Model) u64 {
@@ -2896,195 +3009,14 @@ fn isRetryableProviderError(err: anyerror) bool {
 }
 
 fn executeInlineTool(allocator: std.mem.Allocator, tool_call: core.client.ToolCallInfo) ![]const u8 {
-    if (std.mem.eql(u8, tool_call.name, "read_file")) return executeReadFileToolInline(allocator, tool_call.arguments);
-    if (std.mem.eql(u8, tool_call.name, "shell")) return executeShellToolInline(allocator, tool_call.arguments);
-    if (std.mem.eql(u8, tool_call.name, "write_file")) return executeWriteFileToolInline(allocator, tool_call.arguments);
-    if (std.mem.eql(u8, tool_call.name, "glob")) return executeGlobToolInline(allocator, tool_call.arguments);
-    if (std.mem.eql(u8, tool_call.name, "grep")) return executeGrepToolInline(allocator, tool_call.arguments);
-    if (std.mem.eql(u8, tool_call.name, "edit")) return executeEditToolInline(allocator, tool_call.arguments);
-    return std.fmt.allocPrint(allocator, "error: unsupported tool '{s}'", .{tool_call.name});
-}
-
-fn executeReadFileToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct { path: []const u8 };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const content = try std.fs.cwd().readFileAlloc(allocator, parsed.value.path, 1024 * 1024);
-    defer allocator.free(content);
-    return std.fmt.allocPrint(allocator, "=== {s} ===\n{s}", .{ parsed.value.path, content });
-}
-
-fn executeShellToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct { command: []const u8 };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const result = try std.process.Child.run(.{
-        .allocator = allocator,
-        .argv = &.{ "sh", "-c", parsed.value.command },
-        .max_output_bytes = 1024 * 1024,
-    });
-    defer allocator.free(result.stdout);
-    defer allocator.free(result.stderr);
-
-    const exit_code: i32 = switch (result.term) {
-        .Exited => |code| code,
-        .Signal => |signal| @as(i32, @intCast(signal)),
-        else => 1,
+    const parsed = core.ParsedToolCall{
+        .id = tool_call.id,
+        .name = tool_call.name,
+        .arguments = tool_call.arguments,
     };
-    return std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, result.stdout, result.stderr });
-}
-
-fn executeWriteFileToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct { path: []const u8, content: []const u8 };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const file = try std.fs.cwd().createFile(parsed.value.path, .{});
-    defer file.close();
-    try file.writeAll(parsed.value.content);
-    return std.fmt.allocPrint(allocator, "wrote {d} bytes to {s}", .{ parsed.value.content.len, parsed.value.path });
-}
-
-fn executeGlobToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct { pattern: []const u8, max_results: ?usize = 50 };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    var dir = try std.fs.cwd().openDir(".", .{ .iterate = true });
-    defer dir.close();
-    var walker = try dir.walk(allocator);
-    defer walker.deinit();
-
-    var buffer = std.ArrayList(u8).empty;
-    var count: usize = 0;
-    const max_results = parsed.value.max_results orelse 50;
-    while (try walker.next()) |entry| {
-        if (entry.kind != .file) continue;
-        if (!globMatch(parsed.value.pattern, entry.path)) continue;
-        if (count > 0) try buffer.append(allocator, '\n');
-        try buffer.appendSlice(allocator, entry.path);
-        count += 1;
-        if (count >= max_results) break;
-    }
-    return std.fmt.allocPrint(allocator, "Found {d} files matching '{s}':\n{s}", .{ count, parsed.value.pattern, buffer.items });
-}
-
-fn executeGrepToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct {
-        pattern: []const u8,
-        path: ?[]const u8 = null,
-        include: ?[]const u8 = null,
-        max_results: ?usize = 50,
-    };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const search_path = parsed.value.path orelse ".";
-    const max_results = parsed.value.max_results orelse 50;
-    var matches = std.ArrayList(u8).empty;
-    var match_count: usize = 0;
-
-    const stat = std.fs.cwd().statFile(search_path) catch null;
-    if (stat != null) {
-        try appendGrepMatchesForFile(allocator, &matches, search_path, parsed.value.pattern, &match_count, max_results);
-    } else {
-        var dir = try std.fs.cwd().openDir(search_path, .{ .iterate = true });
-        defer dir.close();
-        var walker = try dir.walk(allocator);
-        defer walker.deinit();
-
-        while (try walker.next()) |entry| {
-            if (entry.kind != .file) continue;
-            if (parsed.value.include) |include_pattern| {
-                if (!globMatch(include_pattern, entry.path)) continue;
-            }
-            const full_path = if (std.mem.eql(u8, search_path, "."))
-                try allocator.dupe(u8, entry.path)
-            else
-                try std.fs.path.join(allocator, &.{ search_path, entry.path });
-            defer allocator.free(full_path);
-            try appendGrepMatchesForFile(allocator, &matches, full_path, parsed.value.pattern, &match_count, max_results);
-            if (match_count >= max_results) break;
-        }
-    }
-
-    return std.fmt.allocPrint(allocator, "Found {d} matches for '{s}':\n{s}", .{ match_count, parsed.value.pattern, matches.items });
-}
-
-fn appendGrepMatchesForFile(
-    allocator: std.mem.Allocator,
-    matches: *std.ArrayList(u8),
-    file_path: []const u8,
-    pattern: []const u8,
-    match_count: *usize,
-    max_results: usize,
-) !void {
-    const content = std.fs.cwd().readFileAlloc(allocator, file_path, 512 * 1024) catch return;
-    defer allocator.free(content);
-
-    var lines = std.mem.splitScalar(u8, content, '\n');
-    var line_no: usize = 1;
-    while (lines.next()) |line| : (line_no += 1) {
-        if (std.mem.indexOf(u8, line, pattern) == null) continue;
-        if (matches.items.len > 0) try matches.append(allocator, '\n');
-        try matches.writer(allocator).print("{s}:{d}: {s}", .{ file_path, line_no, line });
-        match_count.* += 1;
-        if (match_count.* >= max_results) return;
-    }
-}
-
-fn executeEditToolInline(allocator: std.mem.Allocator, arguments: []const u8) ![]const u8 {
-    const Args = struct {
-        file_path: []const u8,
-        old_string: []const u8,
-        new_string: []const u8,
-    };
-    var parsed = try std.json.parseFromSlice(Args, allocator, arguments, .{ .ignore_unknown_fields = true });
-    defer parsed.deinit();
-
-    const content = try std.fs.cwd().readFileAlloc(allocator, parsed.value.file_path, 1024 * 1024);
-    defer allocator.free(content);
-
-    const match_index = std.mem.indexOf(u8, content, parsed.value.old_string) orelse return error.OldStringNotFound;
-    const after_match = match_index + parsed.value.old_string.len;
-    if (std.mem.indexOf(u8, content[after_match..], parsed.value.old_string) != null) return error.MultipleMatches;
-
-    var updated = std.ArrayList(u8).empty;
-    try updated.appendSlice(allocator, content[0..match_index]);
-    try updated.appendSlice(allocator, parsed.value.new_string);
-    try updated.appendSlice(allocator, content[after_match..]);
-
-    const file = try std.fs.cwd().createFile(parsed.value.file_path, .{});
-    defer file.close();
-    try file.writeAll(updated.items);
-
-    return std.fmt.allocPrint(allocator, "edited {s}: {d} lines → {d} lines", .{
-        parsed.value.file_path,
-        countLines(content),
-        countLines(updated.items),
-    });
-}
-
-fn globMatch(pattern: []const u8, value: []const u8) bool {
-    if (pattern.len == 0) return value.len == 0;
-    if (pattern[0] == '*') {
-        if (globMatch(pattern[1..], value)) return true;
-        if (value.len == 0) return false;
-        return globMatch(pattern, value[1..]);
-    }
-    if (value.len == 0) return false;
-    if (pattern[0] == '?') return globMatch(pattern[1..], value[1..]);
-    if (pattern[0] != value[0]) return false;
-    return globMatch(pattern[1..], value[1..]);
-}
-
-fn countLines(text: []const u8) u32 {
-    var count: u32 = 0;
-    var lines = std.mem.splitScalar(u8, text, '\n');
-    while (lines.next()) |_| count += 1;
-    return count;
+    const execution = try tool_executors.executeBuiltinTool(allocator, parsed);
+    defer allocator.free(execution.display);
+    return allocator.dupe(u8, execution.result);
 }
 
 fn freeToolCallInfos(allocator: std.mem.Allocator, tool_calls: ?[]const core.client.ToolCallInfo) void {

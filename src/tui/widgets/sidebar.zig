@@ -6,6 +6,12 @@ const widget_helpers = @import("widget_helpers");
 
 const vxfw = vaxis.vxfw;
 
+pub const MCPServerStatus = struct {
+    name: []const u8,
+    connected: bool,
+    tool_count: u32,
+};
+
 pub const SidebarContext = struct {
     recent_files: []const []const u8,
     request_count: u32,
@@ -17,6 +23,7 @@ pub const SidebarContext = struct {
     workers: []const widget_types.WorkerItem,
     theme_name: []const u8,
     current_theme: *const theme_mod.Theme,
+    mcp_servers: []const MCPServerStatus = &.{},
 };
 
 pub const FilesWidget = struct {
@@ -213,6 +220,52 @@ pub const SidebarWidget = struct {
                 children[child_idx] = .{
                     .origin = .{ .row = row, .col = 1 },
                     .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+        }
+
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "MCP Servers", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        if (self.context.mcp_servers.len == 0) {
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, "(none)", self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        } else {
+            for (self.context.mcp_servers, 0..) |server, idx| {
+                if (idx >= 4) {
+                    const overflow_txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{self.context.mcp_servers.len - 4});
+                    children[child_idx] = .{
+                        .origin = .{ .row = row, .col = 1 },
+                        .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),
+                    };
+                    child_idx += 1;
+                    row += 1;
+                    break;
+                }
+                const dot: []const u8 = if (server.connected) "●" else "○";
+                const dot_style: vaxis.Style = if (server.connected) .{ .fg = theme.tool_success } else .{ .fg = theme.tool_error };
+                const truncated_name = if (server.name.len > w - 12) server.name[0 .. w - 12] else server.name;
+                const line_txt = try std.fmt.allocPrint(ctx.arena, "{s} {s}", .{ dot, truncated_name });
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, line_txt, self.width - 2, dot_style),
+                };
+                child_idx += 1;
+                const tools_txt = try std.fmt.allocPrint(ctx.arena, "{d} tools", .{server.tool_count});
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = @intCast(self.width - 2 - tools_txt.len) },
+                    .surface = try self.buildText(ctx, tools_txt, @intCast(tools_txt.len + 1), .{ .fg = theme.dimmed }),
                 };
                 child_idx += 1;
                 row += 1;
