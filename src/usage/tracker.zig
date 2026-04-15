@@ -139,8 +139,44 @@ pub const UsageTracker = struct {
     }
 
     /// Get daily usage summary
-    pub fn getDailyUsage(self: *const UsageTracker) *const DailyUsage {
+    pub fn getDailyUsage(self: *UsageTracker) *const DailyUsage {
         return &self.daily;
+    }
+
+    /// Check if the date has changed since last tracking, and reset daily counters.
+    /// Call this before recording usage or checking budgets.
+    pub fn checkAndResetDaily(self: *UsageTracker) void {
+        var today_buf: [10]u8 = undefined;
+        formatDate(&today_buf);
+
+        // If date hasn't changed, no reset needed
+        if (std.mem.eql(u8, self.daily.date, &today_buf)) return;
+
+        // Date changed — reset daily counters
+        self.daily.request_count = 0;
+        self.daily.input_tokens = 0;
+        self.daily.output_tokens = 0;
+        self.daily.estimated_cost_usd = 0.0;
+
+        // Update date
+        @memcpy(self.daily.date, &today_buf);
+    }
+
+    /// Check if a new month has started (compared to a stored YYYY-MM string).
+    /// Returns true if the current month differs from the given one.
+    pub fn isNewMonth(stored_ym: []const u8) bool {
+        var today_buf: [10]u8 = undefined;
+        formatDate(&today_buf);
+        // Compare YYYY-MM (first 7 chars)
+        if (stored_ym.len < 7 or today_buf.len < 7) return true;
+        return !std.mem.eql(u8, stored_ym[0..7], today_buf[0..7]);
+    }
+
+    /// Get current YYYY-MM string (allocated)
+    pub fn getCurrentMonth(allocator: Allocator) ![]const u8 {
+        var buf: [10]u8 = undefined;
+        formatDate(&buf);
+        return allocator.dupe(u8, buf[0..7]);
     }
 
     /// Reset session tracking (start fresh for new conversation)
@@ -160,15 +196,28 @@ pub const UsageTracker = struct {
         self.session.by_provider.clearRetainingCapacity();
     }
 
-    /// Format current date as YYYY-MM-DD (simple implementation)
+    /// Format current date as YYYY-MM-DD using epoch calculation
     fn formatDate(buf: []u8) void {
         const timestamp = std.time.timestamp();
-        // Calculate days since epoch (1970-01-01)
-        const days_since_epoch: i64 = @divFloor(timestamp, 86400);
-        // Simple year calculation (not leap-year accurate, but functional)
-        const approx_year: i64 = 1970 + @divFloor(days_since_epoch * 400, 146097);
-        _ = std.fmt.bufPrint(buf, "{d:0>4}-01-01", .{
-            @as(u32, @intCast(@max(approx_year, 1970))),
+        // Days since epoch (1970-01-01)
+        const total_days: i64 = @divFloor(timestamp, 86400);
+
+        // Calculate year, month, day using algorithm from Howard Hinnant
+        const z = total_days + 719468;
+        const era: i64 = if (z >= 0) @divFloor(z, 146097) else @divFloor(z - 146096, 146097);
+        const doe: i64 = z - era * 146097;
+        const yoe: i64 = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+        const y: i64 = yoe + era * 400;
+        const doy: i64 = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+        const mp: i64 = @divFloor(5 * doy + 2, 153);
+        const d: i64 = doy - @divFloor(153 * mp + 2, 5) + 1;
+        const m: i64 = if (mp < 10) mp + 3 else mp - 9;
+        const final_year: i64 = y + @divFloor(m, 13) - @as(i64, if (m <= 2) 1 else 0);
+
+        _ = std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            @as(u32, @intCast(@max(final_year, 1970))),
+            @as(u32, @intCast(@max(m, 1))),
+            @as(u32, @intCast(@max(d, 1))),
         }) catch {};
     }
 

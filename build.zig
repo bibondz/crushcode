@@ -128,6 +128,12 @@ pub fn build(b: *std.Build) !void {
     });
     const json_extract_mod = simpleMod(b, "src/json/extract.zig", target, optimize);
     addImports(install_mod, &.{imp("json_extract", json_extract_mod)});
+    const provider_oauth_mod = createMod(b, "src/auth/provider_oauth.zig", target, optimize, &.{
+        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
+    });
+    const auth_cmd_mod = createMod(b, "src/commands/auth_cmd.zig", target, optimize, &.{
+        imp("auth", auth_mod), imp("provider_oauth", provider_oauth_mod),
+    });
 
     const jobs_mod = createMod(b, "src/commands/jobs.zig", target, optimize, &.{imp("shell", shell_mod)});
     const skills_loader_mod = simpleMod(b, "src/skills/loader.zig", target, optimize);
@@ -213,6 +219,9 @@ pub fn build(b: *std.Build) !void {
     const validated_edit_mod = createMod(b, "src/edit/validated_edit.zig", target, optimize, &.{
         imp("hashline", hashline_mod), imp("hash_index", hash_index_mod), imp("conflict", conflict_mod),
     });
+    addImports(write_mod, &.{
+        imp("hashline", hashline_mod), imp("hash_index", hash_index_mod), imp("validated_edit", validated_edit_mod),
+    });
     const lsp_handler_mod = simpleMod(b, "src/commands/lsp_handler.zig", target, optimize);
     const mcp_handler_mod = simpleMod(b, "src/commands/mcp_handler.zig", target, optimize);
 
@@ -242,7 +251,11 @@ pub fn build(b: *std.Build) !void {
         imp("shell", shell_mod),                                 imp("write", write_mod),             imp("git", git_mod),                       imp("skills", skills_mod),
         imp("install", install_mod),                             imp("jobs", jobs_mod),               imp("plugin_command", plugin_command_mod), imp("lsp_handler", lsp_handler_mod),
         imp("mcp_handler", mcp_handler_mod),                     imp("ai_handlers", ai_handlers_mod), imp("tool_handlers", tool_handlers_mod),   imp("system_handlers", system_handlers_mod),
-        imp("experimental_handlers", experimental_handlers_mod),
+        imp("experimental_handlers", experimental_handlers_mod), imp("auth_cmd", auth_cmd_mod),
+    });
+
+    const cli_registry_mod = createMod(b, "src/cli/registry.zig", target, optimize, &.{
+        imp("args", cli_mod), imp("config", config_mod), imp("handlers", handlers_mod),
     });
 
     const diff_visualizer_mod = simpleMod(b, "src/diff/visualizer.zig", target, optimize);
@@ -261,19 +274,21 @@ pub fn build(b: *std.Build) !void {
         imp("usage_budget", usage_budget_mod),     imp("usage_report", usage_report_mod),     imp("validated_edit", validated_edit_mod),
         imp("profile", profile_mod),               imp("json_output", json_output_mod),       imp("custom_commands", custom_commands_mod),
         imp("source_tracker", source_tracker_mod), imp("knowledge_lint", knowledge_lint_mod), imp("slash_commands", slash_commands_mod),
+        imp("cli_registry", cli_registry_mod),
     });
 
     const fallback_mod = simpleMod(b, "src/ai/fallback.zig", target, optimize);
     const parallel_mod = simpleMod(b, "src/agent/parallel.zig", target, optimize);
     const task_mod = simpleMod(b, "src/agent/task.zig", target, optimize);
-    addImports(parallel_mod, &.{imp("task", task_mod)});
+    addImports(parallel_mod, &.{ imp("task", task_mod), imp("core_api", core_api_mod), imp("registry", registry_mod) });
     const memory_mod = simpleMod(b, "src/agent/memory.zig", target, optimize);
     const skill_import_mod = simpleMod(b, "src/skills/import.zig", target, optimize);
-    const worktree_mod = simpleMod(b, "src/agent/worktree.zig", target, optimize);
+    const worktree_mod = createMod(b, "src/agent/worktree.zig", target, optimize, &.{imp("shell", shell_mod)});
     const lifecycle_hooks_mod = simpleMod(b, "src/hooks/lifecycle.zig", target, optimize);
     const intent_gate_mod = simpleMod(b, "src/cli/intent_gate.zig", target, optimize);
     const checkpoint_mod = simpleMod(b, "src/agent/checkpoint.zig", target, optimize);
     const lsp_mod = simpleMod(b, "src/lsp/client.zig", target, optimize);
+    const lsp_manager_mod = createMod(b, "src/tui/lsp_manager.zig", target, optimize, &.{imp("lsp", lsp_mod)});
 
     addImports(main_mod, &.{
         imp("fallback", fallback_mod),     imp("parallel", parallel_mod),               imp("skill_import", skill_import_mod),
@@ -322,7 +337,7 @@ pub fn build(b: *std.Build) !void {
         imp("compaction", compaction_mod), imp("graph", graph_mod),                 imp("mcp_bridge", mcp_bridge_mod),           imp("agent_loop", agent_loop_mod),
         imp("tools", tools_mod),           imp("skills_loader", skills_loader_mod), imp("streaming_types", streaming_types_mod),
     });
-    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod) });
+    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("usage_budget", usage_budget_mod) });
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod), imp("agent_loop", agent_loop_mod), imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod),
     });
@@ -352,7 +367,8 @@ pub fn build(b: *std.Build) !void {
         capability_catalog_mod,  intensity_mod,        tiered_loader_mod,     revision_loop_mod,         session_summarizer_mod,     model_hotswap_mod,        adversarial_review_mod,    spinner_mod,             markdown_renderer_mod,
         error_display_mod,       convergence_mod,      color_mod,             source_tracker_mod,        knowledge_lint_mod,         slash_commands_mod,       scaffold_mod,              mcp_transport_mod,       mcp_oauth_mod,
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
-        theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,
+        theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
+        auth_cmd_mod,            lsp_manager_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

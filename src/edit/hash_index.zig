@@ -1,6 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
-const hashline_mod = @import("hashline.zig");
+const hashline_mod = @import("hashline");
 
 const Allocator = std.mem.Allocator;
 const Hashline = hashline_mod.Hashline;

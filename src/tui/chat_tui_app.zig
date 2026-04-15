@@ -10,9 +10,10 @@ const diff = @import("diff");
 const markdown = @import("markdown");
 const theme_mod = @import("theme");
 const usage_pricing = @import("usage_pricing");
+const usage_budget = @import("usage_budget");
 
 const vxfw = vaxis.vxfw;
-const app_version = "0.2.2";
+const app_version = "0.5.0";
 
 pub const WorkerStatus = enum {
     pending,
@@ -1599,6 +1600,7 @@ pub const Model = struct {
     request_count: u32,
     session_start: i128,
     pricing_table: usage_pricing.PricingTable,
+    budget_mgr: usage_budget.BudgetManager,
     setup_phase: u8,
     setup_provider_index: usize,
     setup_feedback: []const u8,
@@ -1679,6 +1681,7 @@ pub const Model = struct {
             .request_count = 0,
             .session_start = std.time.nanoTimestamp(),
             .pricing_table = try usage_pricing.PricingTable.init(allocator),
+            .budget_mgr = usage_budget.BudgetManager.init(allocator, .{}),
             .setup_phase = if (options.api_key.len == 0) 1 else 0,
             .setup_provider_index = setupProviderIndex(options.provider_name),
             .setup_feedback = "",
@@ -1762,6 +1765,7 @@ pub const Model = struct {
         self.history.deinit(self.allocator);
         self.registry.deinit();
         self.pricing_table.deinit();
+        self.budget_mgr.deinit();
         if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.effective_system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.codebase_context) |codebase_context| self.allocator.free(codebase_context);
@@ -3256,6 +3260,12 @@ pub const Model = struct {
     }
 
     fn runStreamingRequest(self: *Model) !void {
+        self.budget_mgr.checkAndResetPeriods();
+        if (self.budget_mgr.isOverBudget()) {
+            self.finishRequestWithErrorText("Budget limit reached. Increase limits or start a new session.");
+            return;
+        }
+
         var total_input_tokens: u64 = 0;
         var total_output_tokens: u64 = 0;
         var iteration: u32 = 0;
@@ -3404,6 +3414,11 @@ pub const Model = struct {
         self.total_input_tokens += input_tokens;
         self.total_output_tokens += output_tokens;
         self.request_count += 1;
+        const cost = self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), @intCast(@min(input_tokens, std.math.maxInt(u32))), @intCast(@min(output_tokens, std.math.maxInt(u32))));
+        self.budget_mgr.recordCost(cost);
+        if (self.budget_mgr.shouldAlert()) {
+            self.budget_mgr.printAlert();
+        }
         self.request_active = false;
         self.request_done = true;
         self.saveSessionSnapshotUnlocked() catch {};

@@ -1,4 +1,7 @@
 const std = @import("std");
+const hashline = @import("hashline");
+const hash_index = @import("hash_index");
+const validated_edit = @import("validated_edit");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const fs = std.fs;
@@ -13,14 +16,89 @@ pub const FileOperationResult = struct {
     errors: []const u8,
 };
 
-/// Write content to a file
 pub fn writeFile(path: []const u8, content: []const u8) !void {
+    const file = try fs.cwd().createFile(path, .{});
+    defer file.close();
+    try file.writeAll(content);
+
+    const allocator = std.heap.page_allocator;
+    const hashlines = hashline.formatFileWithHashlines(allocator, content) catch return;
+    defer allocator.free(hashlines);
+    const hashlines_path = std.fmt.allocPrint(allocator, "{s}.hashlines", .{path}) catch return;
+    defer allocator.free(hashlines_path);
+    const hashlines_file = fs.cwd().createFile(hashlines_path, .{}) catch return;
+    hashlines_file.writeAll(hashlines) catch {};
+    hashlines_file.close();
+}
+
+pub fn writeFileValidated(path: []const u8, content: []const u8, hashlines_content: ?[]const u8) !void {
+    if (hashlines_content) |hc| {
+        const allocator = std.heap.page_allocator;
+        const current_file = fs.cwd().openFile(path, .{ .read = true }) catch return;
+        defer current_file.close();
+        const file_size = current_file.getEndPos() catch return;
+        if (file_size == 0) return;
+        const current_content = try allocator.alloc(u8, file_size);
+        defer allocator.free(current_content);
+        try current_file.readAll(current_content);
+
+        var file_lines = std.ArrayList([]const u8).init(allocator);
+        defer file_lines.deinit();
+        var line_iter = std.mem.splitScalar(u8, current_content, '\n');
+        while (line_iter.next()) |line| {
+            try file_lines.append(line);
+        }
+
+        var valid = true;
+        var hl_lines = std.mem.splitScalar(u8, hc, '\n');
+        while (hl_lines.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+
+            const pipe_sep = std.mem.indexOf(u8, trimmed, " | ") orelse continue;
+            const hashline_str = std.mem.trim(u8, trimmed[0..pipe_sep], " ");
+            const parsed = hashline.Hashline.parse(hashline_str) catch continue;
+
+            if (parsed.line_number == 0 or parsed.line_number > file_lines.items.len) continue;
+            const actual_line = file_lines.items[parsed.line_number - 1];
+            if (!parsed.validate(actual_line)) {
+                valid = false;
+                out("Warning: Stale hashline at line {d} in {s}\n", .{ parsed.line_number, path });
+            }
+        }
+        if (!valid) return error.StaleReference;
+    }
+
     const file = try fs.cwd().createFile(path, .{});
     defer file.close();
     try file.writeAll(content);
 }
 
-/// Write content to multiple files (for glob patterns)
+pub fn writeFileWithValidation(path: []const u8, content: []const u8) !void {
+    const allocator = std.heap.page_allocator;
+    const hashlines_path = std.fmt.allocPrint(allocator, "{s}.hashlines", .{path}) catch return;
+    defer allocator.free(hashlines_path);
+
+    var hashlines_content: ?[]const u8 = null;
+    if (fs.cwd().openFile(hashlines_path, .{ .read = true })) |file| {
+        defer file.close();
+        const file_size = file.getEndPos() catch 0;
+        if (file_size > 0) {
+            const buffer = try allocator.alloc(u8, file_size);
+            defer allocator.free(buffer);
+            _ = file.readAll(buffer) catch 0;
+            hashlines_content = buffer;
+        }
+    } else |_| {}
+
+    try writeFileValidated(path, content, hashlines_content);
+}
+
+pub fn handleEditValidated(path: []const u8, old_content: []const u8, new_content: []const u8) !void {
+    _ = old_content;
+    try writeFileWithValidation(path, new_content);
+}
+
 pub fn writeFiles(paths: []const []const u8, content: []const u8) FileOperationResult {
     var errors_buf = array_list_compat.ArrayList(u8).init(std.heap.page_allocator);
     defer errors_buf.deinit();
@@ -46,7 +124,6 @@ pub fn writeFiles(paths: []const []const u8, content: []const u8) FileOperationR
     };
 }
 
-/// Append content to a file
 pub fn appendFile(path: []const u8, content: []const u8) !void {
     const file = try fs.cwd().openFile(path, .{
         .mode = .read_write,
@@ -56,19 +133,16 @@ pub fn appendFile(path: []const u8, content: []const u8) !void {
     try file.writeAll(content);
 }
 
-/// Create directory if it doesn't exist
 pub fn ensureDir(path: []const u8) !void {
     try fs.cwd().makeDir(path);
 }
 
-/// Check if file exists
 pub fn fileExists(path: []const u8) bool {
     const file = fs.cwd().openFile(path, .{}) catch return false;
     file.close();
     return true;
 }
 
-/// Handle write command from CLI
 pub fn handleWrite(args: [][]const u8) !void {
     if (args.len < 2) {
         out("Usage: crushcode write <path> <content>\n", .{});
@@ -81,7 +155,6 @@ pub fn handleWrite(args: [][]const u8) !void {
     var content: ?[]const u8 = null;
     var glob_pattern: ?[]const u8 = null;
 
-    // Parse arguments
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
         if (std.mem.eql(u8, args[i], "--content") or std.mem.eql(u8, args[i], "-c")) {
@@ -95,24 +168,18 @@ pub fn handleWrite(args: [][]const u8) !void {
                 i += 1;
             }
         } else if (path == null) {
-            // First non-flag argument is the path
             path = args[i];
-            // Check if it's a glob pattern
             if (std.mem.indexOf(u8, args[i], "*") != null) {
                 glob_pattern = args[i];
             }
         } else if (content == null) {
-            // Second non-flag argument is the content
             content = args[i];
         }
     }
 
-    // Handle glob pattern
     if (path) |p| {
-        // Check if path contains glob pattern
         const is_glob = std.mem.indexOf(u8, p, "*") != null;
 
-        // Need content for both single file and glob
         if (content == null) {
             out("Error: No content specified\n", .{});
             return;
@@ -120,7 +187,6 @@ pub fn handleWrite(args: [][]const u8) !void {
 
         if (is_glob) {
             out("Glob pattern: {s}\n", .{p});
-            // Basic glob implementation - write to all files matching extension
             const wildcard_pos = std.mem.lastIndexOfScalar(u8, p, '*') orelse {
                 out("Error: Pattern must contain wildcard (*)\n", .{});
                 return;
@@ -148,14 +214,12 @@ pub fn handleWrite(args: [][]const u8) !void {
                 out("No files found matching {s}\n", .{extension});
             }
         } else {
-            // Single file
             try writeFile(p, content.?);
             out("Written to: {s}\n", .{p});
         }
     }
 }
 
-/// Handle edit command - read file, let user edit, write back
 pub fn handleEdit(args: [][]const u8) !void {
     if (args.len < 1) {
         out("Usage: crushcode edit <file> [--create]\n", .{});
@@ -171,7 +235,6 @@ pub fn handleEdit(args: [][]const u8) !void {
         return;
     }
 
-    // For now, just print the file path - full edit would need editor integration
     out("Edit file: {s}\n", .{path});
     out("(Full editor integration coming soon)\n", .{});
 }

@@ -123,13 +123,13 @@ pub fn handleParallel(_: args_mod.Args) !void {
     var executor = parallel_mod.ParallelExecutor.init(allocator, 3);
     defer executor.deinit();
 
-    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4", .research);
+    const task_one = try executor.submit("Summarize repository status", "openrouter", "openai/gpt-5.4", "", .research);
     defer allocator.free(task_one);
 
-    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet", .review);
+    const task_two = try executor.submit("Review modified files", "anthropic", "claude-3.5-sonnet", "", .review);
     defer allocator.free(task_two);
 
-    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3", .quick);
+    const task_three = try executor.submit("Prepare follow-up notes", "ollama", "llama3", "", .quick);
     defer allocator.free(task_three);
 
     if (executor.getTask(task_one)) |task| {
@@ -200,7 +200,7 @@ pub fn handleAgents(args: args_mod.Args) !void {
             .research => "Research patterns and documentation",
         };
 
-        const task_id = try executor.submit(task_desc, default_provider, default_model, cat);
+        const task_id = try executor.submit(task_desc, default_provider, default_model, "", cat);
         stdout_print("Spawned agent: {s} ({s}/{s})\n", .{ @tagName(cat), default_provider, default_model });
         allocator.free(task_id);
     }
@@ -284,7 +284,7 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
     stdout.print(
         \\
         \\╔══════════════════════════════════════════╗
-        \\║       Crushcode v0.2.2 — First Setup     ║
+        \\║       Crushcode v0.5.0 — First Setup     ║
         \\╚══════════════════════════════════════════╝
         \\
         \\Welcome! Let's configure your default AI provider.

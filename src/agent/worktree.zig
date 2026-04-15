@@ -1,4 +1,5 @@
 const std = @import("std");
+const shell = @import("shell");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
@@ -40,14 +41,16 @@ pub const WorktreeManager = struct {
         const worktree_path = try std.fmt.allocPrint(self.allocator, "{s}/worktree-{s}", .{ self.base_dir, task_id });
         errdefer self.allocator.free(worktree_path);
 
-        // Create worktree directory
-        std.fs.cwd().makePath(worktree_path) catch {};
-
-        // Initialize git worktree (would use `git worktree add` in practice)
-        // For now, create the directory structure
-        const git_dir = try std.fmt.allocPrint(self.allocator, "{s}/.git", .{worktree_path});
-        defer self.allocator.free(git_dir);
-        std.fs.cwd().makePath(git_dir) catch {};
+        var result = try shell.executeShellCommand(try std.fmt.allocPrint(self.allocator, "git worktree add {s} -b {s}", .{ worktree_path, branch_name }), null);
+        if (result.exit_code != 0) {
+            // Branch might already exist, try without -b
+            result = try shell.executeShellCommand(try std.fmt.allocPrint(self.allocator, "git worktree add {s} {s}", .{ worktree_path, branch_name }), null);
+            if (result.exit_code != 0) {
+                self.allocator.free(branch_name);
+                self.allocator.free(worktree_path);
+                return error.WorktreeCreateFailed;
+            }
+        }
 
         // Track the worktree
         const info = WorktreeInfo{
@@ -66,16 +69,16 @@ pub const WorktreeManager = struct {
     pub fn removeWorktree(self: *WorktreeManager, task_id: []const u8) !void {
         for (self.active_worktrees.items, 0..) |info, i| {
             if (std.mem.eql(u8, info.task_id, task_id) and info.active) {
-                // Delete worktree directory
-                std.fs.cwd().deleteTree(info.path) catch {};
+                const result = shell.executeShellCommand(try std.fmt.allocPrint(self.allocator, "git worktree remove {s}", .{info.path}), null) catch null;
+                if (result == null or result.exit_code != 0) {
+                    std.fs.cwd().deleteTree(info.path) catch {};
+                }
 
-                // Free resources
                 self.allocator.free(info.id);
                 self.allocator.free(info.path);
                 self.allocator.free(info.branch);
                 self.allocator.free(info.task_id);
 
-                // Mark as removed by swapping with last and removing
                 _ = self.active_worktrees.orderedRemove(i);
                 return;
             }
@@ -108,7 +111,19 @@ pub const WorktreeManager = struct {
     /// Clean up all worktrees
     pub fn cleanupAll(self: *WorktreeManager) void {
         for (self.active_worktrees.items) |info| {
-            std.fs.cwd().deleteTree(info.path) catch {};
+            const cmd = std.fmt.allocPrint(self.allocator, "git worktree remove {s}", .{info.path}) catch {
+                std.fs.cwd().deleteTree(info.path) catch {};
+                self.allocator.free(info.id);
+                self.allocator.free(info.path);
+                self.allocator.free(info.branch);
+                self.allocator.free(info.task_id);
+                continue;
+            };
+            defer self.allocator.free(cmd);
+            const result = shell.executeShellCommand(cmd, null) catch null;
+            if (result == null or result.?.exit_code != 0) {
+                std.fs.cwd().deleteTree(info.path) catch {};
+            }
             self.allocator.free(info.id);
             self.allocator.free(info.path);
             self.allocator.free(info.branch);

@@ -41,28 +41,57 @@ pub const BudgetStatus = struct {
 };
 
 /// Budget manager — tracks spending against configurable limits
+/// with daily/monthly reset via timestamp-based detection
 pub const BudgetManager = struct {
     config: BudgetConfig,
     daily_spent: f64,
     monthly_spent: f64,
     session_spent: f64,
+    daily_date_buf: [10]u8,
+    monthly_ym_buf: [7]u8,
     allocator: Allocator,
 
     pub fn init(allocator: Allocator, config: BudgetConfig) BudgetManager {
+        var daily_buf = [_]u8{ '0', '0', '0', '0', '-', '0', '0', '-', '0', '0' };
+        var monthly_buf = [_]u8{ '0', '0', '0', '0', '-', '0', '0' };
+        formatDateBuffer(&daily_buf);
+        @memcpy(monthly_buf[0..7], daily_buf[0..7]);
+
         return BudgetManager{
             .config = config,
             .daily_spent = 0.0,
             .monthly_spent = 0.0,
             .session_spent = 0.0,
+            .daily_date_buf = daily_buf,
+            .monthly_ym_buf = monthly_buf,
             .allocator = allocator,
         };
     }
 
-    /// Record a cost from a request
+    /// Record a cost from a request. Auto-resets daily/monthly if date changed.
     pub fn recordCost(self: *BudgetManager, cost_usd: f64) void {
+        self.checkAndResetPeriods();
         self.daily_spent += cost_usd;
         self.monthly_spent += cost_usd;
         self.session_spent += cost_usd;
+    }
+
+    /// Check if daily/monthly periods have changed and reset if needed.
+    pub fn checkAndResetPeriods(self: *BudgetManager) void {
+        var today_buf: [10]u8 = undefined;
+        formatDateBuffer(&today_buf);
+
+        // Daily reset
+        if (!std.mem.eql(u8, &self.daily_date_buf, &today_buf)) {
+            self.daily_spent = 0.0;
+            @memcpy(&self.daily_date_buf, &today_buf);
+        }
+
+        // Monthly reset
+        if (!std.mem.eql(u8, &self.monthly_ym_buf, today_buf[0..7])) {
+            self.monthly_spent = 0.0;
+            @memcpy(&self.monthly_ym_buf, today_buf[0..7]);
+        }
     }
 
     /// Check current budget status
@@ -146,5 +175,28 @@ pub const BudgetManager = struct {
 
     pub fn deinit(self: *BudgetManager) void {
         _ = self;
+    }
+
+    /// Format current date as YYYY-MM-DD into a 10-byte buffer
+    fn formatDateBuffer(buf: *[10]u8) void {
+        const timestamp = std.time.timestamp();
+        const total_days: i64 = @divFloor(timestamp, 86400);
+
+        const z = total_days + 719468;
+        const era: i64 = if (z >= 0) @divFloor(z, 146097) else @divFloor(z - 146096, 146097);
+        const doe: i64 = z - era * 146097;
+        const yoe: i64 = @divFloor(doe - @divFloor(doe, 1460) + @divFloor(doe, 36524) - @divFloor(doe, 146096), 365);
+        const y: i64 = yoe + era * 400;
+        const doy: i64 = doe - (365 * yoe + @divFloor(yoe, 4) - @divFloor(yoe, 100));
+        const mp: i64 = @divFloor(5 * doy + 2, 153);
+        const d: i64 = doy - @divFloor(153 * mp + 2, 5) + 1;
+        const m: i64 = if (mp < 10) mp + 3 else mp - 9;
+        const final_year: i64 = y + @divFloor(m, 13) - @as(i64, if (m <= 2) 1 else 0);
+
+        _ = std.fmt.bufPrint(buf, "{d:0>4}-{d:0>2}-{d:0>2}", .{
+            @as(u32, @intCast(@max(final_year, 1970))),
+            @as(u32, @intCast(@max(m, 1))),
+            @as(u32, @intCast(@max(d, 1))),
+        }) catch {};
     }
 };

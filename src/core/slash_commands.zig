@@ -98,6 +98,11 @@ pub const SlashCommandRegistry = struct {
             .handler = cmdCost,
         });
         try self.register(SlashCommand{
+            .name = "/budget",
+            .description = "Show budget status and spending limits",
+            .handler = cmdBudget,
+        });
+        try self.register(SlashCommand{
             .name = "/model",
             .description = "Show or switch current model",
             .handler = cmdModel,
@@ -230,6 +235,18 @@ fn cmdCost(allocator: Allocator, args: []const u8) !CommandResult {
     return CommandResult.init(allocator, "Token cost: (usage tracking not yet connected)");
 }
 
+fn cmdBudget(allocator: Allocator, args: []const u8) !CommandResult {
+    _ = args;
+    // Budget status is shown in the TUI header and /usage command.
+    // This command provides a quick summary.
+    return CommandResult.init(allocator,
+        \\Budget Status:
+        \\  Use /usage for detailed breakdown
+        \\  Budget limits configured in config.toml [budget] section
+        \\  Options: daily_limit_usd, monthly_limit_usd, per_session_limit_usd
+    );
+}
+
 fn cmdModel(allocator: Allocator, args: []const u8) !CommandResult {
     if (args.len == 0) {
         return CommandResult.init(allocator, "Current model: (default)");
@@ -264,7 +281,7 @@ fn cmdExit(allocator: Allocator, args: []const u8) !CommandResult {
 
 fn cmdVersion(allocator: Allocator, args: []const u8) !CommandResult {
     _ = args;
-    return CommandResult.init(allocator, "Crushcode v0.2.2");
+    return CommandResult.init(allocator, "Crushcode v0.5.0");
 }
 
 fn cmdStatus(allocator: Allocator, args: []const u8) !CommandResult {

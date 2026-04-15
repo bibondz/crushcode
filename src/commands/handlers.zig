@@ -16,6 +16,7 @@ const ai_handlers = @import("ai_handlers");
 const tool_handlers = @import("tool_handlers");
 const system_handlers = @import("system_handlers");
 const experimental_handlers = @import("experimental_handlers");
+const auth_cmd_mod = @import("auth_cmd");
 const file_compat = @import("file_compat");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
@@ -124,6 +125,10 @@ pub const handleWorkflow = experimental_handlers.handleWorkflow;
 pub const handleCompact = experimental_handlers.handleCompact;
 pub const handleScaffold = experimental_handlers.handleScaffold;
 
+pub fn handleAuth(args: args_mod.Args) !void {
+    try auth_cmd_mod.handleAuth(args.remaining);
+}
+
 pub fn printHelp() !void {
     stdout_print(
         \\Crushcode - AI Coding Assistant
@@ -160,6 +165,7 @@ pub fn printHelp() !void {
         \\  grep           AST-grep pattern search
         \\  lsp            Language Server Protocol client
         \\  mcp            MCP tools management
+        \\  auth           Manage authentication (login, status, logout)
         \\  help           Show this help message
         \\  version        Show version information
         \\
@@ -219,5 +225,5 @@ pub fn printHelp() !void {
 }
 
 pub fn printVersion() !void {
-    stdout_print("Crushcode v0.2.2\n", .{});
+    stdout_print("Crushcode v0.5.0\n", .{});
 }

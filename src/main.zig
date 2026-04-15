@@ -3,6 +3,7 @@ const file_compat = @import("file_compat");
 const args_mod = @import("args");
 const commands = @import("handlers");
 const config_mod = @import("config");
+const registry = @import("cli_registry");
 
 pub const std_options = std.Options{
     .log_level = .warn,
@@ -39,47 +40,6 @@ fn cleanupParsedArgs(allocator: std.mem.Allocator, parsed_args: args_mod.Args) v
         allocator.free(arg);
     }
     allocator.free(parsed_args.remaining);
-}
-
-/// Helper function to check if command is recognized
-fn isCommandRecognized(command: []const u8) bool {
-    return std.mem.eql(u8, command, "chat") or
-        std.mem.eql(u8, command, "read") or
-        std.mem.eql(u8, command, "shell") or
-        std.mem.eql(u8, command, "write") or
-        std.mem.eql(u8, command, "edit") or
-        std.mem.eql(u8, command, "git") or
-        std.mem.eql(u8, command, "skill") or
-        std.mem.eql(u8, command, "skills-load") or
-        std.mem.eql(u8, command, "fallback") or
-        std.mem.eql(u8, command, "parallel") or
-        std.mem.eql(u8, command, "agents") or
-        std.mem.eql(u8, command, "tools") or
-        std.mem.eql(u8, command, "tui") or
-        std.mem.eql(u8, command, "install") or
-        std.mem.eql(u8, command, "jobs") or
-        std.mem.eql(u8, command, "capabilities") or
-        std.mem.eql(u8, command, "worktree") or
-        std.mem.eql(u8, command, "graph") or
-        std.mem.eql(u8, command, "agent-loop") or
-        std.mem.eql(u8, command, "workflow") or
-        std.mem.eql(u8, command, "compact") or
-        std.mem.eql(u8, command, "scaffold") or
-        std.mem.eql(u8, command, "list") or
-        std.mem.eql(u8, command, "usage") or
-        std.mem.eql(u8, command, "connect") or
-        std.mem.eql(u8, command, "profile") or
-        std.mem.eql(u8, command, "checkpoint") or
-        std.mem.eql(u8, command, "grep") or
-        std.mem.eql(u8, command, "lsp") or
-        std.mem.eql(u8, command, "mcp") or
-        std.mem.eql(u8, command, "fetch-models") or
-        std.mem.eql(u8, command, "help") or
-        std.mem.eql(u8, command, "--help") or
-        std.mem.eql(u8, command, "-h") or
-        std.mem.eql(u8, command, "version") or
-        std.mem.eql(u8, command, "--version") or
-        std.mem.eql(u8, command, "-v");
 }
 
 pub fn main() !void {
@@ -183,95 +143,23 @@ pub fn main() !void {
         return;
     }
 
-    // Early Exit: Handle unknown commands with single exit point and clear error message
-    if (!isCommandRecognized(parsed_args.command)) {
-        if (try commands.tryHandlePluginCommand(parsed_args.command)) {
-            return;
-        }
-
-        err_print("Error: Unknown command '{s}'\n\n", .{parsed_args.command});
-        try commands.printHelp();
-        return error.UnknownCommand;
-    }
-
-    // Main command dispatch - all edge cases handled above, execution can proceed safely.
+    // Main command dispatch — O(1) comptime hash map lookup via registry.
     // Wrap in a catch for BrokenPipe — if stdout is piped to `head` or similar,
     // writes will fail with BrokenPipe. That's expected, exit cleanly with code 0.
     const main_result: anyerror!void = blk: {
-        if (std.mem.eql(u8, parsed_args.command, "chat")) {
-            break :blk commands.handleChat(parsed_args, &config);
-        } else if (std.mem.eql(u8, parsed_args.command, "read")) {
-            break :blk commands.handleRead(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "shell")) {
-            break :blk commands.handleShell(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "write")) {
-            break :blk commands.handleWrite(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "edit")) {
-            break :blk commands.handleEdit(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "git")) {
-            break :blk commands.handleGit(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "skill")) {
-            break :blk commands.handleSkill(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "skills-load")) {
-            break :blk commands.handleSkillsLoad(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "fallback")) {
-            break :blk commands.handleFallback(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "parallel")) {
-            break :blk commands.handleParallel(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "agents")) {
-            break :blk commands.handleAgents(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "tools")) {
-            break :blk commands.handleTools(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "plugin")) {
-            break :blk commands.handlePlugin(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "tui")) {
-            break :blk commands.handleTUI(parsed_args, &config);
-        } else if (std.mem.eql(u8, parsed_args.command, "install")) {
-            break :blk commands.handleInstall(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "jobs")) {
-            break :blk commands.handleJobs(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "capabilities")) {
-            break :blk commands.handleCapabilities(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "worktree")) {
-            break :blk commands.handleWorktree(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "graph")) {
-            break :blk commands.handleGraph(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "agent-loop")) {
-            break :blk commands.handleAgentLoop(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "workflow")) {
-            break :blk commands.handleWorkflow(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "compact")) {
-            break :blk commands.handleCompact(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "scaffold")) {
-            break :blk commands.handleScaffold(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "list")) {
-            break :blk commands.handleList(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "usage")) {
-            break :blk commands.handleUsage(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "connect")) {
-            break :blk commands.handleConnect(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "profile")) {
-            break :blk commands.handleProfile(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "checkpoint")) {
-            break :blk commands.handleCheckpoint(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "grep")) {
-            break :blk commands.handleGrep(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "lsp")) {
-            break :blk commands.handleLSP(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "mcp")) {
-            break :blk commands.handleMCP(parsed_args);
-        } else if (std.mem.eql(u8, parsed_args.command, "fetch-models")) {
-            break :blk commands.handleFetchModels(parsed_args, &config);
-        } else if (std.mem.eql(u8, parsed_args.command, "help") or
-            std.mem.eql(u8, parsed_args.command, "--help") or
-            std.mem.eql(u8, parsed_args.command, "-h"))
-        {
-            break :blk commands.printHelp();
-        } else if (std.mem.eql(u8, parsed_args.command, "version") or
-            std.mem.eql(u8, parsed_args.command, "--version") or
-            std.mem.eql(u8, parsed_args.command, "-v"))
-        {
-            break :blk commands.printVersion();
+        if (registry.dispatch(parsed_args.command, parsed_args, &config)) |_| {
+            break :blk;
+        } else |err| switch (err) {
+            error.CommandNotFound => {
+                // Not a built-in command — try plugin fallback
+                if (try commands.tryHandlePluginCommand(parsed_args.command)) {
+                    break :blk;
+                }
+                err_print("Error: Unknown command '{s}'\n\n", .{parsed_args.command});
+                try commands.printHelp();
+                break :blk error.UnknownCommand;
+            },
+            else => break :blk err,
         }
         break :blk;
     };
