@@ -264,6 +264,10 @@ pub fn build(b: *std.Build) !void {
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
     });
+    const widget_typewriter_mod = createMod(b, "src/tui/widgets/typewriter.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+    });
     addImports(tui_mod, &.{
         imp("widget_types", widget_types_mod),
         imp("widget_helpers", widget_helpers_mod),
@@ -277,6 +281,7 @@ pub fn build(b: *std.Build) !void {
         imp("widget_spinner", widget_spinner_mod),
         imp("widget_gradient", widget_gradient_mod),
         imp("widget_toast", widget_toast_mod),
+        imp("widget_typewriter", widget_typewriter_mod),
     });
 
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
@@ -450,7 +455,7 @@ pub fn build(b: *std.Build) !void {
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
         auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,      widget_palette_mod,
-        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,
+        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

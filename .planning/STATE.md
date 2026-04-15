@@ -9,7 +9,11 @@
 
 **Core Value:** Ship a working AI coding assistant in Zig that can execute shell commands, manage files, and interact with AI providers (Ollama, OpenRouter).
 
-**Current Focus:** Phase 19 — Gradient Text + Toast Notifications Complete
+**Current Focus:** Phase 20 — Typewriter Streaming Complete
+
+---
+
+## Milestone v0.6.0 Complete!
 
 ---
 
@@ -18,10 +22,10 @@
 | Field | Value |
 |-------|-------|
 | Milestone | v0.6.0 — Architecture + UI/UX Polish |
-| Phase | 19 |
+| Phase | 20 |
 | Plan | 1 plan executed |
 | Status | Complete |
-| Progress | 80% |
+| Progress | 100% |
 
 ---
 
@@ -45,7 +49,7 @@
 | 17 | TUI Widget Extraction | ✅ Done |
 | 18 | Animated Spinner + Stalled Detection | ✅ Done |
 | 19 | Gradient Text + Toast Notifications | ✅ Done |
-| 20 | Diff Word Highlighting + Typewriter | ⬜ Not started |
+| 20 | Diff Word Highlighting + Typewriter | ✅ Done |
 
 ---
 

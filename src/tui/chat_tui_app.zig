@@ -23,6 +23,7 @@ const widget_setup = @import("widget_setup");
 const widget_spinner = @import("widget_spinner");
 const widget_gradient = @import("widget_gradient");
 const widget_toast = @import("widget_toast");
+const widget_typewriter = @import("widget_typewriter");
 
 const vxfw = vaxis.vxfw;
 
@@ -200,6 +201,7 @@ pub const Model = struct {
     next_worker_id: u32 = 0,
     spinner: ?widget_spinner.AnimatedSpinner = null,
     toast_stack: widget_toast.ToastStack,
+    typewriter: ?widget_typewriter.TypewriterState = null,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -282,6 +284,7 @@ pub const Model = struct {
             .workers = std.ArrayList(WorkerItem).empty,
             .spinner = null,
             .toast_stack = undefined,
+            .typewriter = null,
         };
         errdefer model.destroy();
 
@@ -292,6 +295,7 @@ pub const Model = struct {
         model.workers = try std.ArrayList(WorkerItem).initCapacity(allocator, 4);
         model.spinner = null;
         model.toast_stack = widget_toast.ToastStack.init(allocator, model.current_theme);
+        model.typewriter = null;
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -1129,6 +1133,10 @@ pub const Model = struct {
         }
         // Tick toast stack each frame for auto-expiration
         self.toast_stack.tick();
+        // Tick typewriter each frame for character reveal
+        if (self.typewriter) |*tw| {
+            tw.tick();
+        }
 
         self.lock.lock();
         defer self.lock.unlock();
@@ -1451,6 +1459,7 @@ pub const Model = struct {
         try self.addMessageUnlocked("assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
         self.spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
+        self.typewriter = widget_typewriter.TypewriterState.init(self.current_theme);
         self.request_active = true;
         self.request_done = false;
         self.awaiting_first_token = true;
@@ -2075,6 +2084,7 @@ pub const Model = struct {
         self.request_active = false;
         self.request_done = true;
         self.spinner = null;
+        self.typewriter = null;
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
@@ -2114,6 +2124,7 @@ pub const Model = struct {
         self.request_active = false;
         self.request_done = true;
         self.spinner = null;
+        self.typewriter = null;
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
