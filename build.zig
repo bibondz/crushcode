@@ -500,29 +500,59 @@ pub fn build(b: *std.Build) !void {
 /// Patch vaxis tty.zig to gracefully handle /dev/tty unavailable on WSL.
 /// Replaces the raw `try posix.open("/dev/tty")` with a syscall that falls
 /// back to STDIN_FILENO without dumping a stack trace.
+/// Also patches App.zig doLayout to guard against division-by-zero when
+/// screen dimensions are zero (e.g. before queryTerminal responds).
 fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency) void {
-    const tty_src = vaxis_dep.path("src/tty.zig").getPath3(b, null);
-    const tty_path = tty_src.root_dir.path orelse return;
+    // Patch 1: tty.zig — /dev/tty fallback
+    {
+        const tty_src = vaxis_dep.path("src/tty.zig").getPath3(b, null);
+        const tty_path = tty_src.root_dir.path orelse return;
 
-    const file = std.fs.cwd().openFile(tty_path, .{ .mode = .read_write }) catch return;
-    defer file.close();
+        const file = std.fs.cwd().openFile(tty_path, .{ .mode = .read_write }) catch return;
+        defer file.close();
 
-    const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;
-    defer b.allocator.free(contents);
+        const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;
+        defer b.allocator.free(contents);
 
-    const needle = "const fd = try posix.open(\"/dev/tty\", .{ .ACCMODE = .RDWR }, 0);";
-    if (std.mem.indexOf(u8, contents, needle)) |_| {
-        const patch =
-            \\        const fd: posix.fd_t = blk: {
-            \\            const rc = std.os.linux.openat(std.os.linux.AT.FDCWD, "/dev/tty", .{ .ACCMODE = .RDWR }, 0);
-            \\            const signed: isize = @bitCast(rc);
-            \\            if (signed < 0) break :blk posix.STDIN_FILENO;
-            \\            break :blk @intCast(rc);
-            \\        };
-        ;
-        const new_contents = std.mem.replaceOwned(u8, b.allocator, contents, needle, patch) catch return;
-        file.seekTo(0) catch return;
-        file.setEndPos(0) catch return;
-        file.writeAll(new_contents) catch return;
+        const needle = "const fd = try posix.open(\"/dev/tty\", .{ .ACCMODE = .RDWR }, 0);";
+        if (std.mem.indexOf(u8, contents, needle)) |_| {
+            const patch =
+                \\        const fd: posix.fd_t = blk: {
+                \\            const rc = std.os.linux.openat(std.os.linux.AT.FDCWD, "/dev/tty", .{ .ACCMODE = .RDWR }, 0);
+                \\            const signed: isize = @bitCast(rc);
+                \\            if (signed < 0) break :blk posix.STDIN_FILENO;
+                \\            break :blk @intCast(rc);
+                \\        };
+            ;
+            const new_contents = std.mem.replaceOwned(u8, b.allocator, contents, needle, patch) catch return;
+            file.seekTo(0) catch return;
+            file.setEndPos(0) catch return;
+            file.writeAll(new_contents) catch return;
+        }
+    }
+
+    // Patch 2: App.zig doLayout — guard division-by-zero
+    {
+        const app_src = vaxis_dep.path("src/vxfw/App.zig").getPath3(b, null);
+        const app_root = app_src.root_dir.path orelse return;
+
+        // Build full path: root_dir + sub_path components
+        var app_path_buf: [512]u8 = undefined;
+        const app_path = std.fmt.bufPrint(&app_path_buf, "{s}/src/vxfw/App.zig", .{app_root}) catch return;
+
+        const file = std.fs.cwd().openFile(app_path, .{ .mode = .read_write }) catch return;
+        defer file.close();
+
+        const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;
+        defer b.allocator.free(contents);
+
+        const needle = ".width = vx.screen.width_pix / vx.screen.width,";
+        if (std.mem.indexOf(u8, contents, needle)) |_| {
+            const patch = ".width = if (vx.screen.width > 0) vx.screen.width_pix / vx.screen.width else 8,";
+            const new_contents = std.mem.replaceOwned(u8, b.allocator, contents, needle, patch) catch return;
+            file.seekTo(0) catch return;
+            file.setEndPos(0) catch return;
+            file.writeAll(new_contents) catch return;
+        }
     }
 }

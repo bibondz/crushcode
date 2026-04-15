@@ -1,5 +1,10 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
+const vxfw = vaxis.vxfw;
+
+// Recover terminal state on panic so the user's shell isn't left broken
+pub const panic = vaxis.panic_handler;
+
 const core = @import("core_api");
 const config_mod = @import("config");
 const fallback_mod = @import("fallback");
@@ -24,8 +29,6 @@ const widget_spinner = @import("widget_spinner");
 const widget_gradient = @import("widget_gradient");
 const widget_toast = @import("widget_toast");
 const widget_typewriter = @import("widget_typewriter");
-
-const vxfw = vaxis.vxfw;
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -207,9 +210,28 @@ pub const Model = struct {
         const model = try allocator.create(Model);
         errdefer allocator.destroy(model);
 
+        // Initialize vxfw.App manually to avoid the dangling pointer bug in
+        // vxfw.App.init() (issue #311). That function creates App on the
+        // stack, passes &app.buffer to Tty.init(), then returns by value —
+        // the tty_writer ends up pointing to freed stack memory. By
+        // constructing App directly on the heap, &app.buffer is stable.
         const app = try allocator.create(vxfw.App);
         errdefer allocator.destroy(app);
-        app.* = try vxfw.App.init(allocator);
+        app.* = .{
+            .allocator = allocator,
+            .tty = undefined,
+            .vx = try vaxis.init(allocator, .{
+                .system_clipboard_allocator = allocator,
+                .kitty_keyboard_flags = .{
+                    .report_events = true,
+                },
+            }),
+            .timers = std.ArrayList(vxfw.Tick){},
+            .wants_focus = null,
+            .buffer = undefined,
+        };
+        // Init Tty with heap buffer — pointer is stable for the lifetime of app
+        app.tty = try vaxis.Tty.init(&app.buffer);
         errdefer app.deinit();
 
         model.* = .{
@@ -380,6 +402,22 @@ pub const Model = struct {
     }
 
     pub fn run(self: *Model) !void {
+        // Ensure the screen has a valid size before entering the render loop.
+        // App.run() will call doLayout which divides width_pix / width —
+        // a division-by-zero if the screen hasn't been resized yet or if
+        // the terminal reports zero dimensions.
+        const app = self.app;
+        const tty = &app.tty;
+        const vx = &app.vx;
+        var ws: vaxis.Winsize = vaxis.Tty.getWinsize(app.tty.fd) catch
+            .{ .rows = 24, .cols = 80, .x_pixel = 640, .y_pixel = 384 };
+        // Clamp to sane minimums — some terminals report 0 for some fields
+        if (ws.cols == 0) ws.cols = 80;
+        if (ws.rows == 0) ws.rows = 24;
+        if (ws.x_pixel == 0) ws.x_pixel = ws.cols * 8;
+        if (ws.y_pixel == 0) ws.y_pixel = ws.rows * 16;
+        try vx.resize(self.allocator, tty.writer(), ws);
+
         try self.app.run(self.widget(), .{ .framerate = 30 });
     }
 

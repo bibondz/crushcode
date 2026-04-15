@@ -63,35 +63,34 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         .max_tokens = config.max_tokens,
         .temperature = config.temperature,
         .override_url = config.getProviderOverrideUrl(provider_name),
-    }) catch |err| switch (err) {
-        error.NotATerminal => {
-            stdout_print("Terminal UI not available (no TTY). Falling back to interactive chat.\n\n", .{});
-            const fallback_args = args_mod.Args{
-                .command = "",
-                .provider = args.provider,
-                .model = args.model,
-                .profile = args.profile,
-                .config_file = args.config_file,
-                .interactive = true,
-                .tui = false,
-                .json = false,
-                .color = null,
-                .checkpoint = null,
-                .restore = null,
-                .agents = null,
-                .max_agents = 5,
-                .memory = null,
-                .memory_limit = 100,
-                .stream = false,
-                .show_thinking = false,
-                .permission = null,
-                .intensity = null,
-                .remaining = &.{},
-                .has_command = true,
-            };
-            try chat_mod.handleChat(fallback_args, config);
-        },
-        else => return err,
+    }) catch {
+        // Any TUI initialization failure (no /dev/tty, no TTY, vaxis error, etc.)
+        // falls back to interactive chat mode. This handles WSL and headless environments.
+        stdout_print("Terminal UI not available. Falling back to interactive chat.\n\n", .{});
+        const fallback_args = args_mod.Args{
+            .command = "",
+            .provider = args.provider,
+            .model = args.model,
+            .profile = args.profile,
+            .config_file = args.config_file,
+            .interactive = true,
+            .tui = false,
+            .json = false,
+            .color = null,
+            .checkpoint = null,
+            .restore = null,
+            .agents = null,
+            .max_agents = 5,
+            .memory = null,
+            .memory_limit = 100,
+            .stream = false,
+            .show_thinking = false,
+            .permission = null,
+            .intensity = null,
+            .remaining = &.{},
+            .has_command = true,
+        };
+        try chat_mod.handleChat(fallback_args, config);
     };
 }
 
