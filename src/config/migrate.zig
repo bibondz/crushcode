@@ -36,10 +36,10 @@ pub fn needsMigration(allocator: Allocator) bool {
 /// Run the migration from ~/.crushcode/ to XDG paths.
 /// Moves files to their new locations:
 ///   config.toml, providers.toml, profile.toml → ~/.config/crushcode/
-///   sessions/  → ~/.local/share/crushcode/sessions/
-///   plugins/   → ~/.local/share/crushcode/plugins/
-///   auth/      → ~/.config/crushcode/auth/
-///   *.log      → ~/.local/state/crushcode/logs/
+///   profiles/, current_profile               → ~/.config/crushcode/
+///   sessions/                                 → ~/.local/share/crushcode/sessions/
+///   plugins/                                  → ~/.local/share/crushcode/plugins/
+///   auth/                                     → ~/.config/crushcode/auth/
 pub fn runMigration(allocator: Allocator) !void {
     const stdout = file_compat.File.stdout().writer();
 
@@ -70,6 +70,12 @@ pub fn runMigration(allocator: Allocator) !void {
     for (config_files) |filename| {
         try moveFile(allocator, old_dir, config_dir, filename);
     }
+
+    // profiles/ → ~/.config/crushcode/profiles/
+    try moveDir(allocator, old_dir, config_dir, "profiles");
+
+    // current_profile → ~/.config/crushcode/current_profile
+    try moveFile(allocator, old_dir, config_dir, "current_profile");
 
     // sessions/ → ~/.local/share/crushcode/sessions/
     try moveDir(allocator, old_dir, data_dir, "sessions");
