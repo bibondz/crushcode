@@ -284,7 +284,7 @@ fn runFirstTimeSetup(allocator: std.mem.Allocator, config: *config_mod.Config) !
     stdout.print(
         \\
         \\╔══════════════════════════════════════════╗
-        \\║       Crushcode v0.5.0 — First Setup     ║
+        \\║       Crushcode v0.6.0 — First Setup     ║
         \\╚══════════════════════════════════════════╝
         \\
         \\Welcome! Let's configure your default AI provider.
