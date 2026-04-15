@@ -8,6 +8,7 @@ const write_mod = @import("write");
 const git_mod = @import("git");
 const skills_mod = @import("skills");
 const install_mod = @import("install");
+const update_mod = @import("update");
 const jobs_mod = @import("jobs");
 const plugin_command = @import("plugin_command");
 const lsp_handler = @import("lsp_handler");
@@ -87,6 +88,10 @@ pub fn handleInstall(args: args_mod.Args) !void {
     try install_mod.handleInstall(args.remaining);
 }
 
+pub fn handleUpdate(args: args_mod.Args) !void {
+    try update_mod.handleUpdate(args.remaining);
+}
+
 pub fn handleJobs(args: args_mod.Args) !void {
     try jobs_mod.handleJobs(args.remaining);
 }
@@ -150,6 +155,7 @@ pub fn printHelp() !void {
         \\  tools         List, enable, disable, check tools
         \\  tui          Launch interactive terminal UI
         \\  install      Show installation instructions
+        \\  update       Check and install updates
         \\  jobs         Job control (background jobs)
         \\  capabilities   List registered tools, plugins, and skills
         \\  worktree      Show worktree manager status

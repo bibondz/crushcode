@@ -52,6 +52,7 @@ const commands = [_]Command{
     .{ .name = "plugin", .handler = wrapArgsOnly(handlers.handlePlugin), .description = "Plugin management" },
     .{ .name = "tui", .handler = handlers.handleTUI, .description = "Launch terminal UI" },
     .{ .name = "install", .handler = wrapArgsOnly(handlers.handleInstall), .description = "Show installation instructions" },
+    .{ .name = "update", .handler = wrapArgsOnly(handlers.handleUpdate), .description = "Check and install updates" },
     .{ .name = "jobs", .handler = wrapArgsOnly(handlers.handleJobs), .description = "Job control" },
     .{ .name = "capabilities", .handler = wrapArgsOnly(handlers.handleCapabilities), .description = "List registered capabilities" },
     .{ .name = "worktree", .handler = wrapArgsOnly(handlers.handleWorktree), .description = "Show worktree status" },

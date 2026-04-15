@@ -129,6 +129,9 @@ pub fn build(b: *std.Build) !void {
     });
     const json_extract_mod = simpleMod(b, "src/json/extract.zig", target, optimize);
     addImports(install_mod, &.{imp("json_extract", json_extract_mod)});
+    const update_mod = createMod(b, "src/commands/update.zig", target, optimize, &.{
+        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
+    });
     const provider_oauth_mod = createMod(b, "src/auth/provider_oauth.zig", target, optimize, &.{
         imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
     });
@@ -334,11 +337,11 @@ pub fn build(b: *std.Build) !void {
     });
 
     const handlers_mod = createMod(b, "src/commands/handlers.zig", target, optimize, &.{
-        imp("args", cli_mod),                                    imp("config", config_mod),           imp("chat", chat_mod),                     imp("read", read_mod),
-        imp("shell", shell_mod),                                 imp("write", write_mod),             imp("git", git_mod),                       imp("skills", skills_mod),
-        imp("install", install_mod),                             imp("jobs", jobs_mod),               imp("plugin_command", plugin_command_mod), imp("lsp_handler", lsp_handler_mod),
-        imp("mcp_handler", mcp_handler_mod),                     imp("ai_handlers", ai_handlers_mod), imp("tool_handlers", tool_handlers_mod),   imp("system_handlers", system_handlers_mod),
-        imp("experimental_handlers", experimental_handlers_mod), imp("auth_cmd", auth_cmd_mod),
+        imp("args", cli_mod),                        imp("config", config_mod),                               imp("chat", chat_mod),               imp("read", read_mod),
+        imp("shell", shell_mod),                     imp("write", write_mod),                                 imp("git", git_mod),                 imp("skills", skills_mod),
+        imp("install", install_mod),                 imp("update", update_mod),                               imp("jobs", jobs_mod),               imp("plugin_command", plugin_command_mod),
+        imp("lsp_handler", lsp_handler_mod),         imp("mcp_handler", mcp_handler_mod),                     imp("ai_handlers", ai_handlers_mod), imp("tool_handlers", tool_handlers_mod),
+        imp("system_handlers", system_handlers_mod), imp("experimental_handlers", experimental_handlers_mod), imp("auth_cmd", auth_cmd_mod),
     });
 
     const cli_registry_mod = createMod(b, "src/cli/registry.zig", target, optimize, &.{
@@ -457,7 +460,7 @@ pub fn build(b: *std.Build) !void {
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
         auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,      widget_palette_mod,
-        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    migrate_mod,
+        widget_permission_mod,   widget_setup_mod,     widget_spinner_mod,    widget_gradient_mod,       widget_toast_mod,           widget_typewriter_mod,    migrate_mod,               update_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
