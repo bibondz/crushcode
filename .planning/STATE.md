@@ -9,7 +9,7 @@
 
 **Core Value:** Ship a working AI coding assistant in Zig that can execute shell commands, manage files, and interact with AI providers (Ollama, OpenRouter).
 
-**Current Focus:** Phase 17 — TUI Widget Extraction (v0.6.0 Architecture + UI/UX Polish)
+**Current Focus:** Phase 18 — Animated Spinner Integration
 
 ---
 
@@ -18,10 +18,10 @@
 | Field | Value |
 |-------|-------|
 | Milestone | v0.6.0 — Architecture + UI/UX Polish |
-| Phase | 17 |
-| Plan | 3 plans created |
-| Status | Ready for execution |
-| Progress | 0% |
+| Phase | 18 |
+| Plan | 1 plan executed |
+| Status | Complete |
+| Progress | 100% |
 
 ---
 
@@ -41,9 +41,9 @@
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| 16 | Command Registry | ⬜ Not started |
-| 17 | TUI Widget Extraction | 📋 Planned (3 plans) |
-| 18 | Animated Spinner + Stalled Detection | ⬜ Not started |
+| 16 | Command Registry | ✅ Done |
+| 17 | TUI Widget Extraction | ✅ Done |
+| 18 | Animated Spinner + Stalled Detection | ✅ Done |
 | 19 | Gradient Text + Toast Notifications | ⬜ Not started |
 | 20 | Diff Word Highlighting + Typewriter | ⬜ Not started |
 

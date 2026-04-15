@@ -20,6 +20,7 @@ const widget_sidebar = @import("widget_sidebar");
 const widget_palette = @import("widget_palette");
 const widget_permission = @import("widget_permission");
 const widget_setup = @import("widget_setup");
+const widget_spinner = @import("widget_spinner");
 
 const vxfw = vaxis.vxfw;
 
@@ -195,6 +196,7 @@ pub const Model = struct {
     sidebar_visible: bool = false,
     workers: std.ArrayList(WorkerItem),
     next_worker_id: u32 = 0,
+    spinner: ?widget_spinner.AnimatedSpinner = null,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -283,6 +285,7 @@ pub const Model = struct {
         model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
         model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
         model.workers = try std.ArrayList(WorkerItem).initCapacity(allocator, 4);
+        model.spinner = null;
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -1112,6 +1115,12 @@ pub const Model = struct {
 
     fn draw(self: *Model, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         self.reapWorkerIfDone();
+
+        // Tick spinner each frame for animation
+        if (self.spinner) |*spinner| {
+            spinner.tick();
+        }
+
         self.lock.lock();
         defer self.lock.unlock();
 
@@ -1408,6 +1417,7 @@ pub const Model = struct {
         try self.appendHistoryMessageUnlocked("user", trimmed);
         try self.addMessageUnlocked("assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
+        self.spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
         self.request_active = true;
         self.request_done = false;
         self.awaiting_first_token = true;
@@ -2025,6 +2035,7 @@ pub const Model = struct {
         }
         self.request_active = false;
         self.request_done = true;
+        self.spinner = null;
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
@@ -2063,6 +2074,7 @@ pub const Model = struct {
 
         self.request_active = false;
         self.request_done = true;
+        self.spinner = null;
         self.saveSessionSnapshotUnlocked() catch {};
     }
 
@@ -2070,6 +2082,11 @@ pub const Model = struct {
         _ = done;
         if (token.len == 0) {
             return;
+        }
+
+        // Feed token to spinner for animation + stalled detection
+        if (self.spinner) |*spinner| {
+            spinner.feedToken();
         }
 
         self.lock.lock();
