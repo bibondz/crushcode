@@ -514,7 +514,7 @@ pub const TUIApp = struct {
         } else if (std.mem.eql(u8, trimmed, "/exit") or std.mem.eql(u8, trimmed, "/quit") or std.mem.eql(u8, trimmed, "/q")) {
             self.should_exit = true;
         } else if (std.mem.eql(u8, trimmed, "/version") or std.mem.eql(u8, trimmed, "/v")) {
-            try self.addAssistantLine("Crushcode v0.6.0");
+            try self.addAssistantLine("Crushcode v0.7.0");
         } else if (std.mem.eql(u8, trimmed, "/usage") or std.mem.eql(u8, trimmed, "/cost")) {
             const text = try std.fmt.allocPrint(self.allocator, "Requests: {d} | Tokens: {d} in / {d} out", .{
                 self.request_count,
@@ -580,7 +580,7 @@ pub fn runTUIWithClient(allocator: std.mem.Allocator, client: *AIClient) !void {
 
     // Welcome banner
     try app.addLine("╔══════════════════════════════════════════════════╗");
-    try app.addLine("║            Crushcode v0.6.0                     ║");
+    try app.addLine("║            Crushcode v0.7.0                     ║");
     try app.addLine("║       Zig-based AI Coding Assistant              ║");
     try app.addLine("╚══════════════════════════════════════════════════╝");
     try app.addLine("");
@@ -622,7 +622,7 @@ pub fn runTUI(allocator: std.mem.Allocator, prompt_fn: anytype) !void {
     defer app.deinit();
 
     try app.addLine("╔══════════════════════════════════════════════════╗");
-    try app.addLine("║            Crushcode v0.6.0                     ║");
+    try app.addLine("║            Crushcode v0.7.0                     ║");
     try app.addLine("╚══════════════════════════════════════════════════╝");
     try app.addLine("");
     try app.addLine("No AI client. Run 'crushcode chat' for AI mode.");
