@@ -66,6 +66,7 @@ const commands = [_]Command{
     .{ .name = "connect", .handler = wrapArgsOnly(handlers.handleConnect), .description = "Add API credentials" },
     .{ .name = "profile", .handler = wrapArgsOnly(handlers.handleProfile), .description = "Manage profiles" },
     .{ .name = "checkpoint", .handler = wrapArgsOnly(handlers.handleCheckpoint), .description = "Manage checkpoints" },
+    .{ .name = "diff", .handler = wrapArgsOnly(handlers.handleDiff), .description = "Compare two files" },
     .{ .name = "grep", .handler = wrapArgsOnly(handlers.handleGrep), .description = "AST-grep pattern search" },
     .{ .name = "lsp", .handler = wrapArgsOnly(handlers.handleLSP), .description = "Language Server Protocol client" },
     .{ .name = "mcp", .handler = wrapArgsOnly(handlers.handleMCP), .description = "MCP tools management" },

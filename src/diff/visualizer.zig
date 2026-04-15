@@ -23,8 +23,8 @@ pub const DiffVisualizer = struct {
         // Simple word-based diff visualization
         stdout.print("Changes detected:\n", .{}) catch {};
 
-        var old_iter = std.mem.splitScalar(u8, old_text, '\n').iterator();
-        var new_iter = std.mem.splitScalar(u8, new_text, '\n').iterator();
+        var old_iter = std.mem.splitScalar(u8, old_text, '\n');
+        var new_iter = std.mem.splitScalar(u8, new_text, '\n');
 
         var line_num: usize = 1;
         var diff_count: usize = 0;
@@ -58,18 +58,16 @@ pub const DiffVisualizer = struct {
     }
 
     /// Show unified diff format
-    pub fn showUnifiedDiff(self: *DiffVisualizer, file_path: []const u8, old_text: []const u8, new_text: []const u8) !void {
+    pub fn showUnifiedDiff(self: *DiffVisualizer, old_path: []const u8, old_text: []const u8, new_text: []const u8) !void {
         _ = self;
         const stdout = file_compat.File.stdout().writer();
 
-        stdout.print("Diff for {s}:\n", .{file_path}) catch {};
+        stdout.print("--- {s}\n", .{old_path}) catch {};
 
-        var old_iter = std.mem.splitScalar(u8, old_text, '\n').iterator();
-        var new_iter = std.mem.splitScalar(u8, new_text, '\n').iterator();
+        var old_iter = std.mem.splitScalar(u8, old_text, '\n');
+        var new_iter = std.mem.splitScalar(u8, new_text, '\n');
 
         var line_num: usize = 1;
-        var in_old_block = false;
-        var in_new_block = false;
         var diff_count: usize = 0;
 
         while (true) {
@@ -82,41 +80,17 @@ pub const DiffVisualizer = struct {
             const new_line = new_line_opt orelse "";
 
             if (std.mem.eql(u8, old_line, new_line)) {
-                // Same line
-                if (in_old_block) {
-                    stdout.print("  {s}\n", .{old_line}) catch {};
-                } else if (in_new_block) {
-                    stdout.print("  {s}\n", .{new_line}) catch {};
-                } else {
-                    stdout.print("    {s}\n", .{old_line}) catch {};
-                }
-                line_num += 1;
+                stdout.print("    {s}\n", .{old_line}) catch {};
             } else {
-                // Different lines - show as diff
-                in_old_block = true;
-                in_new_block = true;
-
-                stdout.print("-{d}\n", .{line_num}) catch {};
-                stdout.print("-{s}\n", .{old_line}) catch {};
-                diff_count += 1;
-                line_num += 1;
-
-                const next_old = old_iter.next() orelse "";
-                const next_new = new_iter.next() orelse "";
-                if (!std.mem.eql(u8, next_old, next_new)) {
-                    // Different - new block
-                    in_old_block = false;
-                    in_new_block = false;
-
-                    stdout.print("+{d}\n", .{line_num}) catch {};
-                    stdout.print("+{s}\n", .{next_new}) catch {};
-                    line_num += 1;
-                } else {
-                    // Same again - end both blocks
-                    in_old_block = false;
-                    in_new_block = false;
+                if (old_line_opt != null) {
+                    stdout.print("-   {s}\n", .{old_line}) catch {};
                 }
+                if (new_line_opt != null) {
+                    stdout.print("+   {s}\n", .{new_line}) catch {};
+                }
+                diff_count += 1;
             }
+            line_num += 1;
         }
 
         if (diff_count > 0) {

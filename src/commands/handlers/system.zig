@@ -368,7 +368,7 @@ pub fn handleDiff(args: args_mod.Args) !void {
     const new_path = args.remaining[1];
 
     var visualizer = diff_mod.DiffVisualizer.init(allocator);
-    defer visualizer.deinit();
+    _ = &visualizer;
 
     try visualizer.compareFiles(old_path, new_path);
 }
