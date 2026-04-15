@@ -11,410 +11,53 @@ const markdown = @import("markdown");
 const theme_mod = @import("theme");
 const usage_pricing = @import("usage_pricing");
 const usage_budget = @import("usage_budget");
+const widget_types = @import("widget_types");
+const widget_helpers = @import("widget_helpers");
+const widget_messages = @import("widget_messages");
+const widget_header = @import("widget_header");
+const widget_input = @import("widget_input");
+const widget_sidebar = @import("widget_sidebar");
 
 const vxfw = vaxis.vxfw;
-const app_version = "0.5.0";
 
-pub const WorkerStatus = enum {
-    pending,
-    running,
-    done,
-    @"error",
-    cancelled,
-};
-
-pub const WorkerItem = struct {
-    id: u32,
-    task: []const u8,
-    status: WorkerStatus,
-    result: ?[]const u8 = null,
-    @"error": ?[]const u8 = null,
-};
-
-pub const Options = struct {
-    provider_name: []const u8,
-    model_name: []const u8,
-    api_key: []const u8,
-    system_prompt: ?[]const u8 = null,
-    max_tokens: u32 = 4096,
-    temperature: f32 = 0.7,
-    override_url: ?[]const u8 = null,
-};
-
-pub const Message = struct {
-    role: []const u8,
-    content: []const u8,
-    tool_call_id: ?[]const u8 = null,
-    tool_calls: ?[]const core.client.ToolCallInfo = null,
-};
+// Types from widget_types
+pub const WorkerStatus = widget_types.WorkerStatus;
+pub const WorkerItem = widget_types.WorkerItem;
+pub const Options = widget_types.Options;
+pub const Message = widget_types.Message;
+const ToolCallStatus = widget_types.ToolCallStatus;
+const PermissionMode = widget_types.PermissionMode;
+const PermissionDecision = widget_types.PermissionDecision;
+const ToolPermission = widget_types.ToolPermission;
+const FallbackProvider = widget_types.FallbackProvider;
+const InterruptedSessionCandidate = widget_types.InterruptedSessionCandidate;
+const app_version = widget_types.app_version;
+const setup_provider_data = widget_types.setup_provider_data;
+const recent_files_max = widget_types.recent_files_max;
+const recent_files_display_max = widget_types.recent_files_display_max;
+const tool_diff_max_lines = widget_types.tool_diff_max_lines;
+const session_row_display_max = widget_types.session_row_display_max;
+const recent_file_tool_names = widget_types.recent_file_tool_names;
+const context_source_files = widget_types.context_source_files;
+const builtin_tool_schemas = widget_types.builtin_tool_schemas;
 
 threadlocal var active_stream_model: ?*Model = null;
 
-const setup_provider_data = [_][]const u8{
-    "openrouter",
-    "openai",
-    "anthropic",
-    "groq",
-    "together",
-    "gemini",
-    "xai",
-    "mistral",
-    "ollama",
-    "zai",
-};
+// Widgets from widget_messages
+const RoleLabelWidget = widget_messages.RoleLabelWidget;
+const MessageContentWidget = widget_messages.MessageContentWidget;
+const ToolCallWidget = widget_messages.ToolCallWidget;
+const DiffWidget = widget_messages.DiffWidget;
+const MessageGapWidget = widget_messages.MessageGapWidget;
+const SeparatorWidget = widget_messages.SeparatorWidget;
 
-const ToolCallStatus = enum {
-    pending,
-    success,
-    failed,
-};
-
-const recent_files_max = 5;
-const recent_files_display_max = 3;
-const tool_diff_max_lines: usize = 80;
-const session_row_display_max: usize = 8;
-const recent_file_tool_names = [_][]const u8{ "read_file", "write_file", "edit", "glob" };
-const context_source_files = [_][]const u8{
-    "build.zig",
-    "src/main.zig",
-    "src/cli/args.zig",
-    "src/commands/chat.zig",
-    "src/config/config.zig",
-    "src/ai/client.zig",
-    "src/ai/registry.zig",
-    "src/tui/chat_tui_app.zig",
-};
-
-const builtin_tool_schemas = [_]core.ToolSchema{
-    .{
-        .name = "read_file",
-        .description = "Read a file from disk",
-        .parameters =
-        \\{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
-        ,
-    },
-    .{
-        .name = "shell",
-        .description = "Run a shell command",
-        .parameters =
-        \\{"type":"object","properties":{"command":{"type":"string"}},"required":["command"]}
-        ,
-    },
-    .{
-        .name = "write_file",
-        .description = "Write full content to a file",
-        .parameters =
-        \\{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}
-        ,
-    },
-    .{
-        .name = "glob",
-        .description = "Find files matching a glob pattern",
-        .parameters =
-        \\{"type":"object","properties":{"pattern":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
-        ,
-    },
-    .{
-        .name = "grep",
-        .description = "Search file contents for text",
-        .parameters =
-        \\{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"include":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
-        ,
-    },
-    .{
-        .name = "edit",
-        .description = "Replace one exact string in a file",
-        .parameters =
-        \\{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["file_path","old_string","new_string"]}
-        ,
-    },
-};
-
-const PermissionMode = enum {
-    default,
-    auto,
-    plan,
-};
-
-const PermissionDecision = enum {
-    yes,
-    no,
-    always,
-};
-
-const ToolPermission = struct {
-    tool_name: []const u8,
-    arguments: []const u8,
-};
-
-const FallbackProvider = struct {
-    provider_name: []const u8,
-    api_key: []const u8,
-    model_name: []const u8,
-    override_url: ?[]const u8,
-};
-
-const InterruptedSessionCandidate = struct {
-    session: session_mod.Session,
-    path: []const u8,
-};
-
-const RoleLabelWidget = struct {
-    label: []const u8,
-    style: vaxis.Style,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const RoleLabelWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const RoleLabelWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const RoleLabelWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const rich: vxfw.RichText = .{
-            .text = &.{
-                .{ .text = self.label, .style = self.style },
-                .{ .text = ": ", .style = .{ .fg = self.theme.dimmed, .dim = true } },
-            },
-            .softwrap = false,
-            .width_basis = .longest_line,
-        };
-        return rich.draw(ctx);
-    }
-};
-
-const MessageContentWidget = struct {
-    message: *const Message,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const MessageContentWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const MessageContentWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const MessageContentWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const role_style = messageRoleStyle(self.theme, self.message.role);
-        const body_style = messageBodyStyle(self.theme, self.message.role);
-        const role_label: RoleLabelWidget = .{ .label = messageRoleLabel(self.theme, self.message.role), .style = role_style, .theme = self.theme };
-        const content_surface = if (std.mem.eql(u8, self.message.role, "assistant")) blk: {
-            const segments = try markdown.parseMarkdown(ctx.arena, self.message.content);
-            const content = vxfw.RichText{
-                .text = segments,
-                .softwrap = true,
-                .width_basis = .parent,
-            };
-            break :blk try content.draw(ctx.withConstraints(
-                .{ .width = 0, .height = 0 },
-                .{ .width = ctx.max.width, .height = ctx.max.height },
-            ));
-        } else blk: {
-            const content = vxfw.Text{
-                .text = self.message.content,
-                .style = body_style,
-                .softwrap = true,
-                .width_basis = .parent,
-            };
-            break :blk try content.draw(ctx.withConstraints(
-                .{ .width = 0, .height = 0 },
-                .{ .width = ctx.max.width, .height = ctx.max.height },
-            ));
-        };
-
-        var row = vxfw.FlexRow{
-            .children = &.{
-                .{ .widget = role_label.widget(), .flex = 0 },
-                .{ .widget = try contentSurfaceWidget(ctx.arena, content_surface), .flex = 1 },
-            },
-        };
-        return row.draw(ctx);
-    }
-};
-
-const ToolCallWidget = struct {
-    tool_call: core.client.ToolCallInfo,
-    status: ToolCallStatus,
-    output: ?[]const u8,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const ToolCallWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const ToolCallWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const ToolCallWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
-        const header = vxfw.RichText{
-            .text = &.{
-                .{ .text = toolCallStatusIcon(self.status), .style = toolCallStatusStyle(self.theme, self.status) },
-                .{ .text = " ", .style = .{} },
-                .{ .text = self.tool_call.name, .style = .{ .fg = self.theme.header_fg, .bold = true } },
-                .{ .text = if (self.tool_call.arguments.len > 0) " " else "", .style = .{} },
-                .{ .text = self.tool_call.arguments, .style = .{ .fg = self.theme.dimmed, .dim = true } },
-            },
-            .softwrap = true,
-            .width_basis = .parent,
-        };
-        const header_surface = try header.draw(ctx.withConstraints(
-            .{ .width = max.width, .height = 0 },
-            .{ .width = max.width, .height = max.height },
-        ));
-
-        const diff_text = if (isDiffRenderableTool(self.tool_call.name) and self.output != null)
-            extractToolDiffText(self.output.?)
-        else
-            null;
-        if (diff_text) |text| {
-            const diff_widget = DiffWidget{
-                .file_path = extractToolFilePath(self.tool_call.arguments) orelse self.tool_call.name,
-                .diff_text = text,
-                .theme = self.theme,
-            };
-            const diff_surface = try diff_widget.draw(ctx.withConstraints(
-                .{ .width = max.width, .height = 0 },
-                .{ .width = max.width, .height = max.height },
-            ));
-
-            const height = header_surface.size.height + diff_surface.size.height;
-            const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
-            @memset(surface.buffer, .{ .style = .{} });
-
-            const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-            children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface };
-            children[1] = .{ .origin = .{ .row = @intCast(header_surface.size.height), .col = 0 }, .surface = diff_surface };
-
-            return .{
-                .size = surface.size,
-                .widget = self.widget(),
-                .buffer = surface.buffer,
-                .children = children,
-            };
-        }
-
-        const output_text = try toolCallOutputText(ctx.arena, self.output, self.status);
-        if (output_text.len == 0) {
-            return header_surface;
-        }
-
-        const output_widget = vxfw.Text{
-            .text = output_text,
-            .style = .{ .fg = self.theme.dimmed, .dim = true },
-            .softwrap = true,
-            .width_basis = .parent,
-        };
-        const output_surface = try output_widget.draw(ctx.withConstraints(
-            .{ .width = max.width, .height = 0 },
-            .{ .width = max.width, .height = max.height },
-        ));
-
-        const height = header_surface.size.height + output_surface.size.height;
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
-        @memset(surface.buffer, .{ .style = .{} });
-
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = header_surface };
-        children[1] = .{ .origin = .{ .row = @intCast(header_surface.size.height), .col = 0 }, .surface = output_surface };
-
-        return .{
-            .size = surface.size,
-            .widget = self.widget(),
-            .buffer = surface.buffer,
-            .children = children,
-        };
-    }
-};
-
-const DiffWidget = struct {
-    file_path: []const u8,
-    diff_text: []const u8,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const DiffWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const DiffWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const DiffWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const max = ctx.max.size();
-        const width = max.width;
-        const inner_width = width -| 4;
-
-        const title_line = try std.fmt.allocPrint(ctx.arena, "Diff: {s}", .{self.file_path});
-        const title = vxfw.Text{
-            .text = title_line,
-            .style = .{ .fg = self.theme.accent, .bold = true },
-            .softwrap = true,
-            .width_basis = .parent,
-        };
-        const title_surface = try title.draw(ctx.withConstraints(
-            .{ .width = inner_width, .height = 0 },
-            .{ .width = inner_width, .height = null },
-        ));
-
-        const diff_segments = try diff.parseDiff(ctx.arena, self.diff_text, tool_diff_max_lines);
-        const diff_text_widget = vxfw.RichText{
-            .text = diff_segments,
-            .softwrap = true,
-            .width_basis = .parent,
-        };
-        const diff_surface = try diff_text_widget.draw(ctx.withConstraints(
-            .{ .width = inner_width, .height = 0 },
-            .{ .width = inner_width, .height = null },
-        ));
-
-        const height = 2 + title_surface.size.height + diff_surface.size.height;
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
-        @memset(surface.buffer, .{ .style = .{ .bg = self.theme.header_bg } });
-        drawBorder(&surface, .{ .fg = self.theme.accent, .dim = true });
-
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 1, .col = 2 }, .surface = title_surface };
-        children[1] = .{ .origin = .{ .row = @intCast(1 + title_surface.size.height), .col = 2 }, .surface = diff_surface };
-
-        return .{
-            .size = surface.size,
-            .widget = self.widget(),
-            .buffer = surface.buffer,
-            .children = children,
-        };
-    }
-};
-
+// MessageWidget wrapper — bridges *Model to concrete data
 const MessageWidget = struct {
     model: *const Model,
     message_index: usize,
 
     fn widget(self: *const MessageWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
+        return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
     }
 
     fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
@@ -423,181 +66,16 @@ const MessageWidget = struct {
     }
 
     fn draw(self: *const MessageWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const message = &self.model.messages.items[self.message_index];
-        const max = ctx.max.size();
-        const border_width: u16 = if (std.mem.eql(u8, message.role, "user")) 2 else 0;
-        const content_width = max.width -| border_width;
-
-        var child_list = std.ArrayList(vxfw.SubSurface).empty;
-        defer child_list.deinit(ctx.arena);
-
-        var current_row: u16 = 0;
-        if (shouldRenderMessageContent(message)) {
-            const theme = self.model.current_theme;
-            const content_surface = try (MessageContentWidget{ .message = message, .theme = theme }).draw(ctx.withConstraints(
-                .{ .width = content_width, .height = 0 },
-                .{ .width = content_width, .height = null },
-            ));
-            try child_list.append(ctx.arena, .{
-                .origin = .{ .row = 0, .col = @intCast(border_width) },
-                .surface = content_surface,
-            });
-            current_row += content_surface.size.height;
-        }
-
-        if (message.tool_calls) |tool_calls| {
-            for (tool_calls, 0..) |tool_call, idx| {
-                if (current_row > 0 or idx > 0) {
-                    current_row += 1;
-                }
-                const tool_result = findToolResultMessageAfter(self.model.messages.items, self.message_index, tool_call.id);
-                const tool_widget = ToolCallWidget{
-                    .tool_call = tool_call,
-                    .status = toolCallStatusForMessage(tool_result),
-                    .output = if (tool_result) |result| result.content else null,
-                    .theme = self.model.current_theme,
-                };
-                const tool_surface = try tool_widget.draw(ctx.withConstraints(
-                    .{ .width = content_width, .height = 0 },
-                    .{ .width = content_width, .height = null },
-                ));
-                try child_list.append(ctx.arena, .{
-                    .origin = .{ .row = @intCast(current_row), .col = @intCast(border_width) },
-                    .surface = tool_surface,
-                });
-                current_row += tool_surface.size.height;
-            }
-        }
-
-        const height = @max(current_row, 1);
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = max.width, .height = height });
-        @memset(surface.buffer, .{ .style = .{} });
-
-        if (border_width > 0) {
-            const border_cell: vaxis.Cell = .{
-                .char = .{ .grapheme = "▌", .width = 1 },
-                .style = .{ .fg = self.model.current_theme.border },
-            };
-            for (0..height) |row| {
-                surface.writeCell(0, @intCast(row), border_cell);
-            }
-        }
-
-        const children = try ctx.arena.alloc(vxfw.SubSurface, child_list.items.len);
-        @memcpy(children, child_list.items);
-
-        return .{
-            .size = surface.size,
-            .widget = self.widget(),
-            .buffer = surface.buffer,
-            .children = children,
+        const inner = widget_messages.MessageWidget{
+            .messages = self.model.messages.items,
+            .message_index = self.message_index,
+            .theme = self.model.current_theme,
         };
+        return inner.draw(ctx);
     }
 };
 
-const MessageGapWidget = struct {
-    fn widget(self: *const MessageGapWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const MessageGapWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const MessageGapWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const width = ctx.max.width orelse ctx.min.width;
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
-        @memset(surface.buffer, .{ .style = .{} });
-        return surface;
-    }
-};
-
-const SeparatorWidget = struct {
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const SeparatorWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const SeparatorWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const SeparatorWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const width = ctx.max.width orelse ctx.min.width;
-        const line_width: u16 = @max(@min(width, @as(u16, 40)), @as(u16, 2));
-        const line = if (line_width <= 3)
-            try repeated(ctx.arena, "─", line_width)
-        else
-            try std.fmt.allocPrint(ctx.arena, "╶{s}╴", .{try repeated(ctx.arena, "─", line_width - 2)});
-        const text: vxfw.Text = .{
-            .text = line,
-            .style = .{ .fg = self.theme.border, .dim = true },
-            .softwrap = false,
-            .width_basis = .longest_line,
-        };
-        return text.draw(ctx.withConstraints(.{ .width = line_width, .height = 1 }, .{ .width = line_width, .height = 1 }));
-    }
-};
-
-const HeaderWidget = struct {
-    title: []const u8,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const HeaderWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const HeaderWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const HeaderWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const width = ctx.max.width orelse ctx.min.width;
-        const bg_style: vaxis.Style = .{ .fg = self.theme.header_fg, .bg = self.theme.header_bg };
-        const title = vxfw.RichText{
-            .text = &.{.{ .text = self.title, .style = .{ .fg = self.theme.header_fg, .bg = self.theme.header_bg, .bold = true } }},
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        const title_surface = try title.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-
-        const line = try repeated(ctx.arena, "─", width);
-        const separator = vxfw.Text{
-            .text = line,
-            .style = .{ .fg = self.theme.border, .bg = self.theme.header_bg, .dim = true },
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        const separator_surface = try separator.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 2 });
-        @memset(surface.buffer, .{ .style = bg_style });
-
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 2);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = title_surface };
-        children[1] = .{ .origin = .{ .row = 1, .col = 0 }, .surface = separator_surface };
-
-        return .{
-            .size = surface.size,
-            .widget = self.widget(),
-            .buffer = surface.buffer,
-            .children = children,
-        };
-    }
-};
+const HeaderWidget = widget_header.HeaderWidget;
 
 const SurfaceWidget = struct {
     surface: vxfw.Surface,
@@ -616,313 +94,12 @@ const SurfaceWidget = struct {
     }
 };
 
-const FilesWidget = struct {
-    files: []const []const u8,
-    theme: *const theme_mod.Theme,
+const FilesWidget = widget_sidebar.FilesWidget;
 
-    fn widget(self: *const FilesWidget) vxfw.Widget {
-        return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
-    }
+const SidebarWidget = widget_sidebar.SidebarWidget;
+const SidebarContext = widget_sidebar.SidebarContext;
 
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const FilesWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const FilesWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const width = ctx.max.width orelse ctx.min.width;
-        const surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = 1 });
-        @memset(surface.buffer, .{ .style = .{} });
-
-        if (self.files.len == 0) return surface;
-
-        var buffer = std.ArrayList(u8).empty;
-        try buffer.appendSlice(ctx.arena, "📄 Files: ");
-        for (self.files, 0..) |file, idx| {
-            if (idx > 0) try buffer.appendSlice(ctx.arena, ", ");
-            try buffer.appendSlice(ctx.arena, file);
-        }
-
-        const text = vxfw.Text{
-            .text = try buffer.toOwnedSlice(ctx.arena),
-            .style = .{ .fg = self.theme.dimmed, .dim = true },
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        const text_surface = try text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-        const children = try ctx.arena.alloc(vxfw.SubSurface, 1);
-        children[0] = .{ .origin = .{ .row = 0, .col = 0 }, .surface = text_surface };
-        return .{ .size = surface.size, .widget = self.widget(), .buffer = surface.buffer, .children = children };
-    }
-};
-
-const SidebarWidget = struct {
-    model: *const Model,
-    width: u16,
-
-    fn widget(self: *const SidebarWidget) vxfw.Widget {
-        return .{ .userdata = @constCast(self), .drawFn = typeErasedDrawFn };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const SidebarWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const SidebarWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const height = ctx.max.height orelse 30;
-        const width = self.width;
-        const theme = self.model.current_theme;
-        const w = width - 2;
-
-        var child_idx: usize = 0;
-        var children = try ctx.arena.alloc(vxfw.SubSurface, 20);
-        var row: u16 = 1;
-
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildSectionTitle(ctx, "Files", w, theme),
-        };
-        child_idx += 1;
-        row += 1;
-
-        const files = self.model.recent_files.items;
-        for (files, 0..) |file, idx| {
-            if (idx >= 5) break;
-            const truncated = if (file.len > w) file[0..w] else file;
-            children[child_idx] = .{
-                .origin = .{ .row = row, .col = 1 },
-                .surface = try self.buildText(ctx, truncated, self.width - 2, .{ .fg = theme.dimmed }),
-            };
-            child_idx += 1;
-            row += 1;
-        }
-        if (files.len > 5) {
-            const txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{files.len - 5});
-            children[child_idx] = .{
-                .origin = .{ .row = row, .col = 1 },
-                .surface = try self.buildText(ctx, txt, self.width - 2, .{ .fg = theme.dimmed }),
-            };
-            child_idx += 1;
-            row += 1;
-        }
-        if (files.len == 0) {
-            children[child_idx] = .{
-                .origin = .{ .row = row, .col = 1 },
-                .surface = try self.buildText(ctx, "(none)", self.width - 2, .{ .fg = theme.dimmed }),
-            };
-            child_idx += 1;
-            row += 1;
-        }
-
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildSectionTitle(ctx, "Session", w, theme),
-        };
-        child_idx += 1;
-        row += 1;
-
-        const turns_txt = try std.fmt.allocPrint(ctx.arena, "turns: {d}", .{self.model.request_count});
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, turns_txt, self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-
-        const tokens_txt = try std.fmt.allocPrint(ctx.arena, "tokens: {d}", .{self.model.total_input_tokens + self.model.total_output_tokens});
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, tokens_txt, self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-
-        const cost_txt = try std.fmt.allocPrint(ctx.arena, "cost: ${d:.4}", .{self.model.estimatedCostUsd()});
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, cost_txt, self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-
-        const time_txt = try std.fmt.allocPrint(ctx.arena, "{d}m{d}s", .{ self.model.sessionMinutes(), self.model.sessionSecondsPart() });
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, time_txt, self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildSectionTitle(ctx, "Workers", w, theme),
-        };
-        child_idx += 1;
-        row += 1;
-
-        if (self.model.workers.items.len == 0) {
-            children[child_idx] = .{
-                .origin = .{ .row = row, .col = 1 },
-                .surface = try self.buildText(ctx, "(none)", self.width - 2, .{ .fg = theme.dimmed }),
-            };
-            child_idx += 1;
-            row += 1;
-        } else {
-            var idx: usize = 0;
-            for (self.model.workers.items) |w_item| {
-                if (idx >= 3) break;
-                const status_ch: u8 = switch (w_item.status) {
-                    .pending => 'P',
-                    .running => 'R',
-                    .done => 'D',
-                    .@"error" => 'E',
-                    .cancelled => 'C',
-                };
-                const status_style: vaxis.Style = switch (w_item.status) {
-                    .pending => .{ .fg = theme.dimmed },
-                    .running => .{ .fg = theme.accent },
-                    .done => .{ .fg = .{ .index = 10 } },
-                    .@"error" => .{ .fg = .{ .index = 1 } },
-                    .cancelled => .{ .fg = theme.dimmed },
-                };
-                idx += 1;
-                const id_txt = try std.fmt.allocPrint(ctx.arena, "#{d}", .{w_item.id});
-                const combined_txt = try std.fmt.allocPrint(ctx.arena, "[{c}] {s}", .{ status_ch, id_txt });
-                children[child_idx] = .{
-                    .origin = .{ .row = row, .col = 1 },
-                    .surface = try self.buildText(ctx, combined_txt, 8, status_style),
-                };
-                child_idx += 1;
-
-                const task_truncated = if (w_item.task.len > w - 9) w_item.task[0..(w - 9)] else w_item.task;
-                children[child_idx] = .{
-                    .origin = .{ .row = row, .col = 9 },
-                    .surface = try self.buildText(ctx, task_truncated, self.width - 10, .{ .fg = theme.dimmed }),
-                };
-                child_idx += 1;
-                row += 1;
-            }
-            if (self.model.workers.items.len > 3) {
-                const overflow_txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{self.model.workers.items.len - 3});
-                children[child_idx] = .{
-                    .origin = .{ .row = row, .col = 1 },
-                    .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),
-                };
-                child_idx += 1;
-                row += 1;
-            }
-        }
-
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildSectionTitle(ctx, "Theme", w, theme),
-        };
-        child_idx += 1;
-        row += 1;
-
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, self.model.current_theme.name, self.width - 2, .{ .fg = theme.accent }),
-        };
-        child_idx += 1;
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, "/theme dark", self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, "/theme light", self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-        row += 1;
-        children[child_idx] = .{
-            .origin = .{ .row = row, .col = 1 },
-            .surface = try self.buildText(ctx, "/theme mono", self.width - 2, .{ .fg = theme.dimmed }),
-        };
-        child_idx += 1;
-
-        var surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = width, .height = height });
-        @memset(surface.buffer, .{ .style = .{ .bg = theme.header_bg } });
-        drawBorder(&surface, .{ .fg = theme.border });
-
-        return .{
-            .size = surface.size,
-            .widget = self.widget(),
-            .buffer = surface.buffer,
-            .children = children[0..child_idx],
-        };
-    }
-
-    fn buildSectionTitle(_: *const SidebarWidget, ctx: vxfw.DrawContext, title: []const u8, width: u16, theme: *const theme_mod.Theme) std.mem.Allocator.Error!vxfw.Surface {
-        var line = std.ArrayList(u8).empty;
-        try line.appendSlice(ctx.arena, title);
-        try line.appendSlice(ctx.arena, " ");
-        const missing: u16 = if (line.items.len >= width) 0 else width - @as(u16, @intCast(line.items.len));
-        var i: u16 = 0;
-        while (i < missing) : (i += 1) {
-            try line.append(ctx.arena, '-');
-        }
-        const text = vxfw.Text{
-            .text = line.items,
-            .style = .{ .fg = theme.dimmed, .bold = true },
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-    }
-
-    fn buildText(_: *const SidebarWidget, ctx: vxfw.DrawContext, text_content: []const u8, width: u16, style: vaxis.Style) std.mem.Allocator.Error!vxfw.Surface {
-        const text = vxfw.Text{
-            .text = text_content,
-            .style = style,
-            .softwrap = false,
-            .width_basis = .parent,
-        };
-        return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
-    }
-};
-
-const InputWidget = struct {
-    prompt: []const u8,
-    field: *vxfw.TextField,
-    theme: *const theme_mod.Theme,
-
-    fn widget(self: *const InputWidget) vxfw.Widget {
-        return .{
-            .userdata = @constCast(self),
-            .drawFn = typeErasedDrawFn,
-        };
-    }
-
-    fn typeErasedDrawFn(ptr: *anyopaque, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const self: *const InputWidget = @ptrCast(@alignCast(ptr));
-        return self.draw(ctx);
-    }
-
-    fn draw(self: *const InputWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        const prompt_text = vxfw.Text{
-            .text = self.prompt,
-            .style = .{ .fg = self.theme.accent, .bold = true },
-            .softwrap = false,
-            .width_basis = .longest_line,
-        };
-        const field_widget = self.field.widget();
-        var row = vxfw.FlexRow{
-            .children = &.{
-                .{ .widget = prompt_text.widget(), .flex = 0 },
-                .{ .widget = field_widget, .flex = 1 },
-            },
-        };
-        return row.draw(ctx.withConstraints(.{ .width = 0, .height = 1 }, .{ .width = ctx.max.width, .height = 1 }));
-    }
-};
+const InputWidget = widget_input.InputWidget;
 
 const Command = struct {
     name: []const u8,
@@ -2660,7 +1837,19 @@ pub const Model = struct {
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + body_height + files_height + status_height), .col = 0 }, .surface = input_surface });
 
         if (self.sidebar_visible) {
-            const sidebar = SidebarWidget{ .model = self, .width = sidebar_width };
+            const sidebar_context = SidebarContext{
+                .recent_files = self.recent_files.items,
+                .request_count = self.request_count,
+                .total_input_tokens = self.total_input_tokens,
+                .total_output_tokens = self.total_output_tokens,
+                .estimated_cost_usd = self.estimatedCostUsd(),
+                .session_minutes = @intCast(self.sessionMinutes()),
+                .session_seconds_part = @intCast(self.sessionSecondsPart()),
+                .workers = self.workers.items,
+                .theme_name = self.current_theme.name,
+                .current_theme = self.current_theme,
+            };
+            const sidebar = SidebarWidget{ .context = &sidebar_context, .width = sidebar_width };
             const sidebar_height: u16 = header_height + body_height;
             const sidebar_surface = try sidebar.draw(ctx.withConstraints(
                 .{ .width = sidebar_width, .height = sidebar_height },

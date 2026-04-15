@@ -198,6 +198,50 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_mod, &.{ imp("streaming", streaming_session_mod), imp("core_api", core_api_mod) });
 
+    // Widget modules (Phase 17)
+    const widget_types_mod = createMod(b, "src/tui/widgets/types.zig", target, optimize, &.{
+        imp("core_api", core_api_mod),
+        imp("session", session_mod),
+    });
+    const widget_helpers_mod = createMod(b, "src/tui/widgets/helpers.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+        imp("widget_types", widget_types_mod),
+        imp("core_api", core_api_mod),
+    });
+    const widget_messages_mod = createMod(b, "src/tui/widgets/messages.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+        imp("diff", diff_mod),
+        imp("markdown", tui_markdown_mod),
+        imp("widget_types", widget_types_mod),
+        imp("widget_helpers", widget_helpers_mod),
+        imp("core_api", core_api_mod),
+    });
+    const widget_header_mod = createMod(b, "src/tui/widgets/header.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
+    });
+    const widget_input_mod = createMod(b, "src/tui/widgets/input.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+    });
+    const widget_sidebar_mod = createMod(b, "src/tui/widgets/sidebar.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+        imp("widget_types", widget_types_mod),
+        imp("widget_helpers", widget_helpers_mod),
+    });
+    addImports(tui_mod, &.{
+        imp("widget_types", widget_types_mod),
+        imp("widget_helpers", widget_helpers_mod),
+        imp("widget_messages", widget_messages_mod),
+        imp("widget_header", widget_header_mod),
+        imp("widget_input", widget_input_mod),
+        imp("widget_sidebar", widget_sidebar_mod),
+    });
+
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
     const permission_evaluate_mod = simpleMod(b, "src/permission/evaluate.zig", target, optimize);
     const app_theme_mod = simpleMod(b, "src/theme/mod.zig", target, optimize);
@@ -368,7 +412,7 @@ pub fn build(b: *std.Build) !void {
         error_display_mod,       convergence_mod,      color_mod,             source_tracker_mod,        knowledge_lint_mod,         slash_commands_mod,       scaffold_mod,              mcp_transport_mod,       mcp_oauth_mod,
         mcp_client_mod,          mcp_discovery_mod,    mcp_bridge_mod,        auth_mod,                  profile_mod,                connect_mod,              json_output_mod,           permission_evaluate_mod, app_theme_mod,
         theme_mod,               checkpoint_mod,       memory_mod,            lsp_mod,                   json_extract_mod,           ai_streaming_parsers_mod, session_mod,               cli_registry_mod,        provider_oauth_mod,
-        auth_cmd_mod,            lsp_manager_mod,
+        auth_cmd_mod,            lsp_manager_mod,      widget_types_mod,      widget_helpers_mod,        widget_messages_mod,        widget_header_mod,        widget_input_mod,          widget_sidebar_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
