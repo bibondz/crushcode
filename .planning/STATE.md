@@ -1,9 +1,9 @@
-# State: Crushcode v0.27.0
+# State: Crushcode v0.28.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** 6d7ba6d
-**Stats:** 195 `.zig` files, ~82K lines
+**Commit:** e2a08ca
+**Stats:** ~250 `.zig` files, ~100K lines
 
 ---
 
@@ -21,22 +21,24 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.27.0 — Memory, Parallel, Skills, Plugins |
+| Milestone | v0.28.0 — Backlog Commit |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.27.0 |
+| Code Version | 0.28.0 |
 
 ---
 
-## v0.27.0 Plan — Memory, Parallel, Skills Import, Plugin Runtime
+## v0.28.0 Plan — Backlog Commit (all accumulated work)
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| A | Wire memory (agent/memory.zig) into TUI — init, load, persist, /memory command | ✅ Done |
-| B | Wire parallel executor (agent/parallel.zig) into TUI — init, /workers, /kill, cleanup | ✅ Done |
-| C | Implement real HTTP fetching for skills/import.zig — 4 methods via std.http.Client | ✅ Done |
-| D | Wire plugin/runtime.zig into HybridBridge + TUI — 3rd dispatch tier, fix 5 bugs | ✅ Done |
-| — | Version bump to 0.27.0 | ✅ Done |
+| A | Commit agent modules (11 new: adversarial, background, capability, coordinator, layered_memory, project_memory, router, worker, worker_runner, context_budget + loop.zig, worktree.zig) | ✅ Done |
+| B | Commit knowledge + graph + cognition + detection modules (13 files) | ✅ Done |
+| C | Commit command enhancements (17 files: chat, handlers, jobs, git, shell, mcp, batch, logs, run, session, cli) | ✅ Done |
+| D | Commit skills + permission + config + core + shell + hooks + execution modules (31 files) | ✅ Done |
+| E | Commit TUI widgets + workflow + docs (8 files) | ✅ Done |
+| F | Commit planning docs (15 files) | ✅ Done |
+| — | Version bump to 0.28.0 | ✅ Done |
 
 ---
 
@@ -64,7 +66,8 @@
 | v0.19.0 | 64 (content-based file detection) | ✅ Done |
 | v0.20.0–v0.25.0 | Feature expansion (see git log) | ✅ Done |
 | v0.26.0 | A–D (agent loop, hybrid bridge, e2e test, version bump) | ✅ Done |
-| **v0.27.0** | **A–D (memory, parallel, skills HTTP, plugin runtime)** | **✅ Done** |
+| v0.27.0 | A–D (memory, parallel, skills HTTP, plugin runtime) | ✅ Done |
+| **v0.28.0** | **A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI)** | **✅ Done** |
 
 ---
 
@@ -103,5 +106,5 @@ src/plugins/ — plugin implementations
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.27.0 complete — all phases committed
-**Next Step:** Plan v0.28.0 (user decision needed on scope)
+**Current Work:** v0.28.0 complete — all backlog committed, working tree clean
+**Next Step:** Plan v0.29.0 (user decision needed on scope)
