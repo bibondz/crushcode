@@ -1,9 +1,9 @@
-# State: Crushcode v0.26.0
+# State: Crushcode v0.27.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** f8a5cd8
-**Stats:** 195 `.zig` files, ~78K lines
+**Commit:** 6d7ba6d
+**Stats:** 195 `.zig` files, ~82K lines
 
 ---
 
@@ -21,21 +21,22 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.26.0 — Agent Loop Tool Execution |
+| Milestone | v0.27.0 — Memory, Parallel, Skills, Plugins |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.26.0 |
+| Code Version | 0.27.0 |
 
 ---
 
-## v0.26.0 Plan — Agent Loop Tool Execution
+## v0.27.0 Plan — Memory, Parallel, Skills Import, Plugin Runtime
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| A | Verify and wire agent loop continuous tool execution into interactive chat | ✅ Done |
-| B | Create hybrid bridge unifying built-in + MCP tools | ✅ Done |
-| C | End-to-end tool calling test + fix edge cases | ✅ Done |
-| — | Version bump to 0.26.0 | ✅ Done |
+| A | Wire memory (agent/memory.zig) into TUI — init, load, persist, /memory command | ✅ Done |
+| B | Wire parallel executor (agent/parallel.zig) into TUI — init, /workers, /kill, cleanup | ✅ Done |
+| C | Implement real HTTP fetching for skills/import.zig — 4 methods via std.http.Client | ✅ Done |
+| D | Wire plugin/runtime.zig into HybridBridge + TUI — 3rd dispatch tier, fix 5 bugs | ✅ Done |
+| — | Version bump to 0.27.0 | ✅ Done |
 
 ---
 
@@ -62,7 +63,8 @@
 | v0.18.0 | 61-63 (code preview, template marketplace, skill sync) | ✅ Done |
 | v0.19.0 | 64 (content-based file detection) | ✅ Done |
 | v0.20.0–v0.25.0 | Feature expansion (see git log) | ✅ Done |
-| **v0.26.0** | **A–D (agent loop, hybrid bridge, e2e test, version bump)** | **🔄 Current** |
+| v0.26.0 | A–D (agent loop, hybrid bridge, e2e test, version bump) | ✅ Done |
+| **v0.27.0** | **A–D (memory, parallel, skills HTTP, plugin runtime)** | **✅ Done** |
 
 ---
 
@@ -75,7 +77,9 @@ src/ai/client.zig — AI HTTP client (19 providers, streaming)
 src/agent/ — agent loop, compaction, memory, parallel
 src/chat/tool_executors.zig — shared tool implementations
 src/mcp/ — MCP client, bridge, discovery
-src/hybrid_bridge.zig — unified tool dispatch (target of Phase B)
+src/hybrid_bridge.zig — unified tool dispatch (builtin → MCP → runtime plugins)
+src/skills/import.zig — skill import via HTTP (clawhub, skills.sh, GitHub, URL)
+src/plugin/runtime.zig — external plugin manager (JSON-RPC)
 src/diff/ — diff algorithm + visualizer
 src/graph/ — knowledge graph
 src/capability/ — capability catalog
@@ -86,17 +90,18 @@ src/plugins/ — plugin implementations
 
 ---
 
-## Known Unfinished Modules
+## Tool Dispatch Chain (HybridBridge)
 
-- `src/agent/memory.zig` — not wired into chat
-- `src/agent/parallel.zig` — not integrated into TUI
-- `src/plugin/runtime.zig` — not connected to agent loop
-- `src/skills/import.zig` — import methods are stubs
-- `src/hybrid_bridge.zig` — exists but may need completion
+```
+1. Builtin tools (tool_executors.executeBuiltinTool) → 6 tools
+2. MCP bridge (mcp_bridge.Bridge.executeTool) → remote MCP servers
+3. Runtime plugins (plugin/runtime.ExternalPluginManager) → external plugin processes
+```
 
 ---
 
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.26.0 Phase A — exploring agent loop and tool dispatch
+**Current Work:** v0.27.0 complete — all phases committed
+**Next Step:** Plan v0.28.0 (user decision needed on scope)
