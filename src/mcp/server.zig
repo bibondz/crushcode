@@ -368,7 +368,7 @@ test "MCPServer - initialize response" {
     // Check serverInfo
     const server_info = result.get("serverInfo").?.object;
     try testing.expectEqualStrings("crushcode", server_info.get("name").?.string);
-    try testing.expectEqualStrings("0.26.0", server_info.get("version").?.string);
+    try testing.expectEqualStrings("0.27.0", server_info.get("version").?.string);
     // Check capabilities
     const capabilities = result.get("capabilities").?.object;
     const tools = capabilities.get("tools").?.object;
