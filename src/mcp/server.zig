@@ -8,14 +8,21 @@ const Allocator = std.mem.Allocator;
 /// MCP Server that handles JSON-RPC 2.0 requests and routes them to handlers.
 /// External clients connect (via stdio, HTTP, etc.) and send requests; this
 /// server parses, dispatches, and returns well-formed JSON-RPC responses.
+/// Tool executor callback — when set, the MCP server delegates tool execution
+/// to this function instead of returning a stub acknowledgment.
+/// Arguments: (allocator, tool_name, arguments_json) → result_string or error
+pub const ToolExecutorFn = *const fn (Allocator, []const u8, []const u8) anyerror![]const u8;
+
 pub const MCPServer = struct {
     allocator: Allocator,
     exposition: tool_exposition.ToolExposition,
+    tool_executor: ?ToolExecutorFn = null,
 
     pub fn init(allocator: Allocator) MCPServer {
         return .{
             .allocator = allocator,
             .exposition = tool_exposition.ToolExposition.init(allocator),
+            .tool_executor = null,
         };
     }
 
@@ -139,12 +146,34 @@ pub const MCPServer = struct {
 
         const tool_name = name_val.string;
 
-        // For now, acknowledge receipt. Actual execution comes in a later phase.
-        // The bash tool gets a slightly more detailed acknowledgment.
-        if (std.mem.eql(u8, tool_name, "bash")) {
+        // Extract arguments if present
+        const args_val = params_obj.get("arguments");
+        const args_json: []const u8 = if (args_val) |av| blk: {
+            break :blk std.json.Stringify.valueAlloc(self.allocator, av, .{}) catch "{}";
+        } else "{}";
+
+        // Delegate to tool executor callback if set
+        if (self.tool_executor) |executor| {
+            const exec_result = executor(self.allocator, tool_name, args_json) catch |err| {
+                const err_msg = std.fmt.allocPrint(self.allocator, "Tool execution failed: {}", .{err}) catch "Tool execution failed";
+                var content = json.ObjectMap.init(self.allocator);
+                try content.put("type", .{ .string = "text" });
+                try content.put("text", .{ .string = err_msg });
+                try content.put("isError", .{ .bool = true });
+
+                var content_array = json.Array.init(self.allocator);
+                try content_array.append(.{ .object = content });
+
+                var result = json.ObjectMap.init(self.allocator);
+                try result.put("content", .{ .array = content_array });
+
+                return self.makeResultResponse(id, .{ .object = result });
+            };
+            defer self.allocator.free(exec_result);
+
             var content = json.ObjectMap.init(self.allocator);
             try content.put("type", .{ .string = "text" });
-            try content.put("text", .{ .string = "Tool execution acknowledged (not yet implemented)" });
+            try content.put("text", .{ .string = exec_result });
 
             var content_array = json.Array.init(self.allocator);
             try content_array.append(.{ .object = content });
@@ -155,10 +184,11 @@ pub const MCPServer = struct {
             return self.makeResultResponse(id, .{ .object = result });
         }
 
-        // Other tools: mock success
+        // No tool executor set — return helpful error
         var content = json.ObjectMap.init(self.allocator);
         try content.put("type", .{ .string = "text" });
-        try content.put("text", .{ .string = "Tool execution acknowledged (not yet implemented)" });
+        try content.put("text", .{ .string = "Tool execution not available (no tool_executor callback configured)" });
+        try content.put("isError", .{ .bool = true });
 
         var content_array = json.Array.init(self.allocator);
         try content_array.append(.{ .object = content });
