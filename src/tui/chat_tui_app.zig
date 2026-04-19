@@ -40,6 +40,11 @@ const lifecycle_mod = @import("lifecycle_hooks");
 const memory_mod = @import("memory");
 const parallel_mod = @import("parallel");
 const plugin_mod = @import("plugin_manager");
+const guardian_mod = @import("guardian");
+const cognition_mod = @import("cognition");
+const autopilot_mod = @import("autopilot");
+const phase_runner_mod = @import("phase_runner");
+const orchestration_mod = @import("orchestration");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -163,6 +168,11 @@ const slash_command_names = [_][]const u8{
     "/kill",
     "/memory",
     "/plugins",
+    "/guardian",
+    "/cognition",
+    "/autopilot",
+    "/team",
+    "/phase-run",
     "/help",
 };
 
@@ -281,6 +291,9 @@ pub const Model = struct {
     lifecycle_hooks: lifecycle_mod.LifecycleHooks,
     memory: memory_mod.Memory,
     parallel_executor: parallel_mod.ParallelExecutor,
+    guardian: ?guardian_mod.Guardian = null,
+    pipeline: ?cognition_mod.KnowledgePipeline = null,
+    pipeline_initialized: bool = false,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -395,6 +408,17 @@ pub const Model = struct {
         };
         errdefer model.destroy();
 
+        // Initialize cognition pipeline (non-fatal)
+        {
+            var pipeline = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
+            if (pipeline) |*p| {
+                model.pipeline = p.*;
+                model.pipeline_initialized = true;
+            }
+        }
+        // Initialize guardian (non-fatal)
+        model.guardian = guardian_mod.Guardian.init(model.allocator) catch null;
+
         model.messages = try std.ArrayList(Message).initCapacity(allocator, 8);
         model.history = try std.ArrayList(core.ChatMessage).initCapacity(allocator, 8);
         model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
@@ -493,6 +517,10 @@ pub const Model = struct {
     }
 
     pub fn destroy(self: *Model) void {
+        // Cleanup cognition pipeline and guardian
+        if (self.pipeline) |*p| p.deinit();
+        if (self.guardian) |*g| g.deinit();
+
         self.resolvePendingPermission(.no);
         if (self.worker) |thread| {
             thread.join();
@@ -2459,8 +2487,279 @@ pub const Model = struct {
             self.thinking = !self.thinking;
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
+        } else if (std.mem.eql(u8, name, "/guardian")) {
+            if (self.guardian) |*g| {
+                g.printStats();
+                try self.addMessageUnlocked("assistant", "Guardian stats printed to log.");
+            } else {
+                try self.addMessageUnlocked("assistant", "Guardian not initialized.");
+            }
+        } else if (std.mem.eql(u8, name, "/cognition")) {
+            if (!self.pipeline_initialized) {
+                try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+            } else if (self.pipeline) |*p| {
+                const s = p.stats();
+                const text = try std.fmt.allocPrint(self.allocator,
+                    \\Cognition Pipeline:
+                    \\  Files indexed:   {d}
+                    \\  Graph nodes:     {d}
+                    \\  Graph edges:     {d}
+                    \\  Communities:     {d}
+                    \\  Vault nodes:     {d}
+                    \\  Memory entries:  {d}
+                    \\  Insights:        {d}
+                    \\  Source tokens:   {d}
+                , .{ s.files_indexed, s.graph_nodes, s.graph_edges, s.communities, s.vault_nodes, s.memory_entries, s.insights_count, s.total_source_tokens });
+                defer self.allocator.free(text);
+                try self.addMessageUnlocked("assistant", text);
+            }
+        } else if (std.mem.eql(u8, name, "/autopilot") or std.mem.startsWith(u8, name, "/autopilot ")) {
+            const auto_sub = std.mem.trim(u8, name["/autopilot".len..], " ");
+            if (auto_sub.len == 0) {
+                try self.addMessageUnlocked("assistant",
+                    \\Autopilot Engine:
+                    \\  /autopilot run <agent-id>  — run a specific agent
+                    \\  /autopilot status [agent]  — show agent status
+                    \\  /autopilot schedule        — run all scheduled agents
+                    \\  /autopilot list            — list all agents
+                );
+            } else if (std.mem.startsWith(u8, auto_sub, "run ")) {
+                const agent_id = std.mem.trim(u8, auto_sub["run ".len..], " ");
+                if (agent_id.len == 0) {
+                    try self.addMessageUnlocked("assistant", "Usage: /autopilot run <agent-id>");
+                } else if (!self.pipeline_initialized) {
+                    try self.addMessageUnlocked("assistant", "Pipeline not initialized — cannot run autopilot.");
+                } else if (self.pipeline) |*p| {
+                    const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
+                    var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer engine.deinit();
+                    const result = engine.runAgentWork(agent_id) catch |err| {
+                        const err_text = try std.fmt.allocPrint(self.allocator, "Agent '{s}' failed: {}", .{ agent_id, err });
+                        defer self.allocator.free(err_text);
+                        try self.addMessageUnlocked("assistant", err_text);
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer result.deinit(self.allocator);
+                    const text = try std.fmt.allocPrint(self.allocator,
+                        \\Agent: {s} ({s})
+                        \\Status: {s}
+                        \\Summary: {s}
+                        \\Files scanned: {d} | Indexed: {d} | Vault: {d} | Graph: {d}
+                    , .{
+                        result.agent_id,
+                        @tagName(result.agent_kind),
+                        @tagName(result.status),
+                        result.work_summary,
+                        result.files_scanned,
+                        result.files_indexed,
+                        result.vault_nodes,
+                        result.graph_nodes,
+                    });
+                    defer self.allocator.free(text);
+                    try self.addMessageUnlocked("assistant", text);
+                }
+            } else if (std.mem.startsWith(u8, auto_sub, "status")) {
+                const status_arg = std.mem.trim(u8, auto_sub["status".len..], " ");
+                if (!self.pipeline_initialized) {
+                    try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+                } else if (self.pipeline) |*p| {
+                    const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
+                    var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer engine.deinit();
+                    if (status_arg.len > 0) {
+                        const status_text = engine.getAgentStatus(status_arg);
+                        if (status_text) |stext| {
+                            defer self.allocator.free(stext);
+                            try self.addMessageUnlocked("assistant", stext);
+                        } else {
+                            const not_found = try std.fmt.allocPrint(self.allocator, "Agent '{s}' not found.", .{status_arg});
+                            defer self.allocator.free(not_found);
+                            try self.addMessageUnlocked("assistant", not_found);
+                        }
+                    } else {
+                        engine.printStats();
+                        try self.addMessageUnlocked("assistant", "Autopilot stats printed to log.");
+                    }
+                }
+            } else if (std.mem.eql(u8, auto_sub, "schedule")) {
+                if (!self.pipeline_initialized) {
+                    try self.addMessageUnlocked("assistant", "Pipeline not initialized — cannot run schedule.");
+                } else if (self.pipeline) |*p| {
+                    const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
+                    var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer engine.deinit();
+                    engine.runScheduledWork() catch {};
+                    engine.printStats();
+                    try self.addMessageUnlocked("assistant", "Scheduled agents executed. Stats printed to log.");
+                }
+            } else if (std.mem.eql(u8, auto_sub, "list")) {
+                if (!self.pipeline_initialized) {
+                    try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+                } else if (self.pipeline) |*p| {
+                    const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
+                    var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer engine.deinit();
+                    const listing = engine.listAgents(self.allocator) catch "(failed to list agents)";
+                    defer self.allocator.free(listing);
+                    try self.addMessageUnlocked("assistant", listing);
+                }
+            } else {
+                const err_text = try std.fmt.allocPrint(self.allocator, "Unknown autopilot subcommand: {s}\nUse: run, status, schedule, list", .{auto_sub});
+                defer self.allocator.free(err_text);
+                try self.addMessageUnlocked("assistant", err_text);
+            }
+        } else if (std.mem.eql(u8, name, "/team")) {
+            var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
+                try self.addMessageUnlocked("assistant", "Error: failed to initialize orchestration engine.");
+                ctx.redraw = true;
+                return;
+            };
+            defer engine.deinit();
+            engine.printStats();
+            try self.addMessageUnlocked("assistant", "Team orchestration stats printed to log.");
+        } else if (std.mem.startsWith(u8, name, "/spawn ")) {
+            const spawn_desc = std.mem.trim(u8, name["/spawn ".len..], " ");
+            if (spawn_desc.len == 0) {
+                try self.addMessageUnlocked("assistant", "Usage: /spawn <task description>");
+            } else {
+                var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
+                    try self.addMessageUnlocked("assistant", "Error: failed to initialize orchestration engine.");
+                    ctx.redraw = true;
+                    return;
+                };
+                defer engine.deinit();
+                const result = engine.spawnTeam(spawn_desc, 3) catch {
+                    try self.addMessageUnlocked("assistant", "Error: failed to spawn team.");
+                    ctx.redraw = true;
+                    return;
+                };
+                defer result.deinit(self.allocator);
+
+                var buf: [4096]u8 = undefined;
+                var offset: usize = 0;
+
+                const head = std.fmt.bufPrint(&buf, "=== Team Spawned ===\n  Team:   {s} ({s})\n  Agents: {d}\n  Cost:   ${d:.4}\n\n  Phases ({d}):\n", .{
+                    result.team_name,
+                    result.team_id,
+                    result.agent_count,
+                    result.total_estimated_cost,
+                    result.plan.total_phases,
+                });
+                if (head) |written| offset = written.len else |_| {}
+
+                for (result.plan.phases, 0..) |phase, idx| {
+                    const line = std.fmt.bufPrint(buf[offset..], "    {d}. {s} — {s} [{s}]\n", .{
+                        idx + 1,
+                        phase.phase_name,
+                        phase.phase_description,
+                        phase.recommended_model,
+                    });
+                    if (line) |written| offset += written.len else |_| {}
+                }
+
+                const agents_head = std.fmt.bufPrint(buf[offset..], "\n  Agents:\n", .{});
+                if (agents_head) |written| offset += written.len else |_| {}
+
+                for (result.agents, 0..) |agent, idx| {
+                    const line = std.fmt.bufPrint(buf[offset..], "    {d}. {s} [{s}] → {s}\n", .{
+                        idx + 1,
+                        agent.agent_name,
+                        @tagName(agent.specialty),
+                        agent.model,
+                    });
+                    if (line) |written| offset += written.len else |_| {}
+                }
+
+                const text = try self.allocator.dupe(u8, buf[0..offset]);
+                try self.addMessageUnlocked("assistant", text);
+            }
+        } else if (std.mem.eql(u8, name, "/phase-run") or std.mem.startsWith(u8, name, "/phase-run ")) {
+            const phase_arg = std.mem.trim(u8, name["/phase-run".len..], " ");
+            if (phase_arg.len == 0) {
+                try self.addMessageUnlocked("assistant",
+                    \\Phase Runner:
+                    \\  /phase-run <name>  — run a simple 2-phase workflow
+                    \\  /phase-run status  — show phase runner info
+                );
+            } else if (std.mem.eql(u8, phase_arg, "status")) {
+                const pipeline_status = if (self.pipeline_initialized) "initialized" else "not initialized";
+                const guardian_status = if (self.guardian != null) "active" else "disabled";
+                const text = try std.fmt.allocPrint(self.allocator,
+                    \\Phase Runner Status:
+                    \\  Pipeline: {s}
+                    \\  Guardian: {s}
+                , .{ pipeline_status, guardian_status });
+                defer self.allocator.free(text);
+                try self.addMessageUnlocked("assistant", text);
+            } else {
+                var runner = phase_runner_mod.PhaseRunner.init(self.allocator, .{
+                    .name = phase_arg,
+                    .use_adversarial_gates = false,
+                    .verbose = false,
+                }) catch {
+                    try self.addMessageUnlocked("assistant", "Failed to initialize phase runner.");
+                    ctx.redraw = true;
+                    return;
+                };
+                defer runner.deinit();
+
+                const discuss_tasks = [_][]const u8{ "Gather requirements", "Clarify scope" };
+                runner.addPhase(1, "discuss", "Gather requirements and clarify scope for the user goal objective", &discuss_tasks) catch {
+                    try self.addMessageUnlocked("assistant", "Failed to add discuss phase.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const plan_tasks = [_][]const u8{ "Create implementation plan", "Define tasks and steps to build" };
+                runner.addPhase(2, "plan", "Create implementation plan with tasks steps build create write add fix update", &plan_tasks) catch {
+                    try self.addMessageUnlocked("assistant", "Failed to add plan phase.");
+                    ctx.redraw = true;
+                    return;
+                };
+
+                var result = runner.run() catch {
+                    try self.addMessageUnlocked("assistant", "Phase run failed.");
+                    ctx.redraw = true;
+                    return;
+                };
+                defer result.deinit();
+
+                const text = try std.fmt.allocPrint(self.allocator,
+                    \\Phase Run Complete:
+                    \\  Workflow:  {s}
+                    \\  Phases:    {d}/{d} completed
+                    \\  Failed:    {d}
+                    \\  Progress:  {d:.1}%
+                    \\  Duration:  {d}ms
+                , .{
+                    result.workflow_name,
+                    result.completed_phases,
+                    result.total_phases,
+                    result.failed_phases,
+                    result.progress,
+                    result.duration_ms,
+                });
+                defer self.allocator.free(text);
+                try self.addMessageUnlocked("assistant", text);
+            }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
