@@ -32,7 +32,11 @@ const widget_typewriter = @import("widget_typewriter");
 const tool_executors = @import("chat_tool_executors");
 const mcp_bridge_mod = @import("mcp_bridge");
 const mcp_client_mod = @import("mcp_client");
+const hybrid_bridge_mod = @import("hybrid_bridge");
 const array_list_compat = @import("array_list_compat");
+const compaction_mod = @import("compaction");
+const project_mod = @import("project");
+const lifecycle_mod = @import("lifecycle_hooks");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -170,6 +174,23 @@ const setupDefaultModel = widget_setup.setupDefaultModel;
 const setupConfigPath = widget_setup.setupConfigPath;
 const isSupportedSlashCommand = widget_setup.isSupportedSlashCommand;
 
+/// Core hook: tracks token usage after each AI request
+fn hookTokenTracker(ctx: *lifecycle_mod.HookContext) anyerror!void {
+    std.log.info("[hook:token_tracker] tokens={} provider={s} model={s}", .{ ctx.token_count, ctx.provider, ctx.model });
+}
+
+/// Core hook: logs errors
+fn hookErrorLogger(ctx: *lifecycle_mod.HookContext) anyerror!void {
+    const err_msg = ctx.error_message orelse "unknown error";
+    std.log.warn("[hook:error_logger] {s}", .{err_msg});
+}
+
+/// Core hook: tracks tool execution timing (logged after tool completes)
+fn hookToolTimer(ctx: *lifecycle_mod.HookContext) anyerror!void {
+    const tool = ctx.tool_name orelse "unknown";
+    std.log.info("[hook:tool_timer] tool={s}", .{tool});
+}
+
 pub const Model = struct {
     allocator: std.mem.Allocator,
     provider_name: []const u8,
@@ -179,6 +200,11 @@ pub const Model = struct {
     effective_system_prompt: ?[]const u8,
     codebase_context: ?[]const u8,
     context_file_count: u32,
+    knowledge_graph: ?*graph_mod.KnowledgeGraph,
+    compactor: compaction_mod.ContextCompactor,
+    context_tokens: u64,
+    last_compaction_summary: []const u8,
+    cached_project_info: ?project_mod.ProjectInfo,
     max_tokens: u32,
     temperature: f32,
     override_url: ?[]const u8,
@@ -245,6 +271,8 @@ pub const Model = struct {
     toast_stack: widget_toast.ToastStack,
     typewriter: ?widget_typewriter.TypewriterState = null,
     mcp_bridge: ?*mcp_bridge_mod.Bridge = null,
+    hybrid_bridge: ?*hybrid_bridge_mod.HybridBridge = null,
+    lifecycle_hooks: lifecycle_mod.LifecycleHooks,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -283,6 +311,11 @@ pub const Model = struct {
             .effective_system_prompt = null,
             .codebase_context = null,
             .context_file_count = 0,
+            .knowledge_graph = null,
+            .compactor = compaction_mod.ContextCompactor.init(allocator, 128000),
+            .context_tokens = 0,
+            .last_compaction_summary = "",
+            .cached_project_info = project_mod.detectProject(allocator),
             .max_tokens = options.max_tokens,
             .temperature = options.temperature,
             .override_url = if (options.override_url) |override_url| try allocator.dupe(u8, override_url) else null,
@@ -347,6 +380,7 @@ pub const Model = struct {
             .spinner = null,
             .toast_stack = undefined,
             .typewriter = null,
+            .lifecycle_hooks = lifecycle_mod.LifecycleHooks.init(allocator),
         };
         errdefer model.destroy();
 
@@ -383,6 +417,15 @@ pub const Model = struct {
                 std.log.warn("MCP bridge initialization skipped (non-fatal)", .{});
             }
         }
+
+        // Initialize HybridBridge for unified tool dispatch
+        {
+            const hb = allocator.create(hybrid_bridge_mod.HybridBridge) catch null;
+            if (hb) |h| {
+                h.* = hybrid_bridge_mod.HybridBridge.init(allocator, model.mcp_bridge);
+                model.hybrid_bridge = hb;
+            }
+        }
         model.applyThemeStyles();
         model.input.userdata = model;
         model.input.onSubmit = onSubmit;
@@ -391,6 +434,19 @@ pub const Model = struct {
         model.palette_input.userdata = model;
         model.palette_input.onChange = onPaletteChange;
         model.palette_input.onSubmit = onPaletteSubmit;
+
+        // Register core lifecycle hooks
+        try model.lifecycle_hooks.register("token_tracker", .core, .post_request, hookTokenTracker, 10);
+        try model.lifecycle_hooks.register("error_logger", .core, .on_error, hookErrorLogger, 10);
+        try model.lifecycle_hooks.register("tool_timer", .core, .post_tool, hookToolTimer, 10);
+
+        // Execute session_start lifecycle hook
+        {
+            var hook_ctx = lifecycle_mod.HookContext.init(allocator);
+            defer hook_ctx.deinit();
+            hook_ctx.phase = .session_start;
+            model.lifecycle_hooks.execute(.session_start, &hook_ctx) catch {};
+        }
 
         try model.registry.registerAllProviders();
         try model.buildCodebaseContext();
@@ -442,6 +498,10 @@ pub const Model = struct {
         if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.effective_system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.codebase_context) |codebase_context| self.allocator.free(codebase_context);
+        if (self.knowledge_graph) |kg| {
+            kg.deinit();
+            self.allocator.destroy(kg);
+        }
         if (self.override_url) |override_url| self.allocator.free(override_url);
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         if (self.setup_feedback.len > 0) self.allocator.free(self.setup_feedback);
@@ -453,11 +513,25 @@ pub const Model = struct {
         self.allocator.free(self.session_dir);
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
+        self.compactor.deinit();
+        if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
         self.allocator.free(self.api_key);
         if (self.mcp_bridge) |bridge| {
             bridge.deinit();
             self.allocator.destroy(bridge);
         }
+        if (self.hybrid_bridge) |hb| {
+            hb.deinit();
+            self.allocator.destroy(hb);
+        }
+        // Execute session_end lifecycle hook
+        {
+            var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+            defer hook_ctx.deinit();
+            hook_ctx.phase = .session_end;
+            self.lifecycle_hooks.execute(.session_end, &hook_ctx) catch {};
+        }
+        self.lifecycle_hooks.deinit();
         self.app.deinit();
         self.allocator.destroy(self.app);
         self.allocator.destroy(self);
@@ -729,13 +803,13 @@ pub const Model = struct {
         }
         self.show_session_list = true;
         self.session_list_selected = 0;
-        try ctx.requestFocus(self.input.widget());
+        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
         ctx.redraw = true;
     }
 
     fn closeSessionList(self: *Model, ctx: *vxfw.EventContext) !void {
         self.clearSessionListOwned();
-        try ctx.requestFocus(self.input.widget());
+        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
         ctx.redraw = true;
     }
 
@@ -871,19 +945,76 @@ pub const Model = struct {
     }
 
     fn buildCodebaseContext(self: *Model) !void {
-        var kg = graph_mod.KnowledgeGraph.init(self.allocator);
-        defer kg.deinit();
+        // Clean up any previous knowledge graph
+        if (self.knowledge_graph) |kg| {
+            kg.deinit();
+            self.allocator.destroy(kg);
+            self.knowledge_graph = null;
+        }
+
+        const kg_ptr = try self.allocator.create(graph_mod.KnowledgeGraph);
+        kg_ptr.* = graph_mod.KnowledgeGraph.init(self.allocator);
+        errdefer {
+            kg_ptr.deinit();
+            self.allocator.destroy(kg_ptr);
+        }
+
+        // Dynamic file discovery with fallback to hardcoded list
+        const discovered = widget_types.discoverSourceFiles(self.allocator) catch null;
+        const source_files: []const []const u8 = discovered orelse &context_source_files;
+        defer {
+            if (discovered) |files| {
+                for (files) |f| self.allocator.free(f);
+                self.allocator.free(files);
+            }
+        }
 
         var indexed_count: u32 = 0;
-        for (context_source_files) |file_path| {
-            kg.indexFile(file_path) catch continue;
+        for (source_files) |file_path| {
+            kg_ptr.indexFile(file_path) catch continue;
             indexed_count += 1;
         }
-        kg.detectCommunities() catch {};
+        kg_ptr.detectCommunities() catch {};
 
-        if (indexed_count == 0) return;
-        self.codebase_context = try kg.toCompressedContext(self.allocator);
+        if (indexed_count == 0) {
+            kg_ptr.deinit();
+            self.allocator.destroy(kg_ptr);
+            return;
+        }
+
+        // Store knowledge graph persistently for query-based refresh
+        self.knowledge_graph = kg_ptr;
+        self.codebase_context = try kg_ptr.toCompressedContext(self.allocator);
         self.context_file_count = indexed_count;
+    }
+
+    /// Refresh codebase context filtered by query relevance.
+    /// Uses the stored KnowledgeGraph to pick only relevant nodes.
+    fn refreshContextForQuery(self: *Model, query: []const u8) void {
+        const kg = self.knowledge_graph orelse return;
+        if (query.len == 0) return;
+
+        // Skip very short queries (likely slash commands or single chars)
+        if (query.len < 3) return;
+
+        // Allocate a fresh relevant context, limited to 4000 tokens
+        const relevant = kg.toRelevantContext(self.allocator, query, 4000) catch return;
+        errdefer self.allocator.free(relevant);
+
+        // Only replace if we got something useful
+        if (relevant.len == 0) {
+            self.allocator.free(relevant);
+            return;
+        }
+
+        // Swap the context
+        if (self.codebase_context) |old| {
+            self.allocator.free(old);
+        }
+        self.codebase_context = relevant;
+
+        // Rebuild system prompt with the new filtered context
+        self.refreshEffectiveSystemPrompt() catch {};
     }
 
     fn refreshEffectiveSystemPrompt(self: *Model) !void {
@@ -893,11 +1024,100 @@ pub const Model = struct {
         }
 
         const base_prompt = if (self.system_prompt) |prompt|
-            if (prompt.len > 0) prompt else "You are a helpful AI coding assistant with access to the user's codebase."
+            if (prompt.len > 0) prompt else null
         else
-            "You are a helpful AI coding assistant with access to the user's codebase.";
+            null;
 
-        if (self.codebase_context) |compressed_context| {
+        // Build rich base prompt with project info and instructions
+        var rich_buf = array_list_compat.ArrayList(u8).init(self.allocator);
+        defer rich_buf.deinit();
+        const rw = rich_buf.writer();
+
+        if (base_prompt) |user_prompt| {
+            rw.print("{s}", .{user_prompt}) catch {};
+        } else {
+            rw.print(
+                \\You are Crushcode, an expert AI coding assistant with access to the user's codebase.
+                \\
+                \\## Guidelines
+                \\- Read files before editing to understand context
+                \\- Make minimal, focused changes — don't refactor unless asked
+                \\- Use the edit tool for surgical changes, write_file only for new files
+                \\- Verify your changes by reading the file after editing
+                \\- Follow existing code patterns and conventions in the project
+                \\- When running commands, prefer non-destructive operations first
+            , .{}) catch {};
+        }
+
+        // Inject project info if detected
+        if (self.cached_project_info) |project| {
+            rw.print(
+                \\
+                \\## Project: {s} ({s})
+                \\Build: `{s}`
+                \\Test: `{s}`
+                \\{s}
+            , .{ project.language, project.build_system, project.build_command, project.test_command, project.tips }) catch {};
+
+            if (project.framework) |fw| {
+                rw.print("\nFramework: {s}", .{fw}) catch {};
+            }
+        }
+
+        // Load AGENTS.md project instructions
+        if (project_mod.loadAgentsMd(self.allocator) catch null) |agents_content| {
+            defer self.allocator.free(agents_content);
+            if (agents_content.len > 0) {
+                rw.print(
+                    \\
+                    \\## Project Instructions (AGENTS.md)
+                    \\{s}
+                , .{agents_content}) catch {};
+            }
+        }
+
+        // Load .crushcode/instructions.md
+        if (project_mod.loadInstructionsMd(self.allocator) catch null) |instructions| {
+            defer self.allocator.free(instructions);
+            if (instructions.len > 0) {
+                rw.print(
+                    \\
+                    \\## Custom Instructions
+                    \\{s}
+                , .{instructions}) catch {};
+            }
+        }
+
+        const final_base = rich_buf.items;
+
+        if (self.codebase_context) |raw_context| {
+            const system_prompt_token_budget: u64 = 8000;
+
+            // Estimate tokens for base prompt + tool section (~500 tokens overhead)
+            var base_buf = array_list_compat.ArrayList(u8).init(self.allocator);
+            defer base_buf.deinit();
+            const bw = base_buf.writer();
+            bw.print(
+                \\{s}
+                \\
+                \\## Codebase Context
+                \\
+            , .{final_base}) catch {};
+            const base_tokens = compaction_mod.ContextCompactor.estimateTokens(base_buf.items);
+            const tool_overhead: u64 = 500;
+            const remaining_budget = if (system_prompt_token_budget > base_tokens + tool_overhead)
+                system_prompt_token_budget - base_tokens - tool_overhead
+            else
+                @as(u64, 1000);
+
+            const context_tokens = compaction_mod.ContextCompactor.estimateTokens(raw_context);
+            const context_to_use: []const u8 = if (context_tokens > remaining_budget) blk: {
+                // Truncate context to fit budget
+                const max_chars = remaining_budget * 4;
+                const trunc_len = @min(max_chars, raw_context.len);
+                break :blk raw_context[0..trunc_len];
+            } else raw_context;
+
             var buf = array_list_compat.ArrayList(u8).init(self.allocator);
             defer buf.deinit();
             const w = buf.writer();
@@ -906,6 +1126,13 @@ pub const Model = struct {
                 \\
                 \\## Codebase Context
                 \\{s}
+            , .{ final_base, context_to_use }) catch {};
+
+            if (context_tokens > remaining_budget) {
+                w.print("\n[Context truncated: {d}/{d} tokens used in budget]\n", .{ remaining_budget, context_tokens }) catch {};
+            }
+
+            w.print(
                 \\
                 \\## Available Tools
                 \\- read_file(path)
@@ -914,24 +1141,24 @@ pub const Model = struct {
                 \\- glob(pattern)
                 \\- grep(pattern)
                 \\- edit(file_path, old_string, new_string)
-            ,
-                .{ base_prompt, compressed_context },
-            ) catch {};
-            if (self.mcp_bridge) |bridge| {
-                const stats = bridge.getStats();
-                if (stats.tools > 0) {
-                    const schemas = bridge.getToolSchemas(self.allocator) catch null;
-                    if (schemas) |tool_schemas| {
-                        defer {
-                            for (tool_schemas) |s| {
-                                self.allocator.free(s.name);
-                                self.allocator.free(s.description);
-                                self.allocator.free(s.parameters);
-                            }
-                            self.allocator.free(tool_schemas);
+            , .{}) catch {};
+            if (self.hybrid_bridge) |hb| {
+                const all_schemas = hb.getAllToolSchemas() catch null;
+                if (all_schemas) |schemas| {
+                    defer {
+                        for (schemas) |s| {
+                            self.allocator.free(s.name);
+                            self.allocator.free(s.description);
+                            self.allocator.free(s.parameters);
                         }
-                        w.print("\n\n## MCP Tools ({d} available)\n", .{tool_schemas.len}) catch {};
-                        for (tool_schemas) |schema| {
+                        self.allocator.free(schemas);
+                    }
+                    // Count MCP tools (schemas beyond the 6 builtins)
+                    const builtin_count = builtin_tool_schemas.len;
+                    const mcp_count = if (schemas.len > builtin_count) schemas.len - builtin_count else 0;
+                    if (mcp_count > 0) {
+                        w.print("\n\n## MCP Tools ({d} available)\n", .{mcp_count}) catch {};
+                        for (schemas[builtin_count..]) |schema| {
                             w.print("- {s}\n", .{schema.description}) catch {};
                         }
                     }
@@ -941,25 +1168,26 @@ pub const Model = struct {
             return;
         }
 
-        // No codebase context — just base prompt + MCP tools if available
-        if (self.mcp_bridge) |bridge| {
-            const stats = bridge.getStats();
-            if (stats.tools > 0) {
+        // No codebase context — just base prompt + tools if available
+        if (self.hybrid_bridge) |hb| {
+            const stats = hb.getStats();
+            if (stats.mcp_count > 0) {
                 var buf = array_list_compat.ArrayList(u8).init(self.allocator);
                 defer buf.deinit();
                 const w = buf.writer();
-                w.print("{s}\n\n## MCP Tools ({d} available)\n", .{ base_prompt, stats.tools }) catch {};
-                const schemas = bridge.getToolSchemas(self.allocator) catch null;
-                if (schemas) |tool_schemas| {
+                w.print("{s}\n\n## MCP Tools ({d} available)\n", .{ final_base, stats.mcp_count }) catch {};
+                const all_schemas = hb.getAllToolSchemas() catch null;
+                if (all_schemas) |schemas| {
                     defer {
-                        for (tool_schemas) |s| {
+                        for (schemas) |s| {
                             self.allocator.free(s.name);
                             self.allocator.free(s.description);
                             self.allocator.free(s.parameters);
                         }
-                        self.allocator.free(tool_schemas);
+                        self.allocator.free(schemas);
                     }
-                    for (tool_schemas) |schema| {
+                    const builtin_count = builtin_tool_schemas.len;
+                    for (schemas[builtin_count..]) |schema| {
                         w.print("- {s}\n", .{schema.description}) catch {};
                     }
                 }
@@ -968,7 +1196,7 @@ pub const Model = struct {
             }
         }
 
-        self.effective_system_prompt = try self.allocator.dupe(u8, base_prompt);
+        self.effective_system_prompt = try self.allocator.dupe(u8, final_base);
     }
 
     fn loadFallbackProviders(self: *Model) !void {
@@ -1037,6 +1265,7 @@ pub const Model = struct {
     fn freePendingPermission(self: *Model, pending: ToolPermission) void {
         self.allocator.free(pending.tool_name);
         self.allocator.free(pending.arguments);
+        if (pending.preview_diff) |d| self.allocator.free(d);
     }
 
     fn setStatusMessage(self: *Model, text: []const u8) !void {
@@ -1093,7 +1322,7 @@ pub const Model = struct {
         return false;
     }
 
-    fn requestToolPermission(self: *Model, tool_name: []const u8, arguments: []const u8) !bool {
+    fn requestToolPermission(self: *Model, tool_name: []const u8, arguments: []const u8, preview_diff: ?[]const u8) !bool {
         if (self.permission_mode == .auto or !self.needsPermission(tool_name) or self.isAlwaysAllowed(tool_name)) {
             return true;
         }
@@ -1107,6 +1336,7 @@ pub const Model = struct {
         self.pending_permission = .{
             .tool_name = try self.allocator.dupe(u8, tool_name),
             .arguments = try self.allocator.dupe(u8, arguments),
+            .preview_diff = if (preview_diff) |d| try self.allocator.dupe(u8, d) else null,
         };
         self.lock.unlock();
 
@@ -1153,11 +1383,13 @@ pub const Model = struct {
         switch (event) {
             .init => {
                 try ctx.setTitle("Crushcode TUI Chat");
-                try ctx.requestFocus(if (self.show_palette) self.palette_input.widget() else self.input.widget());
+                // NOTE: Do NOT requestFocus — the Model (root widget) stays as
+                // the permanent focused widget. Key events are forwarded manually
+                // to input/palette_input in the key_press handler below.
                 ctx.redraw = true;
             },
             .focus_in => {
-                try ctx.requestFocus(if (self.show_palette) self.palette_input.widget() else self.input.widget());
+                // Keep focus on Model (root). Keys forwarded manually.
             },
             .key_press => |key| {
                 if (self.resume_prompt_session != null) {
@@ -1386,6 +1618,38 @@ pub const Model = struct {
                         ctx.consumeEvent();
                         return;
                     }
+                    if (key.matches(vaxis.Key.enter, .{})) {
+                        // Execute palette selection
+                        try self.executePaletteSelection(ctx);
+                        ctx.consumeEvent();
+                        return;
+                    }
+                    // Forward all other keys (typing, backspace, etc.) to palette_input
+                    try self.palette_input.handleEvent(ctx, event);
+                    ctx.redraw = true;
+                    return;
+                }
+
+                // Forward unmatched key events to the main input widget.
+                // Model (root) stays focused; we dispatch manually instead of
+                // relying on vaxis focus-path tracking which breaks when
+                // requestFocus targets a widget whose draw-time userdata
+                // doesn't match (userdata pointer mismatch → empty path → crash).
+                if (!self.scroll_mode) {
+                    try self.input.handleEvent(ctx, event);
+                    return;
+                }
+            },
+            .paste => {
+                // Forward paste events to the active input
+                if (self.show_palette) {
+                    try self.palette_input.handleEvent(ctx, event);
+                    ctx.redraw = true;
+                    return;
+                }
+                if (!self.scroll_mode) {
+                    try self.input.handleEvent(ctx, event);
+                    return;
                 }
             },
             else => {},
@@ -1441,7 +1705,7 @@ pub const Model = struct {
                 self.contextPercent(),
             });
 
-        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme };
+        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme, .context_pct = self.contextPercent(), .file_count = self.context_file_count };
         const header_surface = try header.draw(ctx.withConstraints(
             .{ .width = main_width, .height = header_height },
             .{ .width = main_width, .height = header_height },
@@ -1839,7 +2103,7 @@ pub const Model = struct {
         self.auto_scroll = true;
         self.selected_message_index = null;
         self.toast_stack.push("Message copied to input", .info) catch {};
-        try ctx.requestFocus(self.input.widget());
+        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
         ctx.consumeAndRedraw();
     }
 
@@ -1991,7 +2255,7 @@ pub const Model = struct {
             },
             else => {},
         }
-        try ctx.requestFocus(self.input.widget());
+        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
         ctx.redraw = true;
     }
 
@@ -2019,12 +2283,17 @@ pub const Model = struct {
     }
 
     fn resetPaletteInputField(self: *Model) void {
-        self.palette_input.deinit();
-        self.palette_input = vxfw.TextField.init(self.allocator);
-        self.palette_input.style = .{ .fg = self.current_theme.header_fg };
-        self.palette_input.userdata = self;
-        self.palette_input.onChange = onPaletteChange;
-        self.palette_input.onSubmit = onPaletteSubmit;
+        // Clear text content WITHOUT destroying the TextField widget.
+        // deinit+reinit breaks vaxis focus path tracking: the new widget
+        // instance won't be found in the surface tree, causing
+        //   assert(path.len > 0)  in App.zig FocusHandler.handleEvent
+        const alloc = self.palette_input.buf.allocator;
+        if (self.palette_input.previous_val.len > 0) {
+            alloc.free(self.palette_input.previous_val);
+        }
+        self.palette_input.previous_val = "";
+        self.palette_input.buf.clearAndFree();
+        self.palette_input.reset();
     }
 
     fn clearPaletteFilter(self: *Model) void {
@@ -2047,7 +2316,10 @@ pub const Model = struct {
         self.show_palette = true;
         self.clearPaletteFilter();
         self.resetPaletteInputField();
-        try ctx.requestFocus(self.palette_input.widget());
+        // NOTE: Do NOT requestFocus on palette_input — it's buried inside
+        // FlexRow → InputWidget → CommandPaletteWidget, so vaxis focus path
+        // tracking can never find it. Instead, we forward key events manually
+        // in handleEvent when show_palette is true.
         ctx.redraw = true;
     }
 
@@ -2055,7 +2327,6 @@ pub const Model = struct {
         self.show_palette = false;
         self.clearPaletteFilter();
         self.resetPaletteInputField();
-        try ctx.requestFocus(self.input.widget());
         ctx.redraw = true;
     }
 
@@ -2155,7 +2426,7 @@ pub const Model = struct {
         } else if (std.mem.eql(u8, name, "/help")) {
             try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
-            try self.addMessageUnlocked("assistant", "/compact is not yet implemented.");
+            try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
             const text = try std.fmt.allocPrint(self.allocator, "Current model: {s}/{s}", .{ self.provider_name, self.model_name });
             defer self.allocator.free(text);
@@ -2357,6 +2628,24 @@ pub const Model = struct {
             return;
         }
 
+        // Refresh context based on user's latest message (relevance-filtered)
+        if (self.history.items.len > 0) {
+            const last_msg = self.history.items[self.history.items.len - 1];
+            if (std.mem.eql(u8, last_msg.role, "user")) {
+                const user_content = last_msg.content orelse "";
+                if (user_content.len > 0) {
+                    self.refreshContextForQuery(user_content);
+
+                    // Update the AI client with the refreshed system prompt
+                    if (self.client) |*client| {
+                        if (self.effective_system_prompt) |prompt| {
+                            client.setSystemPrompt(prompt);
+                        }
+                    }
+                }
+            }
+        }
+
         var total_input_tokens: u64 = 0;
         var total_output_tokens: u64 = 0;
         var iteration: u32 = 0;
@@ -2364,10 +2653,29 @@ pub const Model = struct {
         while (iteration < self.max_iterations) : (iteration += 1) {
             total_input_tokens += estimateMessageTokens(self.history.items);
 
+            // Execute pre_request lifecycle hook
+            {
+                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                defer hook_ctx.deinit();
+                hook_ctx.phase = .pre_request;
+                hook_ctx.provider = self.provider_name;
+                hook_ctx.model = self.model_name;
+                hook_ctx.token_count = @intCast(estimateMessageTokens(self.history.items));
+                self.lifecycle_hooks.execute(.pre_request, &hook_ctx) catch {};
+            }
+
             var response = try self.sendChatStreamingWithFallback();
             defer freeChatResponse(self.allocator, &response);
 
             if (response.choices.len == 0) {
+                // Execute on_error lifecycle hook
+                {
+                    var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                    defer hook_ctx.deinit();
+                    hook_ctx.phase = .on_error;
+                    hook_ctx.error_message = "No response received from provider";
+                    self.lifecycle_hooks.execute(.on_error, &hook_ctx) catch {};
+                }
                 self.finishRequestWithErrorText("No response received from provider");
                 return;
             }
@@ -2375,12 +2683,29 @@ pub const Model = struct {
             const content = response.choices[0].message.content orelse "";
             const tool_calls = response.choices[0].message.tool_calls;
             if (content.len == 0 and tool_calls == null) {
+                // Execute on_error lifecycle hook
+                {
+                    var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                    defer hook_ctx.deinit();
+                    hook_ctx.phase = .on_error;
+                    hook_ctx.error_message = "No response received from provider";
+                    self.lifecycle_hooks.execute(.on_error, &hook_ctx) catch {};
+                }
                 self.finishRequestWithErrorText("No response received from provider");
                 return;
             }
 
             total_output_tokens += estimateResponseOutputTokens(content, tool_calls);
             try self.applyAssistantResponse(content, tool_calls);
+
+            // Execute post_request lifecycle hook
+            {
+                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                defer hook_ctx.deinit();
+                hook_ctx.phase = .post_request;
+                hook_ctx.token_count = @intCast(total_input_tokens + total_output_tokens);
+                self.lifecycle_hooks.execute(.post_request, &hook_ctx) catch {};
+            }
 
             if (tool_calls) |calls| {
                 try self.executeToolCalls(calls);
@@ -2469,31 +2794,59 @@ pub const Model = struct {
 
         try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
         try self.saveSessionSnapshotUnlocked();
+
+        self.context_tokens = self.estimateContextTokens();
+        if (self.compactor.needsCompaction(self.context_tokens)) {
+            self.performCompactionAuto() catch {};
+        }
     }
 
     fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallInfo) !void {
         for (tool_calls) |tool_call| {
-            const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments);
+            // Execute pre_tool lifecycle hook
+            {
+                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                defer hook_ctx.deinit();
+                hook_ctx.phase = .pre_tool;
+                hook_ctx.tool_name = tool_call.name;
+                self.lifecycle_hooks.execute(.pre_tool, &hook_ctx) catch {};
+            }
+
+            // Compute diff preview for edit/write_file tools
+            var preview_diff: ?[]const u8 = null;
+            if (std.mem.eql(u8, tool_call.name, "edit") or std.mem.eql(u8, tool_call.name, "write_file")) {
+                preview_diff = self.computeEditPreview(tool_call) catch null;
+            }
+
+            const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments, preview_diff);
+            if (preview_diff) |d| self.allocator.free(d);
             const result_text = if (!allowed)
                 try self.allocator.dupe(u8, "error: tool execution denied by user")
             else blk: {
-                // Try builtin first
-                if (executeInlineTool(self.allocator, tool_call)) |result|
-                    break :blk result
-                else |err| {
-                    // If unsupported, try MCP bridge
-                    if (err == error.UnsupportedTool) {
-                        if (self.mcp_bridge) |bridge| {
-                            if (bridge.executeTool(tool_call.name, tool_call.arguments)) |mcp_result|
-                                break :blk try self.allocator.dupe(u8, mcp_result)
-                            else |_|
-                                break :blk try std.fmt.allocPrint(self.allocator, "error: unsupported tool '{s}'", .{tool_call.name});
-                        }
-                    }
-                    break :blk try std.fmt.allocPrint(self.allocator, "error: {s}", .{@errorName(err)});
+                // Use HybridBridge for unified tool dispatch (builtin + MCP)
+                const parsed_tool_call = core.ParsedToolCall{
+                    .id = tool_call.id,
+                    .name = tool_call.name,
+                    .arguments = tool_call.arguments,
+                };
+                if (self.hybrid_bridge) |hb| {
+                    if (hb.executeTool(parsed_tool_call)) |result|
+                        break :blk result
+                    else |_|
+                        break :blk try std.fmt.allocPrint(self.allocator, "error: unsupported tool '{s}'", .{tool_call.name});
                 }
+                break :blk try self.allocator.dupe(u8, "error: tool dispatch unavailable");
             };
             defer self.allocator.free(result_text);
+
+            // Execute post_tool lifecycle hook
+            {
+                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
+                defer hook_ctx.deinit();
+                hook_ctx.phase = .post_tool;
+                hook_ctx.tool_name = tool_call.name;
+                self.lifecycle_hooks.execute(.post_tool, &hook_ctx) catch {};
+            }
 
             self.lock.lock();
             errdefer self.lock.unlock();
@@ -2502,6 +2855,38 @@ pub const Model = struct {
             try self.saveSessionSnapshotUnlocked();
             self.lock.unlock();
         }
+    }
+
+    /// Compute a unified diff preview for edit/write_file tool calls without applying them.
+    fn computeEditPreview(self: *Model, tool_call: core.client.ToolCallInfo) !?[]const u8 {
+        if (std.mem.eql(u8, tool_call.name, "edit")) {
+            const parsed = std.json.parseFromSlice(
+                struct { file_path: ?[]const u8 = null, path: ?[]const u8 = null, old_string: ?[]const u8 = null, new_string: ?[]const u8 = null },
+                self.allocator,
+                tool_call.arguments,
+                .{ .ignore_unknown_fields = true },
+            ) catch return null;
+            defer parsed.deinit();
+            const fp = parsed.value.file_path orelse parsed.value.path orelse return null;
+            const old_s = parsed.value.old_string orelse return null;
+            const new_s = parsed.value.new_string orelse "";
+            return try tool_executors.previewEditDiff(self.allocator, fp, old_s, new_s);
+        }
+
+        if (std.mem.eql(u8, tool_call.name, "write_file")) {
+            const parsed = std.json.parseFromSlice(
+                struct { path: ?[]const u8 = null, file_path: ?[]const u8 = null, content: ?[]const u8 = null },
+                self.allocator,
+                tool_call.arguments,
+                .{ .ignore_unknown_fields = true },
+            ) catch return null;
+            defer parsed.deinit();
+            const fp = parsed.value.path orelse parsed.value.file_path orelse return null;
+            const content = parsed.value.content orelse return null;
+            return try tool_executors.previewWriteDiff(self.allocator, fp, content);
+        }
+
+        return null;
     }
 
     fn startNextAssistantPlaceholder(self: *Model) !void {
@@ -2613,6 +2998,100 @@ pub const Model = struct {
         const input_tokens: u32 = @intCast(@min(self.total_input_tokens, std.math.maxInt(u32)));
         const output_tokens: u32 = @intCast(@min(self.total_output_tokens, std.math.maxInt(u32)));
         return self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), input_tokens, output_tokens);
+    }
+
+    fn estimateContextTokens(self: *const Model) u64 {
+        var total: u64 = 0;
+        if (self.effective_system_prompt) |prompt| {
+            total += compaction_mod.ContextCompactor.estimateTokens(prompt);
+        }
+        for (self.history.items) |msg| {
+            if (msg.content) |content| {
+                total += compaction_mod.ContextCompactor.estimateTokens(content);
+            }
+        }
+        return total;
+    }
+
+    fn performCompaction(self: *Model) !void {
+        if (self.history.items.len <= self.compactor.recent_window) {
+            try self.addMessageUnlocked("assistant", "Not enough messages to compact (need more than recent window).");
+            return;
+        }
+
+        // Build CompactMessage slice from history
+        const compact_messages = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
+        defer self.allocator.free(compact_messages);
+        for (self.history.items, 0..) |msg, i| {
+            compact_messages[i] = .{
+                .role = msg.role,
+                .content = msg.content orelse "",
+                .timestamp = null,
+            };
+        }
+
+        var result = try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+        defer result.deinit();
+
+        if (result.messages_summarized == 0) {
+            try self.addMessageUnlocked("assistant", "No messages were compacted.");
+            return;
+        }
+
+        // Store summary (dupe before result.deinit frees it)
+        if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
+        self.last_compaction_summary = if (result.summary.len > 0) try self.allocator.dupe(u8, result.summary) else "";
+
+        // Remove old messages from history — result.messages_summarized were compacted
+        const remove_count = result.messages_summarized;
+        for (self.history.items[0..remove_count]) |msg| {
+            freeChatMessage(self.allocator, msg);
+        }
+        const remaining = self.history.items[remove_count..];
+        std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
+        self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
+
+        self.context_tokens = self.estimateContextTokens();
+
+        const text = try std.fmt.allocPrint(self.allocator, "Compacted {d} messages. Saved ~{d} tokens. Context: {d}%", .{
+            result.messages_summarized,
+            result.tokens_saved,
+            self.contextPercent(),
+        });
+        try self.addMessageUnlocked("assistant", text);
+    }
+
+    fn performCompactionAuto(self: *Model) !void {
+        if (self.history.items.len <= self.compactor.recent_window) return;
+
+        const compact_messages = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
+        defer self.allocator.free(compact_messages);
+        for (self.history.items, 0..) |msg, i| {
+            compact_messages[i] = .{
+                .role = msg.role,
+                .content = msg.content orelse "",
+                .timestamp = null,
+            };
+        }
+
+        var result = try self.compactor.compactLight(compact_messages);
+        defer result.deinit();
+
+        if (result.messages_summarized == 0) return;
+
+        // Store summary
+        if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
+        self.last_compaction_summary = if (result.summary.len > 0) try self.allocator.dupe(u8, result.summary) else "";
+
+        const remove_count = result.messages_summarized;
+        for (self.history.items[0..remove_count]) |msg| {
+            freeChatMessage(self.allocator, msg);
+        }
+        const remaining = self.history.items[remove_count..];
+        std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
+        self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
+
+        self.context_tokens = self.estimateContextTokens();
     }
 
     fn contextPercent(self: *const Model) u8 {
