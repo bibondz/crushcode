@@ -70,6 +70,38 @@ pub const PermissionDialogWidget = struct {
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = 3, .col = 2 }, .surface = tool_surface });
 
+        // Tier badge
+        const tier_text = if (std.mem.eql(u8, pending.tool_tier, "READ"))
+            "[READ — auto-allowed]"
+        else if (std.mem.eql(u8, pending.tool_tier, "WRITE"))
+            "[WRITE — requires approval]"
+        else if (std.mem.eql(u8, pending.tool_tier, "DESTRUCTIVE"))
+            "[DESTRUCTIVE — proceed with caution]"
+        else
+            "[unknown tier]";
+
+        const tier_style: vaxis.Cell.Style = if (std.mem.eql(u8, pending.tool_tier, "READ"))
+            .{ .fg = self.context.theme.tool_success }
+        else if (std.mem.eql(u8, pending.tool_tier, "WRITE"))
+            .{ .fg = self.context.theme.header_fg }
+        else if (std.mem.eql(u8, pending.tool_tier, "DESTRUCTIVE"))
+            .{ .fg = self.context.theme.error_fg, .bold = true }
+        else
+            .{ .fg = self.context.theme.dimmed };
+
+        const tier_label = vxfw.Text{
+            .text = tier_text,
+            .style = tier_style,
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const tier_row: u16 = @intCast(4 + tool_surface.size.height);
+        const tier_surface = try tier_label.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = tier_row, .col = 2 }, .surface = tier_surface });
+
         const args_text = vxfw.Text{
             .text = pending.arguments,
             .style = .{ .fg = self.context.theme.dimmed, .dim = true },
@@ -80,10 +112,10 @@ pub const PermissionDialogWidget = struct {
             .{ .width = inner_width, .height = 0 },
             .{ .width = inner_width, .height = 9999 },
         ));
-        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(4 + tool_surface.size.height), .col = 2 }, .surface = args_surface });
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(tier_row + 1 + tier_surface.size.height), .col = 2 }, .surface = args_surface });
 
         // Diff preview section (Phase 23)
-        var current_row: u16 = @intCast(5 + tool_surface.size.height + args_surface.size.height);
+        var current_row: u16 = @intCast(tier_row + 2 + tier_surface.size.height + args_surface.size.height);
         if (pending.preview_diff) |diff_text| {
             const diff_theme = diff_mod.diffThemeFromAppTheme(self.context.theme);
             const diff_segments = diff_mod.parseDiff(ctx.arena, diff_text, 20, diff_theme) catch &.{};

@@ -1438,6 +1438,17 @@ pub const Model = struct {
         if (pending.preview_diff) |d| self.allocator.free(d);
     }
 
+    fn classifyToolTier(tool_name: []const u8) []const u8 {
+        const read_tools = [_][]const u8{ "read_file", "glob", "grep", "list_directory", "file_info", "git_status", "git_diff", "git_log", "search_files" };
+        const write_tools = [_][]const u8{ "write_file", "create_file", "edit", "move_file", "copy_file" };
+        const destructive_tools = [_][]const u8{ "delete_file", "shell" };
+
+        for (read_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "READ";
+        for (write_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "WRITE";
+        for (destructive_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "DESTRUCTIVE";
+        return "unknown";
+    }
+
     fn setStatusMessage(self: *Model, text: []const u8) !void {
         self.lock.lock();
         defer self.lock.unlock();
@@ -1507,6 +1518,7 @@ pub const Model = struct {
             .tool_name = try self.allocator.dupe(u8, tool_name),
             .arguments = try self.allocator.dupe(u8, arguments),
             .preview_diff = if (preview_diff) |d| try self.allocator.dupe(u8, d) else null,
+            .tool_tier = classifyToolTier(tool_name),
         };
         self.lock.unlock();
 

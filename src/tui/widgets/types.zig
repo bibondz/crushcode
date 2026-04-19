@@ -59,6 +59,7 @@ pub const ToolPermission = struct {
     tool_name: []const u8,
     arguments: []const u8,
     preview_diff: ?[]const u8 = null,
+    tool_tier: []const u8 = "unknown",
 };
 
 pub const FallbackProvider = struct {
@@ -188,6 +189,76 @@ pub const builtin_tool_schemas = [_]core.ToolSchema{
         .description = "Replace one exact string in a file",
         .parameters =
         \\{"type":"object","properties":{"file_path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["file_path","old_string","new_string"]}
+        ,
+    },
+    .{
+        .name = "list_directory",
+        .description = "List directory contents",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"},"recursive":{"type":"boolean"}},"required":["path"]}
+        ,
+    },
+    .{
+        .name = "create_file",
+        .description = "Create a new file with content",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}
+        ,
+    },
+    .{
+        .name = "move_file",
+        .description = "Move/rename a file",
+        .parameters =
+        \\{"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"]}
+        ,
+    },
+    .{
+        .name = "copy_file",
+        .description = "Copy a file",
+        .parameters =
+        \\{"type":"object","properties":{"source":{"type":"string"},"destination":{"type":"string"}},"required":["source","destination"]}
+        ,
+    },
+    .{
+        .name = "delete_file",
+        .description = "Delete a file",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+        ,
+    },
+    .{
+        .name = "file_info",
+        .description = "Get file metadata (size, modified time, permissions)",
+        .parameters =
+        \\{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}
+        ,
+    },
+    .{
+        .name = "git_status",
+        .description = "Show git working tree status",
+        .parameters =
+        \\{"type":"object","properties":{},"required":[]}
+        ,
+    },
+    .{
+        .name = "git_diff",
+        .description = "Show git diff of changes",
+        .parameters =
+        \\{"type":"object","properties":{"cached":{"type":"boolean"},"file":{"type":"string"}},"required":[]}
+        ,
+    },
+    .{
+        .name = "git_log",
+        .description = "Show git commit history",
+        .parameters =
+        \\{"type":"object","properties":{"count":{"type":"integer"},"oneline":{"type":"boolean"}},"required":[]}
+        ,
+    },
+    .{
+        .name = "search_files",
+        .description = "Search files by name pattern",
+        .parameters =
+        \\{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
         ,
     },
 };
