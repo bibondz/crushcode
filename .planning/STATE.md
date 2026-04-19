@@ -1,9 +1,9 @@
-# State: Crushcode v0.28.0
+# State: Crushcode v0.29.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** e2a08ca
-**Stats:** ~250 `.zig` files, ~100K lines
+**Commit:** fa948f6
+**Stats:** ~250 `.zig` files, ~105K lines
 
 ---
 
@@ -21,24 +21,20 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.28.0 — Backlog Commit |
+| Milestone | v0.29.0 — Integration & MCP |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.28.0 |
+| Code Version | 0.29.0 |
 
 ---
 
-## v0.28.0 Plan — Backlog Commit (all accumulated work)
+## v0.29.0 Plan — Integration & MCP
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| A | Commit agent modules (11 new: adversarial, background, capability, coordinator, layered_memory, project_memory, router, worker, worker_runner, context_budget + loop.zig, worktree.zig) | ✅ Done |
-| B | Commit knowledge + graph + cognition + detection modules (13 files) | ✅ Done |
-| C | Commit command enhancements (17 files: chat, handlers, jobs, git, shell, mcp, batch, logs, run, session, cli) | ✅ Done |
-| D | Commit skills + permission + config + core + shell + hooks + execution modules (31 files) | ✅ Done |
-| E | Commit TUI widgets + workflow + docs (8 files) | ✅ Done |
-| F | Commit planning docs (15 files) | ✅ Done |
-| — | Version bump to 0.28.0 | ✅ Done |
+| B | Wire guardian, cognition, autopilot, team/spawn, phase-run into TUI slash commands (+301 lines) | ✅ Done |
+| C | Fix MCP server tool execution — add ToolExecutorFn callback, replace stub responses (+36/-6 lines) | ✅ Done |
+| — | Version bump to 0.29.0 + fix server.zig stuck at 0.26.0 | ✅ Done |
 
 ---
 
@@ -67,7 +63,8 @@
 | v0.20.0–v0.25.0 | Feature expansion (see git log) | ✅ Done |
 | v0.26.0 | A–D (agent loop, hybrid bridge, e2e test, version bump) | ✅ Done |
 | v0.27.0 | A–D (memory, parallel, skills HTTP, plugin runtime) | ✅ Done |
-| **v0.28.0** | **A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI)** | **✅ Done** |
+| v0.28.0 | A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI) | ✅ Done |
+| **v0.29.0** | **B–C (wire TUI slash commands + MCP tool execution)** | **✅ Done** |
 
 ---
 
@@ -106,5 +103,5 @@ src/plugins/ — plugin implementations
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.28.0 complete — all backlog committed, working tree clean
-**Next Step:** Plan v0.29.0 (user decision needed on scope)
+**Current Work:** v0.29.0 complete — TUI has 21 slash commands, MCP server has tool executor callback
+**Next Step:** v0.30.0 — refactoring (unify slash commands, split experimental_handlers, merge directories)
