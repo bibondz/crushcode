@@ -206,7 +206,8 @@ pub fn isSupportedSlashCommand(value: []const u8) bool {
     // Check prefix-based commands first (not in the static list)
     if (std.mem.startsWith(u8, value, "/resume") or
         std.mem.startsWith(u8, value, "/delete") or
-        std.mem.startsWith(u8, value, "/theme"))
+        std.mem.startsWith(u8, value, "/theme") or
+        std.mem.startsWith(u8, value, "/skills/auto"))
     {
         return true;
     }

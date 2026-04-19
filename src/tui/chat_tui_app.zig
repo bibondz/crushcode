@@ -47,6 +47,7 @@ const phase_runner_mod = @import("phase_runner");
 const orchestration_mod = @import("orchestration");
 const slash_commands_mod = @import("slash_commands");
 const user_model_mod = @import("user_model");
+const auto_gen_mod = @import("auto_gen");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -277,6 +278,7 @@ pub const Model = struct {
     pipeline: ?cognition_mod.KnowledgePipeline = null,
     pipeline_initialized: bool = false,
     user_model: ?user_model_mod.UserModel = null,
+    auto_gen: ?auto_gen_mod.AutoSkillGenerator = null,
     context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
 
@@ -409,6 +411,20 @@ pub const Model = struct {
                 model.user_model = m.*;
             }
         }
+        // Initialize auto-skill generator (non-fatal)
+        {
+            const home = std.posix.getenv("HOME") orelse "";
+            if (home.len > 0) {
+                const skills_dir = std.fmt.allocPrint(model.allocator, "{s}/.crushcode/skills/auto", .{home}) catch null;
+                if (skills_dir) |dir| {
+                    var gen = auto_gen_mod.AutoSkillGenerator.init(model.allocator, dir) catch null;
+                    if (gen) |*g| {
+                        model.auto_gen = g.*;
+                    }
+                    model.allocator.free(dir);
+                }
+            }
+        }
         // Initialize guardian (non-fatal)
         model.guardian = guardian_mod.Guardian.init(model.allocator) catch null;
 
@@ -513,6 +529,7 @@ pub const Model = struct {
         // Cleanup cognition pipeline and guardian
         if (self.pipeline) |*p| p.deinit();
         if (self.user_model) |*um| um.deinit();
+        if (self.auto_gen) |*ag| ag.deinit();
         if (self.guardian) |*g| g.deinit();
 
         self.resolvePendingPermission(.no);
@@ -2820,8 +2837,62 @@ pub const Model = struct {
                 defer self.allocator.free(text);
                 try self.addMessageUnlocked("assistant", text);
             }
+        } else if (std.mem.eql(u8, name, "/skills/auto") or std.mem.startsWith(u8, name, "/skills/auto ")) {
+            const auto_sub = std.mem.trim(u8, name["/skills/auto".len..], " ");
+            if (self.auto_gen) |*ag| {
+                if (auto_sub.len == 0) {
+                    // Show status
+                    const stats = ag.statsSummary() catch "Error getting auto-skill stats";
+                    defer self.allocator.free(stats);
+                    try self.addMessageUnlocked("assistant", stats);
+                } else if (std.mem.eql(u8, auto_sub, "propose")) {
+                    const proposable = ag.formatProposableSkills() catch "Error listing proposable skills";
+                    defer self.allocator.free(proposable);
+                    try self.addMessageUnlocked("assistant", proposable);
+                } else if (std.mem.startsWith(u8, auto_sub, "generate ")) {
+                    const pattern_name = std.mem.trim(u8, auto_sub["generate ".len..], " ");
+                    if (pattern_name.len == 0) {
+                        try self.addMessageUnlocked("assistant", "Usage: /skills/auto generate <pattern-name>");
+                    } else {
+                        // Find the pattern by name
+                        var found_pattern: ?*auto_gen_mod.TaskPattern = null;
+                        for (ag.patterns.items) |*p| {
+                            if (std.mem.eql(u8, p.name, pattern_name)) {
+                                found_pattern = p;
+                                break;
+                            }
+                        }
+                        if (found_pattern) |p| {
+                            const path = ag.generateSkill(p) catch |err| {
+                                const err_text = try std.fmt.allocPrint(self.allocator, "Failed to generate skill: {}", .{err});
+                                defer self.allocator.free(err_text);
+                                try self.addMessageUnlocked("assistant", err_text);
+                                ctx.redraw = true;
+                                return;
+                            };
+                            defer self.allocator.free(path);
+                            const success_text = try std.fmt.allocPrint(self.allocator, "Skill generated: {s}", .{path});
+                            defer self.allocator.free(success_text);
+                            try self.addMessageUnlocked("assistant", success_text);
+                        } else {
+                            const err_text = try std.fmt.allocPrint(self.allocator, "Pattern '{s}' not found. Use /skills/auto propose to list available patterns.", .{pattern_name});
+                            defer self.allocator.free(err_text);
+                            try self.addMessageUnlocked("assistant", err_text);
+                        }
+                    }
+                } else {
+                    try self.addMessageUnlocked("assistant",
+                        \\Auto-Skill Generator:
+                        \\  /skills/auto              — show status and detected patterns
+                        \\  /skills/auto propose      — list proposable skills
+                        \\  /skills/auto generate <n> — generate and save a skill
+                    );
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
+            }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -3286,6 +3357,14 @@ pub const Model = struct {
                 hook_ctx.phase = .post_tool;
                 hook_ctx.tool_name = tool_call.name;
                 self.lifecycle_hooks.execute(.post_tool, &hook_ctx) catch {};
+            }
+
+            // Record tool call for auto-skill pattern detection (non-fatal)
+            if (self.auto_gen) |*ag| {
+                const is_success = !std.mem.startsWith(u8, result_text, "error:");
+                const args_trimmed = if (tool_call.arguments.len > 80) tool_call.arguments[0..80] else tool_call.arguments;
+                ag.recordToolCall(tool_call.name, args_trimmed, is_success) catch {};
+                _ = ag.analyzePatterns() catch {};
             }
 
             self.lock.lock();
