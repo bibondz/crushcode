@@ -93,7 +93,7 @@ pub const MCPServer = struct {
         // Server info
         var server_info = json.ObjectMap.init(self.allocator);
         try server_info.put("name", .{ .string = "crushcode" });
-        try server_info.put("version", .{ .string = "0.26.0" });
+        try server_info.put("version", .{ .string = "0.29.0" });
         try result.put("serverInfo", .{ .object = server_info });
 
         // Protocol version
