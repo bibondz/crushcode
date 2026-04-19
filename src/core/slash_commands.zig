@@ -47,7 +47,9 @@ pub const all_slash_command_names = [_][]const u8{
     "/autopilot", "/team",   "/phase-run", "/mode",    "/cost",
     "/usage",   "/graph",    "/revise",   "/lint",    "/sources",
     "/wave",    "/worktree", "/hooks",    "/gate",    "/insights",
+    "/feedback",
     "/skills/auto",
+    "/plan",
 };
 
 /// Check if a string is a recognized slash command.

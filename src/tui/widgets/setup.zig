@@ -207,7 +207,8 @@ pub fn isSupportedSlashCommand(value: []const u8) bool {
     if (std.mem.startsWith(u8, value, "/resume") or
         std.mem.startsWith(u8, value, "/delete") or
         std.mem.startsWith(u8, value, "/theme") or
-        std.mem.startsWith(u8, value, "/skills/auto"))
+        std.mem.startsWith(u8, value, "/skills/auto") or
+        std.mem.startsWith(u8, value, "/plan"))
     {
         return true;
     }

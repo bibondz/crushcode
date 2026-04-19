@@ -48,6 +48,8 @@ const orchestration_mod = @import("orchestration");
 const slash_commands_mod = @import("slash_commands");
 const user_model_mod = @import("user_model");
 const auto_gen_mod = @import("auto_gen");
+const plan_mod = @import("plan_handler");
+const feedback_mod = @import("feedback");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -279,6 +281,8 @@ pub const Model = struct {
     pipeline_initialized: bool = false,
     user_model: ?user_model_mod.UserModel = null,
     auto_gen: ?auto_gen_mod.AutoSkillGenerator = null,
+    feedback: ?feedback_mod.FeedbackStore = null,
+    plan_mode: plan_mod.PlanMode,
     context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
 
@@ -392,6 +396,7 @@ pub const Model = struct {
             .memory = memory_mod.Memory.init(allocator, "", 100),
             .parallel_executor = parallel_mod.ParallelExecutor.init(allocator, 3),
             .plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, ""),
+            .plan_mode = plan_mod.PlanMode.init(allocator),
         };
         errdefer model.destroy();
 
@@ -423,6 +428,14 @@ pub const Model = struct {
                     }
                     model.allocator.free(dir);
                 }
+            }
+        }
+        // Initialize feedback store (non-fatal)
+        {
+            var fb = feedback_mod.FeedbackStore.init(model.allocator) catch null;
+            if (fb) |*f| {
+                f.load() catch {};
+                model.feedback = f.*;
             }
         }
         // Initialize guardian (non-fatal)
@@ -530,6 +543,7 @@ pub const Model = struct {
         if (self.pipeline) |*p| p.deinit();
         if (self.user_model) |*um| um.deinit();
         if (self.auto_gen) |*ag| ag.deinit();
+        if (self.feedback) |*fb| fb.deinit();
         if (self.guardian) |*g| g.deinit();
 
         self.resolvePendingPermission(.no);
@@ -594,6 +608,8 @@ pub const Model = struct {
         // Clean up parallel executor
         self.parallel_executor.waitForAll();
         self.parallel_executor.deinit();
+        // Clean up plan mode
+        self.plan_mode.deinit();
         // Clean up memory
         self.memory.deinit();
         // Execute session_end lifecycle hook
@@ -1209,6 +1225,27 @@ pub const Model = struct {
                     \\{s}
                 , .{section}) catch {};
             }
+        }
+
+        // Inject learned feedback
+        if (self.feedback) |*fb| {
+            if (fb.toPromptSection() catch null) |section| {
+                defer self.allocator.free(section);
+                rw.print(
+                    \\
+                    \\## Learned Feedback
+                    \\{s}
+                , .{section}) catch {};
+            }
+        }
+
+        // Inject plan mode instruction
+        if (self.plan_mode.active) {
+            rw.print(
+                \\
+                \\## Plan Mode Active
+                \\You are in PLAN MODE. Instead of executing tools directly, propose what you would do as a structured plan. List the files you would modify and why. Do NOT make changes — only propose them.
+            , .{}) catch {};
         }
 
         const final_base = rich_buf.items;
@@ -2550,16 +2587,69 @@ pub const Model = struct {
                 defer self.allocator.free(text);
                 try self.addMessageUnlocked("assistant", text);
             }
-        } else if (std.mem.eql(u8, name, "/thinking")) {
-            self.thinking = !self.thinking;
-            const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
-            try self.addMessageUnlocked("assistant", text);
-        } else if (std.mem.eql(u8, name, "/guardian")) {
-            if (self.guardian) |*g| {
-                g.printStats();
-                try self.addMessageUnlocked("assistant", "Guardian stats printed to log.");
+        } else if (std.mem.startsWith(u8, name, "/plan")) {
+            const plan_sub = std.mem.trim(u8, name[5..], " ");
+            if (plan_sub.len == 0 or std.mem.eql(u8, plan_sub, "status")) {
+                // /plan or /plan status — show current plan mode status
+                const summary = self.plan_mode.statusSummary() catch "Plan mode: error";
+                defer self.allocator.free(summary);
+                try self.addMessageUnlocked("assistant", summary);
+            } else if (std.mem.eql(u8, plan_sub, "on")) {
+                self.plan_mode.enter();
+                try self.addMessageUnlocked("assistant", "Plan mode enabled. AI will propose changes before executing.");
+                self.refreshEffectiveSystemPrompt() catch {};
+            } else if (std.mem.eql(u8, plan_sub, "off")) {
+                self.plan_mode.exit();
+                try self.addMessageUnlocked("assistant", "Plan mode disabled. Changes will be executed directly.");
+                self.refreshEffectiveSystemPrompt() catch {};
+            } else if (std.mem.eql(u8, plan_sub, "approve")) {
+                if (self.plan_mode.current_plan) |*plan| {
+                    plan.approveAll();
+                    const formatted = plan.format() catch "Plan approved.";
+                    defer self.allocator.free(formatted);
+                    try self.addMessageUnlocked("assistant", formatted);
+                    // Execute approved steps
+                    const approved = plan.getApprovedSteps() catch &.{};
+                    if (approved.len > 0) {
+                        self.allocator.free(approved);
+                        // Build tool calls from approved steps and execute
+                        var tc_list = array_list_compat.ArrayList(core.client.ToolCallInfo).init(self.allocator);
+                        defer tc_list.deinit();
+                        for (plan.steps.items) |step| {
+                            if (step.approved) {
+                                try tc_list.append(.{
+                                    .id = "",
+                                    .name = step.tool_name,
+                                    .arguments = step.tool_args,
+                                });
+                            }
+                        }
+                        self.plan_mode.exit();
+                        self.refreshEffectiveSystemPrompt() catch {};
+                        // Execute the tool calls outside plan mode
+                        try self.executeToolCalls(tc_list.items);
+                    } else {
+                        self.allocator.free(approved);
+                    }
+                    // Clear the plan after execution
+                    self.plan_mode.cancelPlan();
+                } else {
+                    try self.addMessageUnlocked("assistant", "No plan to approve. Ask the AI to propose changes first.");
+                }
+            } else if (std.mem.eql(u8, plan_sub, "cancel")) {
+                self.plan_mode.cancelPlan();
+                self.plan_mode.exit();
+                try self.addMessageUnlocked("assistant", "Plan cancelled and discarded.");
+                self.refreshEffectiveSystemPrompt() catch {};
             } else {
-                try self.addMessageUnlocked("assistant", "Guardian not initialized.");
+                try self.addMessageUnlocked("assistant",
+                    \\Plan Mode Commands:
+                    \\  /plan         — Show plan mode status
+                    \\  /plan on      — Enable plan mode (AI proposes instead of executing)
+                    \\  /plan off     — Disable plan mode
+                    \\  /plan approve — Approve and execute the current plan
+                    \\  /plan cancel  — Cancel and discard the current plan
+                );
             }
         } else if (std.mem.eql(u8, name, "/cognition")) {
             if (!self.pipeline_initialized) {
@@ -2591,6 +2681,55 @@ pub const Model = struct {
                 }
             } else {
                 try self.addMessageUnlocked("assistant", "User model not initialized.");
+            }
+        } else if (std.mem.eql(u8, name, "/feedback") or std.mem.startsWith(u8, name, "/feedback ")) {
+            const fb_sub = std.mem.trim(u8, name["/feedback".len..], " ");
+            if (self.feedback) |*fb| {
+                if (fb_sub.len == 0) {
+                    // Show stats
+                    const stats = fb.formatStats() catch "Error getting feedback stats";
+                    defer self.allocator.free(stats);
+                    try self.addMessageUnlocked("assistant", stats);
+                } else if (std.mem.eql(u8, fb_sub, "recent")) {
+                    const recent = fb.formatRecent(10) catch "Error getting recent feedback";
+                    defer self.allocator.free(recent);
+                    try self.addMessageUnlocked("assistant", recent);
+                } else if (std.mem.startsWith(u8, fb_sub, "rate ")) {
+                    // /feedback rate <task_id> <1-5>
+                    const rate_args = std.mem.trim(u8, fb_sub["rate ".len..], " ");
+                    // Split into task_id and rating
+                    const space_idx = std.mem.indexOfScalar(u8, rate_args, ' ');
+                    if (space_idx) |si| {
+                        const tid = rate_args[0..si];
+                        const rating_str = std.mem.trim(u8, rate_args[si + 1 ..], " ");
+                        const rating = std.fmt.parseInt(u8, rating_str, 10) catch {
+                            try self.addMessageUnlocked("assistant", "Invalid rating. Use a number 1-5.");
+                            ctx.redraw = true;
+                            return;
+                        };
+                        fb.rateTask(tid, rating) catch |err| {
+                            const err_text = std.fmt.allocPrint(self.allocator, "Failed to rate task: {}", .{err}) catch "Error";
+                            defer self.allocator.free(err_text);
+                            try self.addMessageUnlocked("assistant", err_text);
+                            ctx.redraw = true;
+                            return;
+                        };
+                        const success_text = std.fmt.allocPrint(self.allocator, "Rated task {s} as {d}/5", .{ tid, rating }) catch "Rated";
+                        defer self.allocator.free(success_text);
+                        try self.addMessageUnlocked("assistant", success_text);
+                    } else {
+                        try self.addMessageUnlocked("assistant", "Usage: /feedback rate <task_id> <1-5>");
+                    }
+                } else {
+                    try self.addMessageUnlocked("assistant",
+                        \\Feedback Commands:
+                        \\  /feedback              — show statistics
+                        \\  /feedback recent       — show last 10 entries
+                        \\  /feedback rate <id> <1-5> — rate a specific task
+                    );
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "Feedback store not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/autopilot") or std.mem.startsWith(u8, name, "/autopilot ")) {
             const auto_sub = std.mem.trim(u8, name["/autopilot".len..], " ");
@@ -2892,7 +3031,7 @@ pub const Model = struct {
                 try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/plan [on|off|approve|cancel|status] — Plan mode: propose changes before executing\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -3313,6 +3452,28 @@ pub const Model = struct {
     }
 
     fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallInfo) !void {
+        // Plan mode: capture tool calls as plan steps instead of executing
+        if (self.plan_mode.active) {
+            if (self.plan_mode.current_plan == null) {
+                _ = self.plan_mode.createPlan("Proposed changes") catch return;
+            }
+            if (self.plan_mode.current_plan) |*plan| {
+                for (tool_calls) |tc| {
+                    const risk = plan_mod.assessRisk(tc.name, tc.arguments);
+                    const action = plan_mod.extractAction(self.allocator, tc.name, tc.arguments) catch "Unknown action";
+                    const target = plan_mod.extractTargetFile(tc.arguments);
+                    plan.addStep(action, target, risk, "", tc.name, tc.arguments) catch {};
+                    self.allocator.free(action);
+                }
+                const formatted = plan.format() catch return;
+                defer self.allocator.free(formatted);
+                self.lock.lock();
+                try self.addMessageUnlocked("assistant", formatted);
+                self.lock.unlock();
+            }
+            return;
+        }
+
         for (tool_calls) |tool_call| {
             // Execute pre_tool lifecycle hook
             {
@@ -3365,6 +3526,15 @@ pub const Model = struct {
                 const args_trimmed = if (tool_call.arguments.len > 80) tool_call.arguments[0..80] else tool_call.arguments;
                 ag.recordToolCall(tool_call.name, args_trimmed, is_success) catch {};
                 _ = ag.analyzePatterns() catch {};
+            }
+
+            // Record tool outcome for feedback learning (non-fatal)
+            if (self.feedback) |*fb| {
+                const fb_success = !std.mem.startsWith(u8, result_text, "error:");
+                const fb_outcome: feedback_mod.TaskOutcome = if (fb_success) .success else .failure;
+                const fb_err: []const u8 = if (fb_success) "" else result_text;
+                var fb_tools = [_][]const u8{tool_call.name};
+                fb.record("tool_execution", &fb_tools, fb_outcome, 0.8, fb_err) catch {};
             }
 
             self.lock.lock();

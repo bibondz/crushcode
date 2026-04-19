@@ -33,6 +33,7 @@ pub const palette_command_data = [_]Command{
     .{ .name = "/workers", .description = "List active workers", .shortcut = "w" },
     .{ .name = "/kill", .description = "Kill a worker: /kill <id>", .shortcut = "k" },
     .{ .name = "/help", .description = "Show available commands", .shortcut = "h" },
+    .{ .name = "/plan on", .description = "Enable plan mode (propose before executing)", .shortcut = "p" },
 };
 
 pub const CommandRowWidget = struct {

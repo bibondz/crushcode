@@ -392,6 +392,7 @@ pub fn build(b: *std.Build) !void {
     const knowledge_handler_mod = simpleMod(b, "src/commands/handlers/knowledge_handler.zig", target, optimize);
     const team_handler_mod = simpleMod(b, "src/commands/handlers/team_handler.zig", target, optimize);
     const memory_handler_mod = simpleMod(b, "src/commands/handlers/memory_handler.zig", target, optimize);
+    const plan_handler_mod = simpleMod(b, "src/commands/handlers/plan_handler.zig", target, optimize);
     addImports(ai_handlers_mod, &.{
         imp("args", cli_mod), imp("registry", registry_mod), imp("config", config_mod),   imp("chat", chat_mod),
         imp("tui", tui_mod),  imp("core_api", core_api_mod), imp("connect", connect_mod), imp("profile", profile_mod),
@@ -539,6 +540,9 @@ pub fn build(b: *std.Build) !void {
         imp("array_list_compat", compat_array_list_mod),
         imp("file_compat", compat_file_mod),
     });
+    const feedback_mod = createMod(b, "src/agent/feedback.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+    });
     const auto_gen_mod = createMod(b, "src/skills/auto_gen.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
         imp("file_compat", compat_file_mod),
@@ -632,6 +636,7 @@ pub fn build(b: *std.Build) !void {
         imp("update", update_mod),
         imp("user_model", user_model_mod),
         imp("auto_gen", auto_gen_mod),
+        imp("feedback", feedback_mod),
     });
     addImports(tool_handlers_mod, &.{imp("capability_catalog", capability_catalog_mod)});
     // experimental_handlers_mod is now a re-export shim — imports 5 sub-modules
@@ -689,7 +694,7 @@ pub fn build(b: *std.Build) !void {
         imp("autopilot", autopilot_mod),   imp("phase_runner", phase_runner_mod),
         imp("orchestration", orchestration_mod),
     });
-    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod) });
+    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod) });
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
@@ -733,6 +738,8 @@ pub fn build(b: *std.Build) !void {
         cognition_mod,             guardian_mod,              phase_runner_mod,             autopilot_mod,
         orchestration_mod,         hybrid_bridge_mod,         user_model_mod,
         auto_gen_mod,
+        feedback_mod,
+        plan_handler_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -755,6 +762,7 @@ pub fn build(b: *std.Build) !void {
         context_budget_mod,
         project_memory_mod,
         user_model_mod,
+        feedback_mod,
         checkpoint_mod,
         workflow_mod,
         scaffold_mod,
@@ -806,6 +814,8 @@ pub fn build(b: *std.Build) !void {
         hybrid_bridge_mod,
         chat_tool_executors_mod,
         auto_gen_mod,
+        feedback_mod,
+        plan_handler_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
