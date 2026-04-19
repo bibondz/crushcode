@@ -1,16 +1,16 @@
-# State: Crushcode v0.32.0
+# State: Crushcode v0.33.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
-**Updated:** 2026-04-19
-**Commit:** b4dfe10
-**Stats:** ~250 `.zig` files, ~105K lines
+**Updated:** 2026-04-20
+**Commit:** 6ff16d4
+**Stats:** ~256 `.zig` files, ~110K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
 
 ## Project Reference
 
-**Core Value:** Ship a working AI coding assistant in Zig that can execute shell commands, manage files, and interact with AI providers (Ollama, OpenRouter).
+**Core Value:** Ship a self-improving AI coding assistant in Zig that learns from usage, remembers across sessions, and produces production-quality code.
 
 **Build:** `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zig-build-cache`
 **Test:** `cd /mnt/d/crushcode && zig build test --cache-dir /tmp/zig-build-cache`
@@ -22,10 +22,36 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.32.0 — Runtime Bug Fixes |
-| Phase | Complete |
+| Milestone | v0.33.0 — Self-Improving Agent |
+| Phase | All phases complete |
 | Status | ✅ Done |
-| Code Version | 0.32.0 |
+| Code Version | 0.33.0 |
+
+---
+
+## v0.33.0 — Self-Improving Agent
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 26 | Context Relevance Scoring — `scoreRelevanceAdvanced()` with PageRank, file-type bias, community bonus; pipeline integration in TUI; header shows "ctx: 8/14 files (scored)" | ✅ Done |
+| Phase 27 | User Model — `src/agent/user_model.zig` with USER.md persistence, preference tracking (coding style, tools, language), `/user` command | ✅ Done |
+| Phase 28 | Auto Skill Generation — `src/skills/auto_gen.zig` with pattern detection, sliding window analysis, injection scan, `/skills/auto` command | ✅ Done |
+| Phase 29 | Plan Mode — `src/commands/handlers/plan_handler.zig` with risk assessment, propose-before-execute, `/plan on/off/approve/cancel` | ✅ Done |
+| Phase 30 | Feedback Loop — `src/agent/feedback.zig` with JSON persistence, outcome tracking, quality scores, `/feedback stats/recent/rate` | ✅ Done |
+
+### New Files Added
+- `src/agent/user_model.zig` (440 lines)
+- `src/skills/auto_gen.zig` (717 lines)
+- `src/commands/handlers/plan_handler.zig` (606 lines)
+- `src/agent/feedback.zig` (737 lines)
+
+### Modified Files
+- `src/graph/graph.zig` — Enhanced scoring with PageRank cache, file-type weighting, community bonus
+- `src/tui/chat_tui_app.zig` — Pipeline context, user model, auto-gen, plan mode, feedback wiring
+- `src/tui/widgets/header.zig` — Scored context display
+- `build.zig` — 4 new modules registered
+- `src/core/slash_commands.zig` — 4 new commands: /user, /skills/auto, /plan, /feedback
+- `src/tui/widgets/setup.zig` — Slash command prefix matching
 
 ---
 
@@ -79,6 +105,7 @@
 | v0.30.0 | D: unified slash commands + git remote + master push | ✅ Done |
 | v0.31.0 | E–G: split handlers, relocate modules, consolidate lists | ✅ Done |
 | **v0.32.0** | **Runtime bug fixes: memory JSON, parallel thread safety, plugin pointer** | **✅ Done** |
+| **v0.33.0** | **Self-improving agent: relevance scoring, user model, auto skills, plan mode, feedback** | **✅ Done** |
 
 ---
 
@@ -124,6 +151,6 @@ src/tools/ — tool definitions
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-19
-**Current Work:** v0.32.0 complete — runtime bugs fixed in memory, parallel, plugin modules
-**Next Step:** Build.zig cleanup, or fresh roadmap for daily driver goals
+**Last Updated:** 2026-04-20
+**Current Work:** v0.33.0 complete — all 5 phases shipped (scoring, user model, auto skills, plan mode, feedback)
+**Next Step:** Push to remote, consider v0.33.0+ backlog items
