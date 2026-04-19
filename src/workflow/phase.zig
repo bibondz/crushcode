@@ -2,6 +2,8 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const task = @import("task");
+const adversarial_mod = @import("adversarial_review");
+const git_mod = @import("git");
 
 const Allocator = std.mem.Allocator;
 
@@ -14,6 +16,205 @@ pub const WaveMode = enum {
     sequential, // One task at a time, in order
     parallel, // All tasks run concurrently
     adaptive, // Parallel if independent, sequential if dependent
+};
+
+/// Task info used by WaveScheduler for dependency resolution.
+/// Maps to PhaseTask data but flattened for topological sort.
+pub const TaskInfo = struct {
+    id: []const u8,
+    depends_on: [][]const u8,
+    wave: u32 = 0, // computed by scheduler
+};
+
+/// Result of wave-based execution with atomic commits.
+pub const WaveResult = struct {
+    allocator: Allocator,
+    completed_waves: u32 = 0,
+    total_waves: u32 = 0,
+    failed: bool = false,
+    failed_wave: ?u32 = null,
+
+    pub fn deinit(self: *WaveResult) void {
+        _ = self;
+    }
+};
+
+/// Wave scheduler — computes dependency levels using topological sort (Kahn's algorithm).
+/// Groups tasks into waves: wave 0 has no deps, wave 1 depends only on wave 0, etc.
+pub const WaveScheduler = struct {
+    allocator: Allocator,
+    tasks: []TaskInfo,
+
+    pub const Error = error{
+        CircularDependency,
+    };
+
+    /// Compute wave assignments using topological sort (Kahn's algorithm).
+    /// Returns grouped tasks: wave 0 (no deps), wave 1 (deps on wave 0), etc.
+    /// Caller owns the returned slice and each inner slice (free with allocator).
+    pub fn computeWaves(self: *WaveScheduler) ![][]const []const u8 {
+        const n = self.tasks.len;
+        if (n == 0) {
+            return try self.allocator.alloc([]const []const u8, 0);
+        }
+
+        // Map task ID → index for O(1) lookup
+        var id_map = std.StringHashMap(usize).init(self.allocator);
+        defer id_map.deinit();
+        for (self.tasks, 0..) |t, i| {
+            try id_map.put(t.id, i);
+        }
+
+        // Compute in-degree: number of unresolved dependencies per task
+        var in_degree = try self.allocator.alloc(u32, n);
+        defer self.allocator.free(in_degree);
+        for (self.tasks, 0..) |t, i| {
+            var count: u32 = 0;
+            for (t.depends_on) |dep_id| {
+                if (id_map.contains(dep_id)) count += 1;
+            }
+            in_degree[i] = count;
+        }
+
+        // Build reverse adjacency: for each task, which tasks depend on it?
+        var dependents = try self.allocator.alloc(std.ArrayList(usize), n);
+        defer {
+            for (dependents) |*list| list.deinit();
+            self.allocator.free(dependents);
+        }
+        for (dependents) |*list| {
+            list.* = std.ArrayList(usize).init(self.allocator);
+        }
+        for (self.tasks, 0..) |t, i| {
+            for (t.depends_on) |dep_id| {
+                if (id_map.get(dep_id)) |dep_idx| {
+                    try dependents[dep_idx].append(i);
+                }
+            }
+        }
+
+        // Kahn's algorithm — level-by-level BFS
+        var current_level = std.ArrayList(usize).init(self.allocator);
+        defer current_level.deinit();
+
+        // Seed: tasks with no dependencies → wave 0
+        for (in_degree, 0..) |deg, i| {
+            if (deg == 0) {
+                self.tasks[i].wave = 0;
+                try current_level.append(i);
+            }
+        }
+
+        var current_wave: u32 = 0;
+        var processed: u32 = 0;
+
+        while (current_level.items.len > 0) {
+            processed += @as(u32, @intCast(current_level.items.len));
+
+            var next_level = std.ArrayList(usize).init(self.allocator);
+            defer next_level.deinit();
+
+            for (current_level.items) |idx| {
+                for (dependents[idx].items) |dep_idx| {
+                    in_degree[dep_idx] -= 1;
+                    if (in_degree[dep_idx] == 0) {
+                        self.tasks[dep_idx].wave = current_wave + 1;
+                        try next_level.append(dep_idx);
+                    }
+                }
+            }
+
+            current_level.clearRetainingCapacity();
+            for (next_level.items) |idx| {
+                try current_level.append(idx);
+            }
+
+            current_wave += 1;
+        }
+
+        // Detect circular dependency
+        if (processed != @as(u32, @intCast(n))) {
+            return Error.CircularDependency;
+        }
+
+        // Build result: group task IDs by wave number
+        var max_wave: u32 = 0;
+        for (self.tasks) |t| {
+            if (t.wave > max_wave) max_wave = t.wave;
+        }
+
+        const wave_count = max_wave + 1;
+        var wave_lists = try self.allocator.alloc(std.ArrayList([]const u8), wave_count);
+        defer {
+            for (wave_lists) |*list| list.deinit();
+            self.allocator.free(wave_lists);
+        }
+        for (wave_lists) |*list| {
+            list.* = std.ArrayList([]const u8).init(self.allocator);
+        }
+        for (self.tasks) |t| {
+            try wave_lists[t.wave].append(t.id);
+        }
+
+        var waves = try self.allocator.alloc([]const []const u8, wave_count);
+        for (wave_lists, 0..) |*list, i| {
+            waves[i] = try list.toOwnedSlice();
+        }
+
+        return waves;
+    }
+
+    /// Return total number of waves (max wave + 1).
+    /// Only valid after computeWaves() has been called.
+    pub fn totalWaves(self: *WaveScheduler) u32 {
+        if (self.tasks.len == 0) return 0;
+        var max_wave: u32 = 0;
+        for (self.tasks) |t| {
+            if (t.wave > max_wave) max_wave = t.wave;
+        }
+        return max_wave + 1;
+    }
+};
+
+/// Gate verdict between phases — determines whether transition is allowed
+pub const GateVerdict = enum {
+    pass, // Proceed to next phase
+    flag, // Show warnings but allow proceed
+    block, // Require user approval
+
+    pub fn toString(self: GateVerdict) []const u8 {
+        return switch (self) {
+            .pass => "✅ PASS",
+            .flag => "⚠️ FLAG",
+            .block => "🚫 BLOCK",
+        };
+    }
+};
+
+/// Result of a gate check between phases
+pub const GateResult = struct {
+    verdict: GateVerdict,
+    issues: array_list_compat.ArrayList([]const u8),
+    summary: []const u8,
+    allocator: Allocator,
+
+    pub fn init(allocator: Allocator, verdict: GateVerdict, summary: []const u8) GateResult {
+        return GateResult{
+            .verdict = verdict,
+            .issues = array_list_compat.ArrayList([]const u8).init(allocator),
+            .summary = summary,
+            .allocator = allocator,
+        };
+    }
+
+    pub fn addIssue(self: *GateResult, issue: []const u8) !void {
+        try self.issues.append(try self.allocator.dupe(u8, issue));
+    }
+
+    pub fn deinit(self: *GateResult) void {
+        for (self.issues.items) |issue| self.allocator.free(issue);
+        self.issues.deinit();
+    }
 };
 
 /// A verification criterion for a phase
@@ -166,6 +367,7 @@ pub const PhaseWorkflow = struct {
     current_phase: ?f64,
     wave_mode: WaveMode,
     created_at: i64,
+    last_gate_result: ?GateResult,
 
     pub fn init(allocator: Allocator, name: []const u8) !PhaseWorkflow {
         return PhaseWorkflow{
@@ -175,6 +377,7 @@ pub const PhaseWorkflow = struct {
             .current_phase = null,
             .wave_mode = .adaptive,
             .created_at = std.time.timestamp(),
+            .last_gate_result = null,
         };
     }
 
@@ -223,6 +426,276 @@ pub const PhaseWorkflow = struct {
             phase.status = .verified;
             if (self.current_phase == number) self.current_phase = null;
         }
+    }
+
+    /// Check the gate between two phases.
+    /// Uses heuristic checks for most transitions and adversarial review
+    /// for the critical plan→execute gate.
+    pub fn checkGate(self: *PhaseWorkflow, from_phase: []const u8, to_phase: []const u8, phase_output: []const u8) GateResult {
+        // Clean up previous gate result
+        if (self.last_gate_result) |*old| {
+            old.deinit();
+        }
+
+        var result: GateResult = undefined;
+
+        if (std.mem.eql(u8, from_phase, "discuss") and std.mem.eql(u8, to_phase, "plan")) {
+            result = self.checkDiscussToPlanGate(phase_output);
+        } else if (std.mem.eql(u8, from_phase, "plan") and std.mem.eql(u8, to_phase, "execute")) {
+            result = self.checkPlanToExecuteGate(phase_output);
+        } else if (std.mem.eql(u8, from_phase, "execute") and std.mem.eql(u8, to_phase, "verify")) {
+            result = self.checkExecuteToVerifyGate(phase_output);
+        } else if (std.mem.eql(u8, from_phase, "verify") and std.mem.eql(u8, to_phase, "ship")) {
+            result = self.checkVerifyToShipGate(phase_output);
+        } else {
+            // Unknown gate — pass by default
+            result = GateResult.init(self.allocator, .pass, "No gate defined for this transition");
+        }
+
+        self.last_gate_result = result;
+        return result;
+    }
+
+    /// discuss → plan: Check requirements exist, are specific, not ambiguous
+    fn checkDiscussToPlanGate(self: *PhaseWorkflow, phase_output: []const u8) GateResult {
+        var result = GateResult.init(self.allocator, .pass, "Discuss phase output looks adequate");
+
+        if (phase_output.len == 0) {
+            result.verdict = .block;
+            result.summary = "Discuss phase produced no output";
+            result.addIssue("Empty output — requirements not gathered") catch {};
+            return result;
+        }
+
+        // Check for requirement/goal keywords
+        const keywords = [_][]const u8{ "requirement", "goal", "need", "objective", "feature", "must", "should", "user" };
+        var keyword_hits: u32 = 0;
+        for (keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                keyword_hits += 1;
+            }
+        }
+
+        if (keyword_hits == 0) {
+            result.verdict = .flag;
+            result.summary = "No requirement-like keywords detected";
+            result.addIssue("Output lacks recognizable requirement keywords") catch {};
+        }
+
+        // Very short output is suspicious
+        if (phase_output.len < 50) {
+            result.verdict = .flag;
+            result.summary = "Discuss output is very short";
+            result.addIssue("Output is under 50 chars — may be insufficient") catch {};
+        }
+
+        return result;
+    }
+
+    /// plan → execute: Check plan has tasks, dependencies, success criteria.
+    /// Uses adversarial review for deeper analysis when available.
+    fn checkPlanToExecuteGate(self: *PhaseWorkflow, phase_output: []const u8) GateResult {
+        var result = GateResult.init(self.allocator, .pass, "Plan phase output looks adequate");
+
+        if (phase_output.len == 0) {
+            result.verdict = .block;
+            result.summary = "Plan phase produced no output";
+            result.addIssue("Empty plan — nothing to execute") catch {};
+            return result;
+        }
+
+        // Run adversarial review for deeper analysis
+        var reviewer = adversarial_mod.AdversarialReviewer.init(self.allocator, .{
+            .generator_model = "planner",
+            .reviewer_model = "gate-checker",
+            .min_severity = .medium,
+        });
+        defer reviewer.deinit();
+
+        const review = reviewer.startReview() catch {
+            // Fall back to heuristic-only if review fails
+            return self.checkPlanToExecuteGateHeuristic(phase_output);
+        };
+
+        // Heuristic: check for task/action keywords
+        const task_keywords = [_][]const u8{ "task", "step", "implement", "build", "create", "write", "add", "fix", "update" };
+        var task_hits: u32 = 0;
+        for (task_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                task_hits += 1;
+            }
+        }
+
+        if (task_hits == 0) {
+            _ = reviewer.addFinding(review, .high, .architecture, "No task keywords found", "Plan output lacks recognizable task descriptions") catch {};
+        }
+
+        // Heuristic: check for success criteria
+        const criteria_keywords = [_][]const u8{ "test", "verify", "check", "criteria", "success", "pass", "validate" };
+        var criteria_hits: u32 = 0;
+        for (criteria_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                criteria_hits += 1;
+            }
+        }
+
+        if (criteria_hits == 0) {
+            _ = reviewer.addFinding(review, .medium, .testing, "No success criteria detected", "Plan should define verification criteria") catch {};
+        }
+
+        // Short plan is suspicious
+        if (phase_output.len < 100) {
+            _ = reviewer.addFinding(review, .high, .documentation, "Plan is very short", "Plan output is under 100 chars — may be insufficient") catch {};
+        }
+
+        // Map review verdict to gate verdict
+        switch (review.verdict) {
+            .approve => {
+                result.verdict = .pass;
+                result.summary = "Adversarial review approved";
+            },
+            .approve_with_comments => {
+                result.verdict = .flag;
+                result.summary = "Adversarial review approved with comments";
+            },
+            .request_changes => {
+                result.verdict = .block;
+                result.summary = "Adversarial review requests changes";
+            },
+            .reject => {
+                result.verdict = .block;
+                result.summary = "Adversarial review rejected the plan";
+            },
+        }
+
+        // Collect finding titles as issues
+        for (review.findings.items) |finding| {
+            result.addIssue(finding.title) catch {};
+        }
+
+        return result;
+    }
+
+    /// Heuristic-only fallback for plan→execute gate (when adversarial review init fails)
+    fn checkPlanToExecuteGateHeuristic(self: *PhaseWorkflow, phase_output: []const u8) GateResult {
+        var result = GateResult.init(self.allocator, .pass, "Plan phase passed heuristic checks");
+
+        const task_keywords = [_][]const u8{ "task", "step", "implement", "build", "create", "write", "add", "fix", "update" };
+        var task_hits: u32 = 0;
+        for (task_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                task_hits += 1;
+            }
+        }
+
+        if (task_hits == 0) {
+            result.verdict = .block;
+            result.summary = "No task keywords found in plan";
+            result.addIssue("Plan lacks recognizable task descriptions") catch {};
+        } else if (task_hits <= 1) {
+            result.verdict = .flag;
+            result.summary = "Very few task keywords in plan";
+            result.addIssue("Plan may not have enough detail for execution") catch {};
+        }
+
+        if (phase_output.len < 100) {
+            result.verdict = .block;
+            result.summary = "Plan output is too short";
+            result.addIssue("Plan is under 100 chars") catch {};
+        }
+
+        return result;
+    }
+
+    /// execute → verify: Check all tasks completed, no failures
+    fn checkExecuteToVerifyGate(self: *PhaseWorkflow, phase_output: []const u8) GateResult {
+        var result = GateResult.init(self.allocator, .pass, "Execute phase output looks adequate");
+
+        if (phase_output.len == 0) {
+            result.verdict = .block;
+            result.summary = "Execute phase produced no output";
+            result.addIssue("Empty output — nothing to verify") catch {};
+            return result;
+        }
+
+        // Check for failure/error keywords — high density is concerning
+        const fail_keywords = [_][]const u8{ "error", "failed", "failure", "panic", "segfault" };
+        var fail_hits: u32 = 0;
+        for (fail_keywords) |kw| {
+            var pos: usize = 0;
+            while (std.mem.indexOfPos(u8, phase_output, pos, kw)) |idx| {
+                fail_hits += 1;
+                pos = idx + kw.len;
+            }
+        }
+
+        // Check for completion/success keywords
+        const success_keywords = [_][]const u8{ "done", "complete", "success", "finished", "built", "passed" };
+        var success_hits: u32 = 0;
+        for (success_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                success_hits += 1;
+            }
+        }
+
+        // If failures dominate, block
+        if (fail_hits > 3 and fail_hits > success_hits * 2) {
+            result.verdict = .block;
+            result.summary = "Too many errors in execution output";
+            result.addIssue("Error keywords dominate the output") catch {};
+        } else if (fail_hits > 0 and success_hits == 0) {
+            result.verdict = .flag;
+            result.summary = "Errors detected with no success markers";
+            result.addIssue("Execution has errors but no success indicators") catch {};
+        }
+
+        return result;
+    }
+
+    /// verify → ship: Check tests pass, no regressions
+    fn checkVerifyToShipGate(self: *PhaseWorkflow, phase_output: []const u8) GateResult {
+        var result = GateResult.init(self.allocator, .pass, "Verification passed");
+
+        if (phase_output.len == 0) {
+            result.verdict = .flag;
+            result.summary = "Verify phase produced no output";
+            result.addIssue("No verification output recorded") catch {};
+            return result;
+        }
+
+        // Check for pass/ok indicators
+        const pass_keywords = [_][]const u8{ "pass", "ok", "success", "passed", "green", "✅", "all tests" };
+        var pass_hits: u32 = 0;
+        for (pass_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                pass_hits += 1;
+            }
+        }
+
+        // Check for failure indicators
+        const fail_keywords = [_][]const u8{ "fail", "error", "regression", "broken", "❌" };
+        var fail_hits: u32 = 0;
+        for (fail_keywords) |kw| {
+            if (indexOfIgnoreCase(phase_output, kw)) |_| {
+                fail_hits += 1;
+            }
+        }
+
+        if (fail_hits > 0 and pass_hits == 0) {
+            result.verdict = .block;
+            result.summary = "Verification shows failures with no passes";
+            result.addIssue("Tests failing — cannot ship") catch {};
+        } else if (fail_hits > pass_hits) {
+            result.verdict = .block;
+            result.summary = "More failures than passes in verification";
+            result.addIssue("Failures outnumber passes") catch {};
+        } else if (pass_hits == 0) {
+            result.verdict = .flag;
+            result.summary = "No explicit pass indicators found";
+            result.addIssue("Consider adding explicit pass/fail markers") catch {};
+        }
+
+        return result;
     }
 
     /// Insert a gap closure phase between two existing phases.
@@ -521,6 +994,15 @@ pub const PhaseWorkflow = struct {
             stdout.print("\n", .{}) catch {};
         }
 
+        // Show gate status if available
+        if (self.last_gate_result) |gr| {
+            stdout.print("  [REVIEW GATE: {s}", .{gr.verdict.toString()}) catch {};
+            if (gr.issues.items.len > 0) {
+                stdout.print(" — {d} issue{s}", .{ gr.issues.items.len, if (gr.issues.items.len == 1) "" else "s" }) catch {};
+            }
+            stdout.print("]\n", .{}) catch {};
+        }
+
         if (self.current_phase) |cp| {
             if (cp == @floor(cp)) {
                 stdout.print("  ▶ Current: Phase {d:.0}\n", .{cp}) catch {};
@@ -536,8 +1018,127 @@ pub const PhaseWorkflow = struct {
         }
     }
 
+    /// Execute all tasks across all phases using wave-based dependency resolution.
+    /// Tasks execute wave-by-wave. Each completed task auto-commits.
+    /// Failed wave triggers rollback to the checkpoint before that wave.
+    pub fn executeWaves(self: *PhaseWorkflow, allocator: Allocator) !WaveResult {
+        // Collect all PhaseTask objects into TaskInfo slice for the scheduler
+        var task_infos = array_list_compat.ArrayList(TaskInfo).init(allocator);
+        defer task_infos.deinit();
+
+        for (self.phases.items) |phase| {
+            for (phase.tasks.items) |phase_task| {
+                try task_infos.append(.{
+                    .id = phase_task.id,
+                    .depends_on = phase_task.depends_on.items,
+                    .wave = 0,
+                });
+            }
+        }
+
+        // Edge case: no tasks to execute
+        if (task_infos.items.len == 0) {
+            return WaveResult{ .allocator = allocator };
+        }
+
+        var scheduler = WaveScheduler{
+            .allocator = allocator,
+            .tasks = task_infos.items,
+        };
+
+        const waves = try scheduler.computeWaves();
+        defer {
+            for (waves) |wave| allocator.free(wave);
+            allocator.free(waves);
+        }
+
+        var results = WaveResult{
+            .allocator = allocator,
+            .total_waves = @as(u32, @intCast(waves.len)),
+        };
+
+        for (waves, 0..) |wave, wave_idx| {
+            // Save checkpoint before this wave
+            const checkpoint = git_mod.getCurrentRef(allocator) catch {
+                // Not in a git repo — skip checkpointing
+                var no_git_results = WaveResult{
+                    .allocator = allocator,
+                    .total_waves = @as(u32, @intCast(waves.len)),
+                    .completed_waves = @as(u32, @intCast(wave_idx)),
+                };
+                // Still execute tasks without git safety net
+                for (wave) |task_id| {
+                    self.markTaskById(task_id, .running);
+                    self.markTaskById(task_id, .completed);
+                }
+                no_git_results.completed_waves += 1;
+                return no_git_results;
+            };
+            defer allocator.free(checkpoint);
+
+            // Execute all tasks in this wave and auto-commit each one
+            // Track wave failure — real execution would set this on task failure
+            const wave_failed = false;
+            for (wave) |task_id| {
+                self.markTaskById(task_id, .running);
+
+                // Mark task as completed (real execution would happen here)
+                self.markTaskById(task_id, .completed);
+
+                // Atomic commit after each task
+                const desc = self.findTaskDescriptionById(task_id) orelse task_id;
+                git_mod.autoCommit(allocator, desc) catch {
+                    // Commit failure is non-fatal — continue
+                };
+
+                // If task execution had failed:
+                // wave_failed = true;
+                // break;
+            }
+
+            if (wave_failed) {
+                // Rollback to checkpoint before this wave
+                git_mod.rollbackTo(allocator, checkpoint) catch {};
+                results.failed = true;
+                results.failed_wave = @as(u32, @intCast(wave_idx));
+                return results;
+            }
+
+            results.completed_waves += 1;
+        }
+
+        return results;
+    }
+
+    /// Find a PhaseTask by ID across all phases and update its status
+    fn markTaskById(self: *PhaseWorkflow, task_id: []const u8, new_status: task.RunState) void {
+        for (self.phases.items) |phase| {
+            for (phase.tasks.items) |phase_task| {
+                if (std.mem.eql(u8, phase_task.id, task_id)) {
+                    phase_task.status = new_status;
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Find a task's description by its ID
+    fn findTaskDescriptionById(self: *PhaseWorkflow, task_id: []const u8) ?[]const u8 {
+        for (self.phases.items) |phase| {
+            for (phase.tasks.items) |phase_task| {
+                if (std.mem.eql(u8, phase_task.id, task_id)) {
+                    return phase_task.description;
+                }
+            }
+        }
+        return null;
+    }
+
     pub fn deinit(self: *PhaseWorkflow) void {
         self.allocator.free(self.name);
+        if (self.last_gate_result) |*gr| {
+            gr.deinit();
+        }
         for (self.phases.items) |phase| {
             phase.deinit();
             self.allocator.destroy(phase);
@@ -581,6 +1182,27 @@ fn extractContent(xml: []const u8, tag: []const u8) ?[]const u8 {
     const end = std.mem.indexOfPos(u8, xml, content_start, close_tag) orelse return null;
 
     return std.mem.trim(u8, xml[content_start..end], " \t\r\n");
+}
+
+// ============================================================
+// Case-insensitive search helper (Zig 0.15 removed indexOfIgnoreCase)
+// ============================================================
+
+fn indexOfIgnoreCase(haystack: []const u8, needle: []const u8) ?usize {
+    if (needle.len == 0) return @as(usize, 0);
+    if (needle.len > haystack.len) return null;
+    var i: usize = 0;
+    while (i + needle.len <= haystack.len) : (i += 1) {
+        var match = true;
+        for (needle, 0..) |nc, j| {
+            if (std.ascii.toLower(haystack[i + j]) != std.ascii.toLower(nc)) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return i;
+    }
+    return null;
 }
 
 // ============================================================

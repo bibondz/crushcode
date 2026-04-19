@@ -3,6 +3,7 @@ const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
 const widget_types = @import("widget_types");
 const widget_helpers = @import("widget_helpers");
+const diff_mod = @import("diff");
 
 const vxfw = vaxis.vxfw;
 
@@ -81,6 +82,32 @@ pub const PermissionDialogWidget = struct {
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(4 + tool_surface.size.height), .col = 2 }, .surface = args_surface });
 
+        // Diff preview section (Phase 23)
+        var current_row: u16 = @intCast(5 + tool_surface.size.height + args_surface.size.height);
+        if (pending.preview_diff) |diff_text| {
+            const diff_theme = diff_mod.diffThemeFromAppTheme(self.context.theme);
+            const diff_segments = diff_mod.parseDiff(ctx.arena, diff_text, 20, diff_theme) catch &.{};
+            if (diff_segments.len > 0) {
+                const diff_rich = vxfw.RichText{
+                    .text = diff_segments,
+                    .softwrap = false,
+                    .width_basis = .parent,
+                };
+                if (diff_rich.draw(ctx.withConstraints(
+                    .{ .width = inner_width, .height = 1 },
+                    .{ .width = inner_width, .height = 20 },
+                ))) |surf| {
+                    try child_list.append(ctx.arena, .{
+                        .origin = .{ .row = @intCast(current_row), .col = 2 },
+                        .surface = surf,
+                    });
+                    current_row += @intCast(surf.size.height + 1);
+                } else |_| {
+                    // If diff rendering fails, just skip it
+                }
+            }
+        }
+
         const footer_line = "[y] Yes   [n] No   [a] Always   [Esc] Cancel";
         const footer = vxfw.Text{
             .text = footer_line,
@@ -88,7 +115,7 @@ pub const PermissionDialogWidget = struct {
             .softwrap = false,
             .width_basis = .parent,
         };
-        const footer_row: u16 = @intCast(5 + tool_surface.size.height + args_surface.size.height);
+        const footer_row: u16 = current_row;
         const footer_surface = try footer.draw(ctx.withConstraints(
             .{ .width = inner_width, .height = 1 },
             .{ .width = inner_width, .height = 1 },

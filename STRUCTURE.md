@@ -66,7 +66,7 @@ src/
 │   └── visualizer.zig       Inline and unified diff output
 │
 ├── edit/                    Code editing tools
-│   ├── ast_grep.zig         AST-aware code pattern search and replace
+│   ├── pattern_search.zig     Code pattern search and replace
 │   ├── validated_edit.zig   Safe edit with hash verification
 │   ├── hashline.zig         Hash-based line identification
 │   ├── hash_index.zig       Hash index for fast lookup
