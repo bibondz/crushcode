@@ -37,6 +37,9 @@ const array_list_compat = @import("array_list_compat");
 const compaction_mod = @import("compaction");
 const project_mod = @import("project");
 const lifecycle_mod = @import("lifecycle_hooks");
+const memory_mod = @import("memory");
+const parallel_mod = @import("parallel");
+const plugin_mod = @import("plugin_manager");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -158,6 +161,8 @@ const slash_command_names = [_][]const u8{
     "/theme mono",
     "/workers",
     "/kill",
+    "/memory",
+    "/plugins",
     "/help",
 };
 
@@ -272,7 +277,10 @@ pub const Model = struct {
     typewriter: ?widget_typewriter.TypewriterState = null,
     mcp_bridge: ?*mcp_bridge_mod.Bridge = null,
     hybrid_bridge: ?*hybrid_bridge_mod.HybridBridge = null,
+    plugin_manager: plugin_mod.runtime.ExternalPluginManager,
     lifecycle_hooks: lifecycle_mod.LifecycleHooks,
+    memory: memory_mod.Memory,
+    parallel_executor: parallel_mod.ParallelExecutor,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -381,6 +389,9 @@ pub const Model = struct {
             .toast_stack = undefined,
             .typewriter = null,
             .lifecycle_hooks = lifecycle_mod.LifecycleHooks.init(allocator),
+            .memory = memory_mod.Memory.init(allocator, "", 100),
+            .parallel_executor = parallel_mod.ParallelExecutor.init(allocator, 3),
+            .plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, ""),
         };
         errdefer model.destroy();
 
@@ -418,11 +429,18 @@ pub const Model = struct {
             }
         }
 
+        // Initialize plugin manager with plugin directory (non-fatal)
+        {
+            const plugin_dir = try std.fmt.allocPrint(allocator, "{s}/plugins", .{model.session_dir});
+            model.plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, plugin_dir);
+            model.plugin_manager.discoverPlugins() catch {}; // non-fatal
+        }
+
         // Initialize HybridBridge for unified tool dispatch
         {
             const hb = allocator.create(hybrid_bridge_mod.HybridBridge) catch null;
             if (hb) |h| {
-                h.* = hybrid_bridge_mod.HybridBridge.init(allocator, model.mcp_bridge);
+                h.* = hybrid_bridge_mod.HybridBridge.init(allocator, model.mcp_bridge, &model.plugin_manager);
                 model.hybrid_bridge = hb;
             }
         }
@@ -452,6 +470,14 @@ pub const Model = struct {
         try model.buildCodebaseContext();
         try model.loadFallbackProviders();
         try std.fs.cwd().makePath(model.session_dir);
+
+        // Initialize cross-session memory with proper path
+        {
+            const memory_path = try std.fmt.allocPrint(allocator, "{s}/memory.json", .{model.session_dir});
+            model.memory = memory_mod.Memory.init(allocator, memory_path, 100);
+            model.memory.load() catch {}; // non-fatal
+        }
+
         try model.prepareStartupSessionState();
         if (model.setup_phase != 0) {
             const selected_provider = setup_provider_data[model.setup_provider_index];
@@ -524,6 +550,13 @@ pub const Model = struct {
             hb.deinit();
             self.allocator.destroy(hb);
         }
+        // Clean up plugin manager
+        self.plugin_manager.deinit();
+        // Clean up parallel executor
+        self.parallel_executor.waitForAll();
+        self.parallel_executor.deinit();
+        // Clean up memory
+        self.memory.deinit();
         // Execute session_end lifecycle hook
         {
             var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
@@ -2153,6 +2186,9 @@ pub const Model = struct {
 
         try self.addMessageUnlocked("user", trimmed);
         try self.appendHistoryMessageUnlocked("user", trimmed);
+        // Persist to cross-session memory
+        self.memory.addMessage("user", trimmed) catch {};
+        self.memory.save() catch {};
         try self.addMessageUnlocked("assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
         self.spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
@@ -2424,7 +2460,7 @@ pub const Model = struct {
             const text = if (self.thinking) "Thinking enabled." else "Thinking disabled.";
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -2432,7 +2468,9 @@ pub const Model = struct {
             defer self.allocator.free(text);
             try self.addMessageUnlocked("assistant", text);
         } else if (std.mem.eql(u8, name, "/workers")) {
-            if (self.workers.items.len == 0) {
+            self.parallel_executor.reapCompleted();
+            const parallel_running = self.parallel_executor.runningCount();
+            if (self.workers.items.len == 0 and parallel_running == 0) {
                 try self.addMessageUnlocked("assistant", "No active workers.");
             } else {
                 var buf: [1024]u8 = undefined;
@@ -2455,7 +2493,13 @@ pub const Model = struct {
                         offset += written.len;
                     } else |_| {}
                 }
-                const text = try self.allocator.dupe(u8, &buf);
+                if (parallel_running > 0) {
+                    const line_result = std.fmt.bufPrint(buf[offset..], "Parallel executor: {d} running\n", .{parallel_running});
+                    if (line_result) |written| {
+                        offset += written.len;
+                    } else |_| {}
+                }
+                const text = try self.allocator.dupe(u8, buf[0..offset]);
                 try self.addMessageUnlocked("assistant", text);
             }
         } else if (std.mem.startsWith(u8, name, "/kill ")) {
@@ -2475,8 +2519,40 @@ pub const Model = struct {
                     break;
                 }
             }
+            // Also try cancelling from parallel executor
+            if (self.parallel_executor.cancel(id_str)) {
+                if (!found) {
+                    const text = try std.fmt.allocPrint(self.allocator, "Parallel task {s} cancelled.", .{id_str});
+                    try self.addMessageUnlocked("assistant", text);
+                    found = true;
+                }
+            }
             if (!found) {
                 const text = try std.fmt.allocPrint(self.allocator, "Worker #{d} not found.", .{id});
+                try self.addMessageUnlocked("assistant", text);
+            }
+        } else if (std.mem.eql(u8, name, "/memory")) {
+            const count = self.memory.count();
+            const tokens = self.memory.estimateTokens();
+            const text = try std.fmt.allocPrint(self.allocator, "Memory: {d} messages, ~{d} tokens", .{ count, tokens });
+            defer self.allocator.free(text);
+            try self.addMessageUnlocked("assistant", text);
+        } else if (std.mem.eql(u8, name, "/plugins")) {
+            const plugin_names = self.plugin_manager.getAllPlugins();
+            if (plugin_names.len == 0) {
+                try self.addMessageUnlocked("assistant", "No plugins loaded.");
+            } else {
+                var buf: [2048]u8 = undefined;
+                var offset: usize = 0;
+                if (std.fmt.bufPrint(&buf, "Loaded plugins ({d}):\n", .{plugin_names.len})) |written| {
+                    offset = written.len;
+                } else |_| {}
+                for (plugin_names) |pname| {
+                    if (std.fmt.bufPrint(buf[offset..], "  • {s}\n", .{pname})) |written| {
+                        offset += written.len;
+                    } else |_| {}
+                }
+                const text = try self.allocator.dupe(u8, buf[0..offset]);
                 try self.addMessageUnlocked("assistant", text);
             }
         }
@@ -2793,6 +2869,9 @@ pub const Model = struct {
         }
 
         try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
+        // Persist to cross-session memory
+        self.memory.addMessage("assistant", content) catch {};
+        self.memory.save() catch {};
         try self.saveSessionSnapshotUnlocked();
 
         self.context_tokens = self.estimateContextTokens();

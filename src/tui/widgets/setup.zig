@@ -208,6 +208,8 @@ pub fn isSupportedSlashCommand(value: []const u8) bool {
         std.mem.eql(u8, value, "/thinking") or
         std.mem.eql(u8, value, "/compact") or
         std.mem.eql(u8, value, "/help") or
+        std.mem.eql(u8, value, "/memory") or
+        std.mem.eql(u8, value, "/plugins") or
         std.mem.startsWith(u8, value, "/resume") or
         std.mem.startsWith(u8, value, "/delete") or
         std.mem.startsWith(u8, value, "/theme");
@@ -248,6 +250,7 @@ test "isSupportedSlashCommand - exact matches" {
     try std.testing.expect(isSupportedSlashCommand("/compact"));
     try std.testing.expect(isSupportedSlashCommand("/thinking"));
     try std.testing.expect(isSupportedSlashCommand("/ls"));
+    try std.testing.expect(isSupportedSlashCommand("/plugins"));
 }
 
 test "isSupportedSlashCommand - prefix matches" {

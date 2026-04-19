@@ -614,6 +614,7 @@ pub fn build(b: *std.Build) !void {
         imp("chat_tool_executors", chat_tool_executors_mod),
         imp("mcp_bridge", mcp_bridge_mod),
         imp("widget_types", widget_types_mod),
+        imp("plugin_manager", plugin_manager_mod),
     });
 
     addImports(main_mod, &.{
@@ -641,7 +642,7 @@ pub fn build(b: *std.Build) !void {
         imp("autopilot", autopilot_mod),   imp("phase_runner", phase_runner_mod),
         imp("orchestration", orchestration_mod),
     });
-    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod) });
+    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod) });
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_blocklist_mod), imp("permission_safelist", permission_safelist_mod),
