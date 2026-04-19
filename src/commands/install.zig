@@ -22,7 +22,7 @@ const InstallOptions = struct {
 
 /// Install command — downloads crushcode binary from GitHub releases or builds from source
 pub const Installer = struct {
-    const version = "0.34.0";
+    const version = "0.35.0";
     const releases_base = "https://github.com/crushcode/crushcode/releases";
 
     /// Detect the current OS

@@ -7,7 +7,7 @@ const json_extract = @import("json_extract");
 
 const Allocator = std.mem.Allocator;
 
-const current_version = "0.34.0";
+const current_version = "0.35.0";
 const releases_base = "https://github.com/crushcode/crushcode/releases";
 const api_base = "https://api.github.com/repos/crushcode/crushcode/releases/latest";
 

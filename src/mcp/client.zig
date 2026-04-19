@@ -172,7 +172,7 @@ pub const MCPClient = struct {
 
         var client_info = json.ObjectMap.init(self.allocator);
         try client_info.put("name", .{ .string = "crushcode" });
-        try client_info.put("version", .{ .string = "0.34.0" });
+        try client_info.put("version", .{ .string = "0.35.0" });
         try params.put("clientInfo", .{ .object = client_info });
 
         var capabilities = json.ObjectMap.init(self.allocator);
