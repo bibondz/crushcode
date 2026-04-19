@@ -1,8 +1,8 @@
-# State: Crushcode v0.31.0
+# State: Crushcode v0.32.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** fbf7ef5
+**Commit:** b4dfe10
 **Stats:** ~250 `.zig` files, ~105K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
@@ -22,39 +22,30 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.31.0 — Codebase Reorganization |
+| Milestone | v0.32.0 — Runtime Bug Fixes |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.31.0 |
+| Code Version | 0.32.0 |
 
 ---
 
-## v0.31.0 Plan — Codebase Reorganization
+## v0.32.0 Plan — Runtime Bug Fixes
 
-| Phase | Description | Status |
-|-------|-------------|--------|
-| E | Split experimental_handlers.zig (3208 lines) into 5 domain files + re-export shim | ✅ Done |
-| F | Relocate: orchestration→agent, cognition→agent, guardian→permission | ✅ Done |
-| G | Consolidate: permission blocklist+safelist+sensitive_paths→lists.zig, knowledge ingest+query→ops.zig | ✅ Done |
-| — | Version bump to 0.31.0 | ✅ Done |
+| Fix | Description | Status |
+|-----|-------------|--------|
+| memory.zig | Replace naive `{s}` JSON serialization with `std.json.Stringify.valueAlloc` — fixes data corruption on messages containing quotes, backslashes, newlines | ✅ Done |
+| parallel.zig — thread safety | Thread-local `ArenaAllocator` per worker — eliminates shared allocator state across threads | ✅ Done |
+| parallel.zig — use-after-free | Dupe response content onto executor's allocator before arena cleanup | ✅ Done |
+| parallel.zig — empty base_url | New `base_url` field on `ParallelTask`, passed through `submit()` from provider registry | ✅ Done |
+| runtime.zig — double-kill | `getPlugin()` returns `?*RuntimePlugin` (pointer) instead of value copy — prevents double-kill on process deinit | ✅ Done |
+| runtime.zig — exec validation | Validate executable exists before spawning plugin process | ✅ Done |
+| hybrid_bridge.zig | Remove `mut_plugin` copy shim since `getPlugin` now returns pointer | ✅ Done |
+| ai.zig | Update `submit()` callers to pass `base_url` from provider registry | ✅ Done |
+| — | Version bump to 0.32.0 | ✅ Done |
 
-### Phase E Details
-- `experimental_handlers.zig` (3208 lines) → 5 domain files + 35-line re-export shim
-  - `agent_loop_handler.zig` (827 lines): handleGraph, handleAutopilot, handleAgentLoop + AI helpers
-  - `workflow_handler.zig` (617 lines): handleWorkflow, handlePhaseRun, handleCompact, handleScaffold
-  - `knowledge_handler.zig` (536 lines): handleKnowledge, handleWorker, handleHooks
-  - `team_handler.zig` (685 lines): handleSkillsResolve, handleSkillsScan, handleTeam, handleBackground
-  - `memory_handler.zig` (563 lines): handleMemory, handlePipeline, handleThink, handleSkillSync, handleTemplate, handlePreview, handleDetect
-
-### Phase F Details
-- `src/orchestration/` removed → `src/agent/orchestrator.zig`
-- `src/cognition/` removed → `src/agent/context_builder.zig`
-- `src/guardian/` removed → `src/permission/guardian.zig`
-
-### Phase G Details
-- `permission/blocklist.zig` + `safelist.zig` + `sensitive_paths.zig` → `permission/lists.zig` (502 lines)
-- `knowledge/ingest.zig` + `query.zig` → `knowledge/ops.zig` (632 lines)
-- `knowledge/vault.zig` kept separate (circular dep with persistence)
+### New Tests Added
+- `Memory - save and load with special characters` — round-trip with `\"hello\\nworld\"`
+- `Memory - save and load with JSON in content` — round-trip with embedded JSON object
 
 ---
 
@@ -86,7 +77,8 @@
 | v0.28.0 | A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI) | ✅ Done |
 | v0.29.0 | B–C (slash commands wired into TUI, MCP tool execution fixed) | ✅ Done |
 | v0.30.0 | D: unified slash commands + git remote + master push | ✅ Done |
-| **v0.31.0** | **E–G: split handlers, relocate modules, consolidate lists** | **✅ Done** |
+| v0.31.0 | E–G: split handlers, relocate modules, consolidate lists | ✅ Done |
+| **v0.32.0** | **Runtime bug fixes: memory JSON, parallel thread safety, plugin pointer** | **✅ Done** |
 
 ---
 
@@ -120,8 +112,18 @@ src/tools/ — tool definitions
 
 ---
 
+## Known Remaining Items
+
+| Item | Priority | Notes |
+|------|----------|-------|
+| Build.zig cleanup (863→~500 lines) | Medium | Create `createStdModule()` helper to eliminate compat injection loop |
+| Vault→persistence merge | Medium | Circular dep risk — vault.zig imports knowledge_persistence |
+| Fresh roadmap for daily driver | Low | All roadmap v0.3.1–v0.7.0 done. Need new goals. |
+
+---
+
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.31.0 complete — codebase reorganized, all phases done
-**Next Step:** TBD — further refactoring or new feature development
+**Current Work:** v0.32.0 complete — runtime bugs fixed in memory, parallel, plugin modules
+**Next Step:** Build.zig cleanup, or fresh roadmap for daily driver goals
