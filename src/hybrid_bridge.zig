@@ -4,6 +4,7 @@ const core = @import("core_api");
 const tool_executors = @import("chat_tool_executors");
 const mcp_bridge_mod = @import("mcp_bridge");
 const widget_types = @import("widget_types");
+const plugin_mod = @import("plugin_manager");
 
 const Allocator = std.mem.Allocator;
 const builtin_tool_schemas = widget_types.builtin_tool_schemas;
@@ -13,11 +14,13 @@ const builtin_tool_schemas = widget_types.builtin_tool_schemas;
 pub const HybridBridge = struct {
     allocator: Allocator,
     mcp_bridge: ?*mcp_bridge_mod.Bridge,
+    plugin_manager: ?*plugin_mod.runtime.ExternalPluginManager,
 
-    pub fn init(allocator: Allocator, mcp: ?*mcp_bridge_mod.Bridge) HybridBridge {
+    pub fn init(allocator: Allocator, mcp: ?*mcp_bridge_mod.Bridge, plugin_mgr: ?*plugin_mod.runtime.ExternalPluginManager) HybridBridge {
         return .{
             .allocator = allocator,
             .mcp_bridge = mcp,
+            .plugin_manager = plugin_mgr,
         };
     }
 
@@ -26,7 +29,7 @@ pub const HybridBridge = struct {
         _ = self;
     }
 
-    /// Execute a tool by name. Tries builtin first, then MCP.
+    /// Execute a tool by name. Tries builtin first, then MCP, then runtime plugins.
     /// Returns allocated result string (caller frees with allocator).
     pub fn executeTool(self: *HybridBridge, tool_call: core.ParsedToolCall) ![]const u8 {
         // Try builtin tools first
@@ -41,7 +44,32 @@ pub const HybridBridge = struct {
                 if (bridge.executeTool(tool_call.name, tool_call.arguments)) |mcp_result| {
                     return try self.allocator.dupe(u8, mcp_result);
                 } else |_| {
-                    return error.UnsupportedTool;
+                    // MCP failed — fall through to runtime plugins
+                }
+            }
+
+            // MCP didn't handle it — try runtime plugins
+            if (self.plugin_manager) |pm| {
+                if (pm.getPlugin(tool_call.name)) |plugin| {
+                    const parsed = std.json.parseFromSlice(std.json.Value, self.allocator, tool_call.arguments, .{}) catch null;
+                    var request = plugin_mod.runtime.Request{
+                        .id = tool_call.id,
+                        .method = tool_call.name,
+                        .params = null,
+                    };
+                    if (parsed) |p| {
+                        defer p.deinit();
+                        request.params = p.value;
+                    }
+                    var mut_plugin = plugin;
+                    const response = mut_plugin.sendRequest(request) catch return error.UnsupportedTool;
+                    if (response.@"error") |_| {
+                        return error.UnsupportedTool;
+                    }
+                    if (response.result) |result| {
+                        const result_str = std.json.Stringify.valueAlloc(self.allocator, result, .{}) catch return error.UnsupportedTool;
+                        return result_str;
+                    }
                 }
             }
 
@@ -110,6 +138,7 @@ pub const HybridBridge = struct {
     pub const Stats = struct {
         builtin_count: u32,
         mcp_count: u32,
+        plugin_count: u32,
     };
 
     pub fn getStats(self: *HybridBridge) Stats {
@@ -118,9 +147,17 @@ pub const HybridBridge = struct {
             const bridge_stats = bridge.getStats();
             mcp_count = @intCast(bridge_stats.tools);
         }
+        var plugin_count: u32 = 0;
+        if (self.plugin_manager) |pm| {
+            var it = pm.plugins.iterator();
+            while (it.next()) |_| {
+                plugin_count += 1;
+            }
+        }
         return .{
             .builtin_count = builtin_tool_schemas.len,
             .mcp_count = mcp_count,
+            .plugin_count = plugin_count,
         };
     }
 };
@@ -139,20 +176,20 @@ fn freeToolSchemas(allocator: Allocator, schemas: []const core.ToolSchema) void 
 }
 
 test "HybridBridge.init - no MCP bridge" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     try std.testing.expect(bridge.mcp_bridge == null);
     try std.testing.expectEqual(std.testing.allocator, bridge.allocator);
 }
 
 test "HybridBridge.init - with nil MCP bridge" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     try std.testing.expect(bridge.mcp_bridge == null);
 }
 
 test "HybridBridge.executeTool - unsupported tool returns error" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const tool_call = core.ParsedToolCall{
         .id = "test-1",
@@ -164,7 +201,7 @@ test "HybridBridge.executeTool - unsupported tool returns error" {
 }
 
 test "HybridBridge.executeTool - empty tool name returns error" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const tool_call = core.ParsedToolCall{
         .id = "test-2",
@@ -176,7 +213,7 @@ test "HybridBridge.executeTool - empty tool name returns error" {
 }
 
 test "HybridBridge.getAllToolSchemas - correct count" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const schemas = try bridge.getAllToolSchemas();
     defer freeToolSchemas(std.testing.allocator, schemas);
@@ -184,7 +221,7 @@ test "HybridBridge.getAllToolSchemas - correct count" {
 }
 
 test "HybridBridge.getAllToolSchemas - returns builtin schemas" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const schemas = try bridge.getAllToolSchemas();
     defer freeToolSchemas(std.testing.allocator, schemas);
@@ -202,7 +239,7 @@ test "HybridBridge.getAllToolSchemas - returns builtin schemas" {
 }
 
 test "HybridBridge.hasTool - builtin tools" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     try std.testing.expect(bridge.hasTool("read_file"));
     try std.testing.expect(bridge.hasTool("shell"));
@@ -213,22 +250,23 @@ test "HybridBridge.hasTool - builtin tools" {
 }
 
 test "HybridBridge.hasTool - unknown tool returns false" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     try std.testing.expect(!bridge.hasTool("nonexistent_tool"));
     try std.testing.expect(!bridge.hasTool(""));
 }
 
 test "HybridBridge.getStats - builtin count is 6" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const stats = bridge.getStats();
     try std.testing.expectEqual(@as(u32, 6), stats.builtin_count);
     try std.testing.expectEqual(@as(u32, 0), stats.mcp_count);
+    try std.testing.expectEqual(@as(u32, 0), stats.plugin_count);
 }
 
 test "HybridBridge.executeTool - builtin shell with echo" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const tool_call = core.ParsedToolCall{
         .id = "test-shell-1",
@@ -247,7 +285,7 @@ test "HybridBridge.executeTool - builtin read_file" {
     tmp_file.close();
     defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
 
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\": \"{s}\"}}", .{tmp_path});
@@ -267,7 +305,7 @@ test "HybridBridge.executeTool - builtin write_file + verify" {
     const tmp_path = "/tmp/crushcode_test_hybrid_write.txt";
     defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
 
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\": \"{s}\", \"content\": \"hello from write test\"}}", .{tmp_path});
@@ -291,7 +329,7 @@ test "HybridBridge.executeTool - builtin write_file + verify" {
 }
 
 test "HybridBridge.executeTool - builtin glob" {
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
     const tool_call = core.ParsedToolCall{
         .id = "test-glob-1",
@@ -310,7 +348,7 @@ test "HybridBridge.executeTool - builtin edit" {
     tmp_file.close();
     defer std.fs.cwd().deleteFile(tmp_path) catch {};
 
-    var bridge = HybridBridge.init(std.testing.allocator, null);
+    var bridge = HybridBridge.init(std.testing.allocator, null, null);
     defer bridge.deinit();
 
     const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"file_path\": \"{s}\", \"old_string\": \"world\", \"new_string\": \"universe\"}}", .{tmp_path});

@@ -9,10 +9,10 @@ pub const RuntimePlugin = struct {
     process: ?std.process.Child,
     socket: ?std.net.Stream,
 
-    init_fn: fn () anyerror!void,
-    deinit_fn: fn () void,
-    handle_fn: fn (request: Request) anyerror!Response,
-    health_fn: fn () HealthStatus,
+    init_fn: *const fn () anyerror!void,
+    deinit_fn: *const fn () void,
+    handle_fn: *const fn (request: Request) anyerror!Response,
+    health_fn: *const fn () HealthStatus,
 
     allocator: std.mem.Allocator,
 
@@ -35,8 +35,8 @@ pub const RuntimePlugin = struct {
 
     pub fn deinit(self: *Self) void {
         if (self.process) |*proc| {
-            proc.kill() catch {};
-            proc.wait() catch {};
+            _ = proc.kill() catch {};
+            _ = proc.wait() catch {};
         }
         if (self.socket) |stream| {
             stream.close();
@@ -57,7 +57,7 @@ pub const RuntimePlugin = struct {
 
     pub fn sendRequest(self: *Self, request: Request) !Response {
         if (self.process) |*proc| {
-            const request_json = try std.json.stringifyAlloc(self.allocator, request, .{});
+            const request_json = try std.json.Stringify.valueAlloc(self.allocator, request, .{});
             defer self.allocator.free(request_json);
 
             _ = try proc.stdin.?.write(request_json);
@@ -168,7 +168,7 @@ pub const ExternalPluginManager = struct {
     pub fn discoverPlugins(self: *Self) !void {
         if (!self.auto_load) return;
 
-        const dir = std.fs.cwd().openDir(self.plugin_dir, .{}) catch |err| switch (err) {
+        var dir = std.fs.cwd().openDir(self.plugin_dir, .{}) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.warn("Plugin directory not found: {s}", .{self.plugin_dir});
                 return;
@@ -179,7 +179,7 @@ pub const ExternalPluginManager = struct {
 
         var it = dir.iterate();
         while (try it.next()) |entry| {
-            if (entry.kind == .File and std.mem.endsWith(u8, entry.name, ".json")) {
+            if (entry.kind == .file and std.mem.endsWith(u8, entry.name, ".json")) {
                 try self.loadPlugin(entry.name);
             }
         }
