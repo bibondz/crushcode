@@ -93,7 +93,7 @@ pub const MCPServer = struct {
         // Server info
         var server_info = json.ObjectMap.init(self.allocator);
         try server_info.put("name", .{ .string = "crushcode" });
-        try server_info.put("version", .{ .string = "0.29.0" });
+        try server_info.put("version", .{ .string = "0.30.0" });
         try result.put("serverInfo", .{ .object = server_info });
 
         // Protocol version
@@ -398,7 +398,7 @@ test "MCPServer - initialize response" {
     // Check serverInfo
     const server_info = result.get("serverInfo").?.object;
     try testing.expectEqualStrings("crushcode", server_info.get("name").?.string);
-    try testing.expectEqualStrings("0.28.0", server_info.get("version").?.string);
+    try testing.expectEqualStrings("0.30.0", server_info.get("version").?.string);
     // Check capabilities
     const capabilities = result.get("capabilities").?.object;
     const tools = capabilities.get("tools").?.object;
