@@ -227,12 +227,15 @@ pub const PermissionConfig = struct {
     auto_approved_sessions: array_list_compat.ArrayList([]const u8),
     /// Auto-approved operations (session lineage tracking from OpenCode)
     auto_approved_operations: std.StringHashMap(bool),
+    /// Tools the user marked "always allow" for this session
+    always_allow_tools: std.StringHashMap(bool),
 
     pub fn init(allocator: Allocator) PermissionConfig {
         return PermissionConfig{
             .rules = array_list_compat.ArrayList(PermissionRule).init(allocator),
             .auto_approved_sessions = array_list_compat.ArrayList([]const u8).init(allocator),
             .auto_approved_operations = std.StringHashMap(bool).init(allocator),
+            .always_allow_tools = std.StringHashMap(bool).init(allocator),
         };
     }
 
@@ -248,6 +251,7 @@ pub const PermissionConfig = struct {
         self.auto_approved_sessions.deinit();
 
         self.auto_approved_operations.deinit();
+        self.always_allow_tools.deinit();
     }
 
     pub fn addRule(self: *PermissionConfig, rule: PermissionRule) !void {
@@ -275,6 +279,17 @@ pub const PermissionConfig = struct {
 
     pub fn isOperationAutoApproved(self: *const PermissionConfig, operation_id: []const u8) bool {
         return self.auto_approved_operations.contains(operation_id);
+    }
+
+    /// Add a tool to the "always allow" session memory
+    pub fn addAlwaysAllowTool(self: *PermissionConfig, tool_name: []const u8) !void {
+        const tool_copy = try self.always_allow_tools.allocator.dupe(u8, tool_name);
+        try self.always_allow_tools.put(tool_copy, true);
+    }
+
+    /// Check if a tool is in the "always allow" session memory
+    pub fn isToolAlwaysAllowed(self: *const PermissionConfig, tool_name: []const u8) bool {
+        return self.always_allow_tools.contains(tool_name);
     }
 
     pub fn toJson(self: PermissionConfig, allocator: Allocator) !json.Value {
@@ -308,6 +323,15 @@ pub const PermissionConfig = struct {
             try operations_obj.put(entry.key_ptr.*, .{ .bool = entry.value_ptr.* });
         }
         try obj.put("auto_approved_operations", .{ .object = operations_obj });
+
+        // Serialize always-allow tools
+        var always_allow_obj = json.ObjectMap.init(allocator);
+        defer always_allow_obj.deinit();
+        var aa_iter = self.always_allow_tools.iterator();
+        while (aa_iter.next()) |entry| {
+            try always_allow_obj.put(entry.key_ptr.*, .{ .bool = entry.value_ptr.* });
+        }
+        try obj.put("always_allow_tools", .{ .object = always_allow_obj });
 
         return .{ .object = obj };
     }
@@ -362,6 +386,18 @@ pub const PermissionConfig = struct {
                     const op_copy = try allocator.dupe(u8, entry.key_ptr.*);
                     const approved = if (entry.value_ptr.* == .bool) entry.value_ptr.*.bool else false;
                     try config.auto_approved_operations.put(op_copy, approved);
+                }
+            }
+        }
+
+        // Parse always-allow tools
+        if (obj.get("always_allow_tools")) |aa_val| {
+            if (aa_val == .object) {
+                var aa_iter = aa_val.object.iterator();
+                while (aa_iter.next()) |entry| {
+                    const tool_copy = try allocator.dupe(u8, entry.key_ptr.*);
+                    const allowed = if (entry.value_ptr.* == .bool) entry.value_ptr.*.bool else false;
+                    try config.always_allow_tools.put(tool_copy, allowed);
                 }
             }
         }

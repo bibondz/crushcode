@@ -12,6 +12,7 @@ pub const SecurityChecker = @import("security.zig").SecurityChecker;
 pub const PermissionPrompt = @import("prompt.zig").PermissionPrompt;
 pub const PromptResponse = @import("prompt.zig").PromptResponse;
 pub const PromptHandler = @import("prompt.zig").PromptHandler;
+const tool_classifier = @import("tool_classifier.zig");
 
 /// Permission evaluator implementing OpenCode's pattern matching logic
 pub const PermissionEvaluator = struct {
@@ -69,10 +70,36 @@ pub const PermissionEvaluator = struct {
             return PermissionResult.autoAllow();
         }
 
-        // Evaluate against rules (OpenCode pattern matching)
-        const final_action = self.evaluateRules(request);
+        // Check always-allow tools (session memory)
+        if (self.config.isToolAlwaysAllowed(request.tool_name)) {
+            return PermissionResult.autoAllow();
+        }
 
-        return PermissionResult{ .action = final_action };
+        // Get tool risk tier for graduated permissions
+        const tier = tool_classifier.classifyTool(request.tool_name);
+
+        // Classification provides baseline action (rules override below)
+        const classification_action: PermissionAction = switch (tier) {
+            .read => .allow,
+            .write, .destructive => .ask,
+        };
+
+        // Evaluate against rules (last-match-wins, overrides classification)
+        var final_action: PermissionAction = classification_action;
+        for (self.config.rules.items) |*rule| {
+            if (self.matchesPattern(request, rule)) {
+                final_action = rule.action;
+            }
+        }
+
+        var result = PermissionResult{ .action = final_action };
+
+        // Enhanced warning for destructive tier tools
+        if (tier == .destructive and final_action == .ask) {
+            result.error_message = "Destructive operation: proceed with caution";
+        }
+
+        return result;
     }
 
     /// Check if operation is auto-approved
@@ -202,6 +229,11 @@ pub const PermissionEvaluator = struct {
 
 /// Check if operation is read-only (Claude Code pattern)
 fn isReadOperation(request: *const PermissionRequest) bool {
+    // Use tool classifier for known read-only tools
+    if (tool_classifier.isReadOnlyTool(request.tool_name)) {
+        return true;
+    }
+
     const read_actions = [_][]const u8{
         "read", "list", "search", "query", "get",      "find",
         "glob", "grep", "stat",   "info",  "metadata",
@@ -226,6 +258,12 @@ fn isReadOperation(request: *const PermissionRequest) bool {
 
 /// Check if operation is file write (Claude Code pattern)
 fn isFileWriteOperation(request: *const PermissionRequest) bool {
+    // Use tool classifier for write-tier tools
+    const tier = tool_classifier.classifyTool(request.tool_name);
+    if (tier == .write) {
+        return true;
+    }
+
     const write_actions = [_][]const u8{
         "write",  "edit",   "create",   "delete", "remove", "update",
         "modify", "append", "truncate", "rename", "move",   "copy",
@@ -280,6 +318,29 @@ pub fn createDefaultConfig(allocator: Allocator) !PermissionConfig {
         .{ .pattern = "git:log", .action = .allow, .description = "Allow git log" },
         .{ .pattern = "git:diff", .action = .allow, .description = "Allow git diff" },
         .{ .pattern = "git:*", .action = .ask, .description = "Ask before other git operations" },
+
+        // Tool classification rules (16 builtin tools)
+        // Read tools: always allow
+        .{ .pattern = "read_file:*", .action = .allow, .description = "Allow read_file tool" },
+        .{ .pattern = "glob:*", .action = .allow, .description = "Allow glob tool" },
+        .{ .pattern = "grep:*", .action = .allow, .description = "Allow grep tool" },
+        .{ .pattern = "list_directory:*", .action = .allow, .description = "Allow list_directory tool" },
+        .{ .pattern = "file_info:*", .action = .allow, .description = "Allow file_info tool" },
+        .{ .pattern = "git_status:*", .action = .allow, .description = "Allow git_status tool" },
+        .{ .pattern = "git_diff:*", .action = .allow, .description = "Allow git_diff tool" },
+        .{ .pattern = "git_log:*", .action = .allow, .description = "Allow git_log tool" },
+        .{ .pattern = "search_files:*", .action = .allow, .description = "Allow search_files tool" },
+
+        // Write tools: ask user
+        .{ .pattern = "write_file:*", .action = .ask, .description = "Ask before write_file" },
+        .{ .pattern = "create_file:*", .action = .ask, .description = "Ask before create_file" },
+        .{ .pattern = "edit:*", .action = .ask, .description = "Ask before edit" },
+        .{ .pattern = "move_file:*", .action = .ask, .description = "Ask before move_file" },
+        .{ .pattern = "copy_file:*", .action = .ask, .description = "Ask before copy_file" },
+
+        // Destructive tools: ask with warning
+        .{ .pattern = "delete_file:*", .action = .ask, .description = "Ask before delete_file" },
+        .{ .pattern = "shell:*", .action = .ask, .description = "Ask before shell" },
     };
 
     for (default_rules) |rule_data| {
@@ -348,6 +409,157 @@ pub fn runTests() !void {
     }
 
     std.log.info("All tests passed!", .{});
+}
+
+/// Test classification-based evaluation
+pub fn runClassificationTests() !void {
+    const allocator = std.heap.page_allocator;
+
+    // Test 1: Read-tier tools are auto-allowed via classification
+    {
+        var config = try createDefaultConfig(allocator);
+        defer config.deinit();
+        var evaluator = PermissionEvaluator.init(allocator, config);
+        defer evaluator.deinit();
+
+        const read_tools = [_][]const u8{
+            "read_file",
+            "glob",
+            "grep",
+            "list_directory",
+            "file_info",
+            "git_status",
+            "git_diff",
+            "git_log",
+            "search_files",
+        };
+
+        std.log.info("Testing classification-based read tool evaluation:", .{});
+        for (read_tools) |tool| {
+            var request = try PermissionRequest.init(tool, "execute", allocator);
+            defer request.deinit(allocator);
+
+            const result = evaluator.evaluate(&request);
+            if (result.action != .allow) {
+                std.log.err("  Expected allow for read tool '{s}', got {s}", .{ tool, @tagName(result.action) });
+                return error.TestFailed;
+            }
+            std.log.info("  ✓ {s}:execute -> allow (classification)", .{tool});
+        }
+    }
+
+    // Test 2: Write-tier tools ask via classification
+    {
+        var config = try createDefaultConfig(allocator);
+        defer config.deinit();
+        var evaluator = PermissionEvaluator.init(allocator, config);
+        defer evaluator.deinit();
+
+        const write_tools = [_][]const u8{
+            "write_file",
+            "create_file",
+            "edit",
+            "move_file",
+            "copy_file",
+        };
+
+        std.log.info("Testing classification-based write tool evaluation:", .{});
+        for (write_tools) |tool| {
+            var request = try PermissionRequest.init(tool, "execute", allocator);
+            defer request.deinit(allocator);
+
+            const result = evaluator.evaluate(&request);
+            if (result.action != .ask) {
+                std.log.err("  Expected ask for write tool '{s}', got {s}", .{ tool, @tagName(result.action) });
+                return error.TestFailed;
+            }
+            std.log.info("  ✓ {s}:execute -> ask (classification)", .{tool});
+        }
+    }
+
+    // Test 3: Destructive-tier tools ask with warning
+    {
+        var config = try createDefaultConfig(allocator);
+        defer config.deinit();
+        var evaluator = PermissionEvaluator.init(allocator, config);
+        defer evaluator.deinit();
+
+        const destructive_tools = [_][]const u8{
+            "delete_file",
+            "shell",
+        };
+
+        std.log.info("Testing classification-based destructive tool evaluation:", .{});
+        for (destructive_tools) |tool| {
+            var request = try PermissionRequest.init(tool, "execute", allocator);
+            defer request.deinit(allocator);
+
+            const result = evaluator.evaluate(&request);
+            if (result.action != .ask) {
+                std.log.err("  Expected ask for destructive tool '{s}', got {s}", .{ tool, @tagName(result.action) });
+                return error.TestFailed;
+            }
+            // Verify enhanced warning for destructive tools
+            if (result.error_message == null) {
+                std.log.err("  Expected error_message for destructive tool '{s}'", .{tool});
+                return error.TestFailed;
+            }
+            std.log.info("  ✓ {s}:execute -> ask with warning (classification)", .{tool});
+        }
+    }
+
+    // Test 4: Always-allow session memory
+    {
+        var config = try createDefaultConfig(allocator);
+        defer config.deinit();
+
+        // Add write_file to always-allow list
+        try config.addAlwaysAllowTool("write_file");
+        try std.testing.expect(config.isToolAlwaysAllowed("write_file") == true);
+        try std.testing.expect(config.isToolAlwaysAllowed("shell") == false);
+
+        var evaluator = PermissionEvaluator.init(allocator, config);
+        defer evaluator.deinit();
+
+        var request = try PermissionRequest.init("write_file", "write", allocator);
+        defer request.deinit(allocator);
+
+        const result = evaluator.evaluate(&request);
+        if (result.action != .allow or !result.auto_approved) {
+            std.log.err("  Expected auto-allow for always-allowed tool, got {s} auto_approved={}", .{ @tagName(result.action), result.auto_approved });
+            return error.TestFailed;
+        }
+        std.log.info("  ✓ write_file:write -> auto-allow (always-allow session memory)", .{});
+    }
+
+    // Test 5: Rules can override classification
+    {
+        var config = PermissionConfig.init(allocator);
+        defer config.deinit();
+
+        // Add a rule that explicitly denies a read tool
+        const pattern = try allocator.dupe(u8, "read_file:*");
+        try config.addRule(.{
+            .pattern = pattern,
+            .action = .deny,
+            .description = try allocator.dupe(u8, "Deny read_file for testing"),
+        });
+
+        var evaluator = PermissionEvaluator.init(allocator, config);
+        defer evaluator.deinit();
+
+        var request = try PermissionRequest.init("read_file", "read", allocator);
+        defer request.deinit(allocator);
+
+        const result = evaluator.evaluate(&request);
+        if (result.action != .deny) {
+            std.log.err("  Expected deny (rule override), got {s}", .{@tagName(result.action)});
+            return error.TestFailed;
+        }
+        std.log.info("  ✓ read_file:read -> deny (rule overrides classification)", .{});
+    }
+
+    std.log.info("All classification tests passed!", .{});
 }
 
 /// Export test function for build system
