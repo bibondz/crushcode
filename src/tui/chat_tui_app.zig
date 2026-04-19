@@ -45,6 +45,7 @@ const cognition_mod = @import("cognition");
 const autopilot_mod = @import("autopilot");
 const phase_runner_mod = @import("phase_runner");
 const orchestration_mod = @import("orchestration");
+const slash_commands_mod = @import("slash_commands");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -153,28 +154,8 @@ const commandDescriptionGap = widget_palette.commandDescriptionGap;
 const formatSessionTimestamp = widget_palette.formatSessionTimestamp;
 
 /// Slash command names used for autocomplete suggestions in the input field.
-const slash_command_names = [_][]const u8{
-    "/clear",
-    "/sessions",
-    "/ls",
-    "/exit",
-    "/model",
-    "/thinking",
-    "/compact",
-    "/theme dark",
-    "/theme light",
-    "/theme mono",
-    "/workers",
-    "/kill",
-    "/memory",
-    "/plugins",
-    "/guardian",
-    "/cognition",
-    "/autopilot",
-    "/team",
-    "/phase-run",
-    "/help",
-};
+/// Single source of truth: src/core/slash_commands.zig
+const slash_command_names = slash_commands_mod.all_slash_command_names;
 
 const PermissionContext = widget_permission.PermissionContext;
 const PermissionDialogWidget = widget_permission.PermissionDialogWidget;

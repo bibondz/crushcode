@@ -200,19 +200,18 @@ pub fn setupConfigPath(allocator: std.mem.Allocator) ![]const u8 {
     return std.fmt.allocPrint(allocator, "{s}/.crushcode/config.toml", .{home});
 }
 
+const slash_commands_mod = @import("slash_commands");
+
 pub fn isSupportedSlashCommand(value: []const u8) bool {
-    return std.mem.eql(u8, value, "/clear") or
-        std.mem.eql(u8, value, "/sessions") or
-        std.mem.eql(u8, value, "/ls") or
-        std.mem.eql(u8, value, "/model") or
-        std.mem.eql(u8, value, "/thinking") or
-        std.mem.eql(u8, value, "/compact") or
-        std.mem.eql(u8, value, "/help") or
-        std.mem.eql(u8, value, "/memory") or
-        std.mem.eql(u8, value, "/plugins") or
-        std.mem.startsWith(u8, value, "/resume") or
+    // Check prefix-based commands first (not in the static list)
+    if (std.mem.startsWith(u8, value, "/resume") or
         std.mem.startsWith(u8, value, "/delete") or
-        std.mem.startsWith(u8, value, "/theme");
+        std.mem.startsWith(u8, value, "/theme"))
+    {
+        return true;
+    }
+    // Delegate to shared registry
+    return slash_commands_mod.isSupportedSlashCommand(value);
 }
 
 // --- Tests ---

@@ -38,6 +38,26 @@ pub const SlashCommand = struct {
     handler: *const fn (allocator: Allocator, args: []const u8) anyerror!CommandResult,
 };
 
+/// All supported slash command names — single source of truth for autocomplete
+/// Used by both CLI chat and TUI to populate command suggestions.
+pub const all_slash_command_names = [_][]const u8{
+    "/clear",   "/sessions", "/ls",       "/exit",    "/model",
+    "/thinking", "/compact", "/theme",    "/workers", "/kill",
+    "/memory",  "/plugins",  "/help",     "/guardian", "/cognition",
+    "/autopilot", "/team",   "/phase-run", "/mode",    "/cost",
+    "/usage",   "/graph",    "/revise",   "/lint",    "/sources",
+    "/wave",    "/worktree", "/hooks",    "/gate",    "/insights",
+};
+
+/// Check if a string is a recognized slash command.
+/// Used for autocomplete validation in TUI and CLI.
+pub fn isSupportedSlashCommand(name: []const u8) bool {
+    for (all_slash_command_names) |cmd| {
+        if (std.mem.eql(u8, name, cmd)) return true;
+    }
+    return false;
+}
+
 /// Session context passed to commands that need session state
 pub const SessionContext = struct {
     model: []const u8,
