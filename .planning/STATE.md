@@ -1,9 +1,10 @@
-# State: Crushcode v0.29.0
+# State: Crushcode v0.30.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** fa948f6
+**Commit:** 81ff11b
 **Stats:** ~250 `.zig` files, ~105K lines
+**Remote:** git@github.com:bibondz/crushcode.git
 
 ---
 
@@ -21,20 +22,24 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.29.0 — Integration & MCP |
+| Milestone | v0.30.0 — Refactoring Start |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.29.0 |
+| Code Version | 0.30.0 |
 
 ---
 
-## v0.29.0 Plan — Integration & MCP
+## v0.30.0 Plan — Refactoring & Unification
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| B | Wire guardian, cognition, autopilot, team/spawn, phase-run into TUI slash commands (+301 lines) | ✅ Done |
-| C | Fix MCP server tool execution — add ToolExecutorFn callback, replace stub responses (+36/-6 lines) | ✅ Done |
-| — | Version bump to 0.29.0 + fix server.zig stuck at 0.26.0 | ✅ Done |
+| D | Unify slash command names into single source of truth (slash_commands.zig) | ✅ Done |
+| E | Split experimental_handlers.zig into domain files | ⏳ Deferred (file too large for agent) |
+| F | Merge orchestration→agent, cognition→agent, guardian→permission | ⏳ Deferred (high risk) |
+| G | Consolidate knowledge/ + permission/ lists | ⏳ Deferred |
+| — | Version bump to 0.30.0 | ✅ Done |
+| — | Git remote setup + push to GitHub | ✅ Done |
+| — | Master fast-forward to v0.30.0 | ✅ Done |
 
 ---
 
@@ -64,7 +69,7 @@
 | v0.26.0 | A–D (agent loop, hybrid bridge, e2e test, version bump) | ✅ Done |
 | v0.27.0 | A–D (memory, parallel, skills HTTP, plugin runtime) | ✅ Done |
 | v0.28.0 | A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI) | ✅ Done |
-| **v0.29.0** | **B–C (wire TUI slash commands + MCP tool execution)** | **✅ Done** |
+| **v0.30.0** | **D: unified slash commands + git remote + master push** | **✅ Done** |
 
 ---
 
@@ -103,5 +108,5 @@ src/plugins/ — plugin implementations
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.29.0 complete — TUI has 21 slash commands, MCP server has tool executor callback
-**Next Step:** v0.30.0 — refactoring (unify slash commands, split experimental_handlers, merge directories)
+**Current Work:** v0.30.0 complete — slash commands unified, pushed to GitHub
+**Next Step:** v0.31.0 — split experimental_handlers.zig, merge directories (manual session needed)
