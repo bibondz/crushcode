@@ -5,6 +5,7 @@ const array_list_compat = @import("array_list_compat");
 const Allocator = std.mem.Allocator;
 const types = @import("types.zig");
 const parser = @import("parser.zig");
+pub const algorithms = @import("algorithms.zig");
 
 /// Codebase knowledge graph — represents code structure as a searchable graph
 ///
@@ -286,6 +287,200 @@ pub const KnowledgeGraph = struct {
         if (ratio > 0) {
             stdout.print("\n  Compression ratio: {d:.1}x\n", .{ratio}) catch {};
         }
+    }
+
+    /// Compute PageRank for all nodes using default parameters
+    pub fn computePageRank(self: *KnowledgeGraph, allocator: Allocator) !algorithms.PageRankResult {
+        return algorithms.computePageRank(.{ .nodes = &self.nodes, .edges = &self.edges }, allocator, 0.85, 30, 0.001);
+    }
+
+    /// Find bridge nodes (articulation points) whose removal would disconnect the graph
+    pub fn findBridges(self: *KnowledgeGraph, allocator: Allocator) ![][]const u8 {
+        return algorithms.findBridges(.{ .nodes = &self.nodes, .edges = &self.edges }, allocator);
+    }
+
+    /// Find nodes similar to a given node using Jaccard similarity on neighbor sets
+    pub fn findSimilar(self: *KnowledgeGraph, allocator: Allocator, node_id: []const u8, max_results: u32) ![]types.SimilarityResult {
+        var results = array_list_compat.ArrayList(types.SimilarityResult).init(allocator);
+        defer results.deinit();
+
+        var iter = self.nodes.iterator();
+        while (iter.next()) |entry| {
+            const other_id = entry.key_ptr.*;
+            if (std.mem.eql(u8, other_id, node_id)) continue;
+
+            const sim = algorithms.computeJaccardSimilarity(.{ .nodes = &self.nodes, .edges = &self.edges }, node_id, other_id);
+            if (sim > 0.0) {
+                try results.append(.{
+                    .node_id = other_id,
+                    .similarity = sim,
+                });
+            }
+        }
+
+        // Sort by similarity descending
+        std.sort.insertion(types.SimilarityResult, results.items, {}, cmpSimilarityDesc);
+
+        const limit = @min(max_results, @as(u32, @intCast(results.items.len)));
+        const result = try allocator.alloc(types.SimilarityResult, limit);
+        for (result, 0..limit) |*r, i| {
+            r.* = results.items[i];
+        }
+        return result;
+    }
+
+    /// Comparison for sorting SimilarityResult descending
+    fn cmpSimilarityDesc(_: void, a: types.SimilarityResult, b: types.SimilarityResult) bool {
+        return a.similarity > b.similarity;
+    }
+
+    /// Find path between two nodes using BFS
+    pub fn findPaths(self: *KnowledgeGraph, allocator: Allocator, from_id: []const u8, to_id: []const u8, max_hops: u32) ![][]const u8 {
+        return algorithms.findPaths(.{ .nodes = &self.nodes, .edges = &self.edges }, allocator, from_id, to_id, max_hops);
+    }
+
+    /// Cluster nodes by tags (file paths)
+    pub fn clusterByTags(self: *KnowledgeGraph, allocator: Allocator) ![]algorithms.TagCluster {
+        return algorithms.clusterByTags(.{ .nodes = &self.nodes, .edges = &self.edges }, allocator);
+    }
+
+    /// Convert text to lowercase (manual impl for Zig 0.15 compat)
+    fn toLower(allocator: Allocator, text: []const u8) ![]const u8 {
+        const result = try allocator.alloc(u8, text.len);
+        for (text, 0..) |c, i| {
+            result[i] = if (c >= 'A' and c <= 'Z') c + 32 else c;
+        }
+        return result;
+    }
+
+    /// Score nodes by relevance to a query string
+    /// Returns top max_results scored nodes sorted by descending relevance
+    pub fn scoreRelevance(
+        self: *KnowledgeGraph,
+        allocator: Allocator,
+        query: []const u8,
+        max_results: u32,
+    ) ![]types.RelevanceScore {
+        const query_lower = try toLower(allocator, query);
+        defer allocator.free(query_lower);
+
+        // Split query into words (>2 chars only)
+        var query_words = array_list_compat.ArrayList([]const u8).init(allocator);
+        defer query_words.deinit();
+        var word_iter = std.mem.splitScalar(u8, query_lower, ' ');
+        while (word_iter.next()) |word| {
+            if (word.len > 2) {
+                try query_words.append(word);
+            }
+        }
+
+        var scores = array_list_compat.ArrayList(types.RelevanceScore).init(allocator);
+        defer scores.deinit();
+
+        var node_iter = self.nodes.iterator();
+        while (node_iter.next()) |entry| {
+            const node = entry.value_ptr.*;
+            var total_score: f32 = 0.0;
+
+            const name_lower = try toLower(allocator, node.name);
+            defer allocator.free(name_lower);
+            const path_lower = try toLower(allocator, node.file_path);
+            defer allocator.free(path_lower);
+
+            for (query_words.items) |qword| {
+                // Name match (highest weight)
+                if (std.mem.indexOf(u8, name_lower, qword)) |_| {
+                    total_score += 3.0;
+                }
+                // File path match
+                if (std.mem.indexOf(u8, path_lower, qword)) |_| {
+                    total_score += 2.0;
+                }
+                // Doc comment match
+                if (node.doc_comment) |doc| {
+                    const doc_lower = try toLower(allocator, doc);
+                    defer allocator.free(doc_lower);
+                    if (std.mem.indexOf(u8, doc_lower, qword)) |_| {
+                        total_score += 1.5;
+                    }
+                }
+                // Signature match
+                if (node.signature) |sig| {
+                    const sig_lower = try toLower(allocator, sig);
+                    defer allocator.free(sig_lower);
+                    if (std.mem.indexOf(u8, sig_lower, qword)) |_| {
+                        total_score += 1.0;
+                    }
+                }
+            }
+
+            if (total_score > 0.0) {
+                try scores.append(.{
+                    .node_id = node.id,
+                    .score = total_score,
+                });
+            }
+        }
+
+        // Sort by score descending
+        std.sort.insertion(types.RelevanceScore, scores.items, {}, cmpRelevanceDesc);
+
+        const limit = @min(max_results, @as(u32, @intCast(scores.items.len)));
+        const result = try allocator.alloc(types.RelevanceScore, limit);
+        for (result, 0..limit) |*r, i| {
+            r.* = scores.items[i];
+        }
+        return result;
+    }
+
+    /// Comparison for sorting RelevanceScore descending
+    fn cmpRelevanceDesc(_: void, a: types.RelevanceScore, b: types.RelevanceScore) bool {
+        return a.score > b.score;
+    }
+
+    /// Build a relevance-filtered context string within a token budget
+    /// Uses scoreRelevance to pick top nodes, then formats them until budget exhausted
+    pub fn toRelevantContext(
+        self: *KnowledgeGraph,
+        allocator: Allocator,
+        query: []const u8,
+        token_budget: u64,
+    ) ![]const u8 {
+        const scores = try self.scoreRelevance(allocator, query, 50);
+        defer allocator.free(scores);
+
+        var buf = array_list_compat.ArrayList(u8).init(allocator);
+        const writer = buf.writer();
+
+        var tokens_used: u64 = 0;
+
+        for (scores) |scored| {
+            const node = self.getNode(scored.node_id) orelse continue;
+            const type_label = @tagName(node.node_type);
+
+            // Build entry text
+            var entry_buf = array_list_compat.ArrayList(u8).init(allocator);
+            defer entry_buf.deinit();
+            const ew = entry_buf.writer();
+            ew.print("{s} [{s}] {s}:{d} (score:{d:.1})\n", .{
+                node.id,
+                type_label,
+                node.file_path,
+                node.line,
+                scored.score,
+            }) catch continue;
+
+            const entry_text = entry_buf.items;
+            // Simple token estimate: chars/4
+            const entry_tokens: u64 = @intCast(entry_text.len / 4 + 1);
+
+            if (tokens_used + entry_tokens > token_budget) break;
+
+            writer.writeAll(entry_text) catch continue;
+            tokens_used += entry_tokens;
+        }
+
+        return buf.toOwnedSlice();
     }
 
     /// Extract module name from file path
@@ -572,4 +767,21 @@ test "KnowledgeGraph indexFile parses real codebase files" {
     defer testing.allocator.free(ctx);
     try testing.expect(std.mem.indexOf(u8, ctx, "Modules") != null);
     try testing.expect(std.mem.indexOf(u8, ctx, "Symbols") != null);
+}
+
+test "KnowledgeGraph scoreRelevance finds relevant nodes" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    try graph.indexFile("src/graph/types.zig");
+    try graph.indexFile("src/graph/graph.zig");
+
+    const scores = try graph.scoreRelevance(testing.allocator, "GraphNode", 5);
+    defer testing.allocator.free(scores);
+    try testing.expect(scores.len > 0);
+
+    // Top result should contain "GraphNode" in its node_id
+    const top = scores[0];
+    try testing.expect(std.mem.indexOf(u8, top.node_id, "GraphNode") != null);
+    try testing.expect(top.score > 0.0);
 }

@@ -28,6 +28,7 @@ pub const ProviderType = enum {
     vercel_gateway,
     opencode_zen,
     opencode_go,
+    minimax,
 
     pub fn toString(self: ProviderType) []const u8 {
         return switch (self) {
@@ -50,6 +51,7 @@ pub const ProviderType = enum {
             .vercel_gateway => "vercel-gateway",
             .opencode_zen => "opencode-zen",
             .opencode_go => "opencode-go",
+            .minimax => "minimax",
         };
     }
 };
@@ -301,6 +303,24 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .is_models_static = true,
             .api_format = .openai,
             .is_local = true,
+        },
+        .minimax => ProviderConfig{
+            // MiniMax Direct API — OpenAI-compatible, tool calling, streaming
+            // Models: M2.7 (60 tps), M2.7-highspeed (100 tps), M2.5, M2.1, M2
+            // Context: 204,800 tokens
+            // Docs: https://platform.minimaxi.com/document
+            .base_url = try allocator.dupe(u8, "https://api.minimaxi.com/v1"),
+            .api_key = try allocator.dupe(u8, ""),
+            .models = &[_][]const u8{
+                "MiniMax-M2.7",
+                "MiniMax-M2.7-highspeed",
+                "MiniMax-M2.5",
+                "MiniMax-M2.5-highspeed",
+                "MiniMax-M2.1",
+                "MiniMax-M2",
+            },
+            .is_models_static = true,
+            .api_format = .openai,
         },
     };
 }

@@ -32,12 +32,12 @@ pub const NodeType = enum {
 pub const EdgeType = enum {
     calls, // A calls B
     imports, // A imports B
-    inherits, // A inherits from B
-    implements, // A implements interface B
+    inherits, // A inherits from B (reserved — not yet produced by parser)
+    implements, // A implements interface B (reserved — not yet produced by parser)
     references, // A references type B
     contains, // Module A contains symbol B
-    depends_on, // Module A depends on module B
-    tests, // Test A tests function B
+    depends_on, // Module A depends on module B (reserved — not yet produced by parser)
+    tests, // Test A tests function B (reserved — not yet produced by parser)
 };
 
 /// A node in the codebase knowledge graph
@@ -118,6 +118,18 @@ pub const GraphEdge = struct {
         self.allocator.free(self.source_id);
         self.allocator.free(self.target_id);
     }
+};
+
+/// Relevance score for a node relative to a query
+pub const RelevanceScore = struct {
+    node_id: []const u8,
+    score: f32,
+};
+
+/// Similarity score between two nodes (Jaccard similarity)
+pub const SimilarityResult = struct {
+    node_id: []const u8,
+    similarity: f64,
 };
 
 /// Community (cluster) of related nodes
