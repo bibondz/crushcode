@@ -46,6 +46,7 @@ const autopilot_mod = @import("autopilot");
 const phase_runner_mod = @import("phase_runner");
 const orchestration_mod = @import("orchestration");
 const slash_commands_mod = @import("slash_commands");
+const user_model_mod = @import("user_model");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -275,6 +276,7 @@ pub const Model = struct {
     guardian: ?guardian_mod.Guardian = null,
     pipeline: ?cognition_mod.KnowledgePipeline = null,
     pipeline_initialized: bool = false,
+    user_model: ?user_model_mod.UserModel = null,
     context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
 
@@ -399,6 +401,14 @@ pub const Model = struct {
                 model.pipeline_initialized = true;
             }
         }
+        // Initialize user model (non-fatal)
+        {
+            var um = user_model_mod.UserModel.init(model.allocator) catch null;
+            if (um) |*m| {
+                m.load() catch {};
+                model.user_model = m.*;
+            }
+        }
         // Initialize guardian (non-fatal)
         model.guardian = guardian_mod.Guardian.init(model.allocator) catch null;
 
@@ -502,6 +512,7 @@ pub const Model = struct {
     pub fn destroy(self: *Model) void {
         // Cleanup cognition pipeline and guardian
         if (self.pipeline) |*p| p.deinit();
+        if (self.user_model) |*um| um.deinit();
         if (self.guardian) |*g| g.deinit();
 
         self.resolvePendingPermission(.no);
@@ -1168,6 +1179,18 @@ pub const Model = struct {
                     \\## Custom Instructions
                     \\{s}
                 , .{instructions}) catch {};
+            }
+        }
+
+        // Inject user preferences
+        if (self.user_model) |*um| {
+            if (um.toPromptSection() catch null) |section| {
+                defer self.allocator.free(section);
+                rw.print(
+                    \\
+                    \\## User Preferences
+                    \\{s}
+                , .{section}) catch {};
             }
         }
 
@@ -2540,6 +2563,18 @@ pub const Model = struct {
                 defer self.allocator.free(text);
                 try self.addMessageUnlocked("assistant", text);
             }
+        } else if (std.mem.eql(u8, name, "/user")) {
+            if (self.user_model) |*um| {
+                const prefs = um.toPromptSection() catch null;
+                if (prefs) |p| {
+                    defer self.allocator.free(p);
+                    try self.addMessageUnlocked("assistant", p);
+                } else {
+                    try self.addMessageUnlocked("assistant", "No user preferences recorded yet.");
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "User model not initialized.");
+            }
         } else if (std.mem.eql(u8, name, "/autopilot") or std.mem.startsWith(u8, name, "/autopilot ")) {
             const auto_sub = std.mem.trim(u8, name["/autopilot".len..], " ");
             if (auto_sub.len == 0) {
@@ -2786,7 +2821,7 @@ pub const Model = struct {
                 try self.addMessageUnlocked("assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
