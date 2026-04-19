@@ -21,6 +21,10 @@ pub const Args = struct {
     show_thinking: bool = false, // show streaming thinking output
     permission: ?[]const u8 = null, // permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
     intensity: ?[]const u8 = null, // output intensity: lite, normal, full, ultra (F1: Caveman-inspired)
+    continue_session: bool = false, // --continue: load last session
+    session_id: ?[]const u8 = null, // --session <id>: load specific session
+    output_dir: ?[]const u8 = null, // --output-dir <dir>: batch output directory
+    stop_on_error: bool = false, // --stop-on-error: halt batch on first error
     remaining: [][]const u8,
     has_command: bool = false,
 
@@ -132,6 +136,12 @@ pub const Args = struct {
                 } else if (std.mem.startsWith(u8, arg, "--memory-limit=")) {
                     const val = arg[15..];
                     result.memory_limit = std.fmt.parseInt(u32, val, 10) catch 100;
+                } else if (std.mem.eql(u8, arg, "--yolo")) {
+                    result.permission = "bypassPermissions";
+                } else if (std.mem.eql(u8, arg, "--auto")) {
+                    result.permission = "auto";
+                } else if (std.mem.eql(u8, arg, "--plan")) {
+                    result.permission = "plan";
                 } else if (std.mem.startsWith(u8, arg, "--permission=")) {
                     result.permission = arg[13..];
                 } else if (std.mem.eql(u8, arg, "--permission") or std.mem.eql(u8, arg, "-p")) {
@@ -150,6 +160,22 @@ pub const Args = struct {
                     if (args_iter.next()) |next_arg| {
                         result.intensity = next_arg;
                     }
+                } else if (std.mem.eql(u8, arg, "--continue") or std.mem.eql(u8, arg, "-c")) {
+                    result.continue_session = true;
+                } else if (std.mem.startsWith(u8, arg, "--session=")) {
+                    result.session_id = arg[10..];
+                } else if (std.mem.eql(u8, arg, "--session")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.session_id = next_arg;
+                    }
+                } else if (std.mem.startsWith(u8, arg, "--output-dir=")) {
+                    result.output_dir = arg[13..];
+                } else if (std.mem.eql(u8, arg, "--output-dir")) {
+                    if (args_iter.next()) |next_arg| {
+                        result.output_dir = next_arg;
+                    }
+                } else if (std.mem.eql(u8, arg, "--stop-on-error")) {
+                    result.stop_on_error = true;
                 } else {
                     // Unknown flag - add to remaining
                     try remaining_list.append(allocator, try allocator.dupe(u8, arg));
@@ -184,6 +210,10 @@ pub const Args = struct {
             .show_thinking = result.show_thinking,
             .permission = if (result.permission) |p| try allocator.dupe(u8, p) else null,
             .intensity = if (result.intensity) |i| try allocator.dupe(u8, i) else null,
+            .continue_session = result.continue_session,
+            .session_id = if (result.session_id) |s| try allocator.dupe(u8, s) else null,
+            .output_dir = if (result.output_dir) |o| try allocator.dupe(u8, o) else null,
+            .stop_on_error = result.stop_on_error,
             .remaining = remaining,
             .has_command = has_command,
         };

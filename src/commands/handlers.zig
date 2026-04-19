@@ -18,6 +18,10 @@ const tool_handlers = @import("tool_handlers");
 const system_handlers = @import("system_handlers");
 const experimental_handlers = @import("experimental_handlers");
 const auth_cmd_mod = @import("auth_cmd");
+const run_mod = @import("run");
+const batch_mod = @import("batch");
+const logs_mod = @import("logs");
+const session_cmd_mod = @import("session_cmd");
 const file_compat = @import("file_compat");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
@@ -127,11 +131,43 @@ pub const handleDiff = system_handlers.handleDiff;
 pub const handleGraph = experimental_handlers.handleGraph;
 pub const handleAgentLoop = experimental_handlers.handleAgentLoop;
 pub const handleWorkflow = experimental_handlers.handleWorkflow;
+pub const handlePhaseRun = experimental_handlers.handlePhaseRun;
 pub const handleCompact = experimental_handlers.handleCompact;
 pub const handleScaffold = experimental_handlers.handleScaffold;
+pub const handleKnowledge = experimental_handlers.handleKnowledge;
+pub const handleWorker = experimental_handlers.handleWorker;
+pub const handleTeam = experimental_handlers.handleTeam;
+pub const handleSkillsResolve = experimental_handlers.handleSkillsResolve;
+pub const handleSkillsScan = experimental_handlers.handleSkillsScan;
+pub const handleHooks = experimental_handlers.handleHooks;
+pub const handleBackground = experimental_handlers.handleBackground;
+pub const handleMemory = experimental_handlers.handleMemory;
+pub const handlePipeline = experimental_handlers.handlePipeline;
+pub const handleThink = experimental_handlers.handleThink;
+pub const handleSkillSyncCmd = experimental_handlers.handleSkillSync;
+pub const handleTemplate = experimental_handlers.handleTemplate;
+pub const handlePreview = experimental_handlers.handlePreview;
+pub const handleDetect = experimental_handlers.handleDetect;
+pub const handleAutopilot = experimental_handlers.handleAutopilot;
 
 pub fn handleAuth(args: args_mod.Args) !void {
     try auth_cmd_mod.handleAuth(args.remaining);
+}
+
+pub fn handleRun(args: args_mod.Args, config: *Config) !void {
+    try run_mod.handleRun(args, config);
+}
+
+pub fn handleBatch(args: args_mod.Args, config: *Config) !void {
+    try batch_mod.handleBatch(args, config);
+}
+
+pub fn handleLogs(args: args_mod.Args) !void {
+    try logs_mod.handleLogs(args);
+}
+
+pub fn handleSessions(args: args_mod.Args) !void {
+    try session_cmd_mod.handleSessions(args);
 }
 
 pub fn printHelp() !void {
@@ -143,6 +179,8 @@ pub fn printHelp() !void {
         \\
         \\Commands:
         \\  chat           Start interactive chat session (streaming)
+        \\  run "<prompt>" Non-interactive: send prompt, output response (pipes supported)
+        \\  batch <file>   Process prompts from file in batch
         \\  read <file>   Read file content
         \\  shell <cmd>   Execute shell command
         \\  write <path> <content>  Write content to file
@@ -164,13 +202,20 @@ pub fn printHelp() !void {
         \\  workflow       Show phase workflow progress
         \\  compact        Show context compaction status
         \\  scaffold       Generate project scaffolding
+        \\  knowledge      Knowledge operations (ingest/query/lint/status)
+        \\  worker         Worker agent execution (run, results, list)
+        \\  team           Multi-agent team coordination (spawn, status, message, list)
+        \\  hooks          Hook execution engine (list, run, test, discover)
+        \\  bg             Background agent scheduler (list, run, status, schedule, results)
+        \\  detect         Detect file type using content analysis (magic bytes + patterns + extension)
+        \\  memory         4-layer memory (layers, insights, distill, search, store, stats)
         \\  list           List providers or models
         \\  usage         Show token usage and cost tracking
         \\  connect        Add API credentials for providers
         \\  checkpoint    List, restore, or delete checkpoints
         \\  grep           AST-grep pattern search
         \\  lsp            Language Server Protocol client
-        \\  mcp            MCP tools management
+        \\  mcp            MCP tools management (list, tools, execute, serve)
         \\  auth           Manage authentication (login, status, logout)
         \\  help           Show this help message
         \\  version        Show version information
@@ -210,9 +255,16 @@ pub fn printHelp() !void {
         \\  --stream, -s       Enable streaming output
         \\  --thinking, -t     Show streaming thinking output
         \\  --permission <mode> Permission mode: default, auto, plan, acceptEdits, dontAsk, bypassPermissions
+        \\  --continue, -c     Continue last session
+        \\  --session <id>     Load specific session by ID
+        \\  --output-dir <dir> Save batch responses to directory
+        \\  --stop-on-error    Halt batch on first error
         \\
         \\Examples:
         \\  crushcode chat
+        \\  crushcode run "What does this project do?"
+        \\  cat file.py | crushcode run "Explain this code"
+        \\  crushcode batch prompts.txt --output-dir ./responses
         \\  crushcode chat --provider openai --model gpt-4o
         \\  crushcode chat --profile work
         \\  crushcode chat --memory --memory-limit 50
@@ -231,5 +283,5 @@ pub fn printHelp() !void {
 }
 
 pub fn printVersion() !void {
-    stdout_print("Crushcode v0.7.0\n", .{});
+    stdout_print("Crushcode v0.25.0\n", .{});
 }

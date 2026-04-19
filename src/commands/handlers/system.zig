@@ -11,6 +11,7 @@ const profile_mod = @import("profile");
 const worktree_mod = @import("worktree");
 const diff_mod = @import("diff");
 const file_compat = @import("file_compat");
+const shell_mod = @import("shell");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -343,14 +344,139 @@ pub fn handleProfile(args: args_mod.Args) !void {
     try profile_mod.handleProfile(args.remaining);
 }
 
-pub fn handleWorktree(_: args_mod.Args) !void {
+pub fn handleWorktree(args: args_mod.Args) !void {
     const allocator = std.heap.page_allocator;
 
-    var manager = worktree_mod.WorktreeManager.init(allocator, ".crushcode-worktrees");
-    defer manager.deinit();
+    if (args.remaining.len == 0) {
+        printWorktreeUsage();
+        return;
+    }
 
-    stdout_print("Worktree base directory: {s}\n", .{manager.base_dir});
-    manager.printActive();
+    const subcommand = args.remaining[0];
+    const sub_args = if (args.remaining.len > 1) args.remaining[1..] else &[_][]const u8{};
+
+    if (std.mem.eql(u8, subcommand, "list")) {
+        stdout_print("\n=== Git Worktrees ===\n", .{});
+        // Show in-memory tracked worktrees
+        var manager = worktree_mod.WorktreeManager.init(allocator, ".crushcode-worktrees");
+        defer manager.deinit();
+        const active = manager.listActive();
+        if (active.len > 0) {
+            stdout_print("  Tracked:\n", .{});
+            for (active) |wt| {
+                stdout_print("    {s} (branch: {s}, task: {s})\n", .{ wt.path, wt.branch, wt.task_id });
+            }
+        }
+        stdout_print("  Git worktrees:\n", .{});
+        // Run git worktree list directly (output goes to terminal)
+        _ = shell_mod.executeShellCommand("git worktree list", null) catch {
+            stdout_print("    Unable to list (not in a git repo?)\n", .{});
+        };
+    } else if (std.mem.eql(u8, subcommand, "create")) {
+        if (sub_args.len == 0) {
+            stdout_print("Error: branch suffix required\n", .{});
+            stdout_print("Usage: crushcode worktree create <branch-suffix>\n", .{});
+            return;
+        }
+        const branch_suffix = sub_args[0];
+        const task_id = std.fmt.allocPrint(allocator, "wt-{d}", .{std.time.milliTimestamp()}) catch "wt-unknown";
+        defer allocator.free(task_id);
+
+        const branch_name = std.fmt.allocPrint(allocator, "crushcode/{s}/{s}", .{ task_id, branch_suffix }) catch {
+            stdout_print("Error: out of memory\n", .{});
+            return;
+        };
+        defer allocator.free(branch_name);
+
+        const worktree_path = std.fmt.allocPrint(allocator, ".crushcode-worktrees/worktree-{s}", .{task_id}) catch {
+            stdout_print("Error: out of memory\n", .{});
+            return;
+        };
+        defer allocator.free(worktree_path);
+
+        // Create worktree directly via git (avoids cleanupAll on deinit)
+        const cmd = std.fmt.allocPrint(allocator, "git worktree add {s} -b {s}", .{ worktree_path, branch_name }) catch {
+            stdout_print("Error: out of memory\n", .{});
+            return;
+        };
+        defer allocator.free(cmd);
+
+        const result = shell_mod.executeShellCommand(cmd, null) catch |err| {
+            stdout_print("Error creating worktree: {}\n", .{err});
+            stdout_print("Make sure you are in a git repository.\n", .{});
+            return;
+        };
+        if (result.exit_code == 0) {
+            stdout_print("Created worktree: {s}\n", .{worktree_path});
+            stdout_print("  Branch: {s}\n", .{branch_name});
+        } else {
+            // Branch might already exist, try without -b
+            const cmd2 = std.fmt.allocPrint(allocator, "git worktree add {s} {s}", .{ worktree_path, branch_name }) catch {
+                stdout_print("Error: out of memory\n", .{});
+                return;
+            };
+            defer allocator.free(cmd2);
+            const result2 = shell_mod.executeShellCommand(cmd2, null) catch |err| {
+                stdout_print("Error creating worktree: {}\n", .{err});
+                return;
+            };
+            if (result2.exit_code == 0) {
+                stdout_print("Created worktree: {s}\n", .{worktree_path});
+                stdout_print("  Branch: {s}\n", .{branch_name});
+            } else {
+                stdout_print("Error creating worktree. Make sure you are in a git repository.\n", .{});
+            }
+        }
+    } else if (std.mem.eql(u8, subcommand, "remove")) {
+        if (sub_args.len == 0) {
+            stdout_print("Error: path required\n", .{});
+            stdout_print("Usage: crushcode worktree remove <path>\n", .{});
+            return;
+        }
+        const target = sub_args[0];
+        const rm_cmd = std.fmt.allocPrint(allocator, "git worktree remove {s}", .{target}) catch {
+            stdout_print("Error: out of memory\n", .{});
+            return;
+        };
+        defer allocator.free(rm_cmd);
+        stdout_print("Removing worktree: {s}\n", .{target});
+        _ = shell_mod.executeShellCommand(rm_cmd, null) catch {
+            stdout_print("Error removing worktree '{s}'\n", .{target});
+        };
+    } else if (std.mem.eql(u8, subcommand, "cleanup")) {
+        // Remove the worktree directory and clean up all crushcode worktrees via git
+        stdout_print("Cleaning up crushcode worktrees...\n", .{});
+        // Remove the base directory for our worktrees
+        std.fs.cwd().deleteTree(".crushcode-worktrees") catch {};
+        // Prune any stale worktree references
+        _ = shell_mod.executeShellCommand("git worktree prune", null) catch {};
+        stdout_print("Done. Run 'crushcode worktree list' to verify.\n", .{});
+    } else {
+        stdout_print("Unknown worktree subcommand: {s}\n", .{subcommand});
+        printWorktreeUsage();
+    }
+}
+
+fn printWorktreeUsage() void {
+    stdout_print(
+        \\Crushcode Worktree Management
+        \\
+        \\Usage:
+        \\  crushcode worktree <subcommand> [options]
+        \\
+        \\Subcommands:
+        \\  list                    List active worktrees
+        \\  create <branch-suffix>  Create a new worktree
+        \\  remove <path|task-id>   Remove a worktree
+        \\  cleanup                 Remove all active worktrees
+        \\
+        \\Examples:
+        \\  crushcode worktree list
+        \\  crushcode worktree create feature-x
+        \\  crushcode worktree remove .crushcode-worktrees/worktree-wt-1234
+        \\  crushcode worktree cleanup
+        \\
+    , .{});
 }
 
 pub fn handleDiff(args: args_mod.Args) !void {

@@ -5,7 +5,7 @@ const tools_mod = @import("tools");
 const plugin_manager_mod = @import("plugin_manager");
 const skills_loader_mod = @import("skills_loader");
 const skill_import_mod = @import("skill_import");
-const ast_grep_mod = @import("ast_grep");
+const pattern_search_mod = @import("pattern_search");
 const file_compat = @import("file_compat");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
@@ -322,16 +322,16 @@ pub fn handleGrep(args: args_mod.Args) !void {
     const pattern = args.remaining[0];
     const target = args.remaining[1];
 
-    var language = ast_grep_mod.AstGrep.Language.unknown;
+    var language = pattern_search_mod.AstGrep.Language.unknown;
     for (args.remaining, 0..) |arg, i| {
         if (std.mem.eql(u8, arg, "--lang") or std.mem.eql(u8, arg, "-l")) {
             if (i + 1 < args.remaining.len) {
-                language = ast_grep_mod.parseLanguage(args.remaining[i + 1]);
+                language = pattern_search_mod.parseLanguage(args.remaining[i + 1]);
             }
         }
     }
 
-    var grep = ast_grep_mod.AstGrep.init(allocator, pattern, language);
+    var grep = pattern_search_mod.AstGrep.init(allocator, pattern, language);
     const file_exists = std.fs.cwd().statFile(target) catch null;
 
     if (file_exists != null) {
@@ -347,7 +347,7 @@ pub fn handleGrep(args: args_mod.Args) !void {
             }
             allocator.free(matches);
         }
-        ast_grep_mod.AstGrep.printMatches(matches);
+        pattern_search_mod.AstGrep.printMatches(matches);
     } else {
         stdout_print("Searching in directory: {s}\n", .{target});
         const matches = grep.searchGlob(target, pattern) catch |err| {
@@ -362,6 +362,6 @@ pub fn handleGrep(args: args_mod.Args) !void {
             }
             allocator.free(matches);
         }
-        ast_grep_mod.AstGrep.printMatches(matches);
+        pattern_search_mod.AstGrep.printMatches(matches);
     }
 }

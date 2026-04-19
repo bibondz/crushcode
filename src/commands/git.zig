@@ -1,9 +1,66 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
 const shell = @import("shell");
+const color_mod = @import("color");
+
+const Allocator = std.mem.Allocator;
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
+}
+
+/// Apply ANSI color codes to unified diff output for display
+fn colorizeDiff(raw: []const u8) void {
+    const Style = color_mod.Style;
+    const green = Style{ .fg = .green };
+    const red = Style{ .fg = .red };
+    const cyan = Style{ .fg = .cyan, .bold = true };
+
+    var line_iter = std.mem.splitScalar(u8, raw, '\n');
+    while (line_iter.next()) |line| {
+        if (line.len > 0) {
+            if (line[0] == '+') {
+                out("{s}{s}{s}\n", .{ green.start(), line, green.reset() });
+            } else if (line[0] == '-') {
+                out("{s}{s}{s}\n", .{ red.start(), line, red.reset() });
+            } else if (line.len >= 2 and line[0] == '@' and line[1] == '@') {
+                out("{s}{s}{s}\n", .{ cyan.start(), line, cyan.reset() });
+            } else {
+                out("{s}\n", .{line});
+            }
+        } else {
+            out("\n", .{});
+        }
+    }
+}
+
+/// Auto-commit all changes with a crushcode-prefixed message.
+/// Gracefully handles "nothing to commit" (returns success without error).
+pub fn autoCommit(allocator: Allocator, message: []const u8) !void {
+    _ = allocator;
+    // git add -A — ignore errors (e.g. not in a repo)
+    _ = shell.executeShellCommand("git add -A", null) catch {};
+    // git commit -m "crushcode: {message}"
+    const commit_cmd = std.fmt.allocPrint(std.heap.page_allocator, "git commit -m \"crushcode: {s}\"", .{message}) catch return;
+    // "nothing to commit" exits non-zero — that's fine, we swallow it
+    _ = shell.executeShellCommand(commit_cmd, null) catch {};
+}
+
+/// Rollback to a given git ref (commit hash, branch, tag).
+/// Performs hard reset + clean of untracked files.
+pub fn rollbackTo(allocator: Allocator, ref: []const u8) !void {
+    _ = allocator;
+    const reset_cmd = std.fmt.allocPrint(std.heap.page_allocator, "git reset --hard {s}", .{ref}) catch return;
+    _ = shell.executeShellCommand(reset_cmd, null) catch return;
+    _ = shell.executeShellCommand("git clean -fd", null) catch {};
+}
+
+/// Get the current HEAD commit hash (full SHA).
+/// Caller owns the returned slice.
+pub fn getCurrentRef(allocator: Allocator) ![]const u8 {
+    const result = try shell.executeShellCommand("git rev-parse HEAD", null);
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
+    return try allocator.dupe(u8, trimmed);
 }
 
 pub const GitSkill = struct {
@@ -18,7 +75,12 @@ pub const GitSkill = struct {
         return run("status");
     }
 
-    /// Check git diff
+    /// Check git diff with color
+    pub fn diffColor() !shell.ShellResult {
+        return run("diff --color=always");
+    }
+
+    /// Check git diff (plain, no color - for tool/AI use)
     pub fn diff() !shell.ShellResult {
         return run("diff");
     }
@@ -204,8 +266,8 @@ pub fn handleGit(args: [][]const u8) !void {
         out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
         out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "diff")) {
-        const result = try GitSkill.diff();
-        out("{s}", .{if (result.stdout.len > 0) result.stdout else result.stderr});
+        const result = try GitSkill.diffColor();
+        // Output goes to terminal directly from git (with ANSI colors)
         out("\n[Exit code: {d}]\n", .{result.exit_code});
     } else if (std.mem.eql(u8, subcommand, "push")) {
         const result = try GitSkill.push();

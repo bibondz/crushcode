@@ -2,6 +2,7 @@ const std = @import("std");
 const args_mod = @import("args");
 const mcp_client_mod = @import("mcp_client");
 const mcp_discovery_mod = @import("mcp_discovery");
+const mcp_server_mod = @import("mcp_server");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
@@ -23,8 +24,44 @@ pub fn handleMCP(args: args_mod.Args) !void {
         stdout_print("  crushcode mcp execute <server> <tool> [json]  Execute a tool\n", .{});
         stdout_print("  crushcode mcp connect <name> <command> [--args ...]  Connect via stdio\n", .{});
         stdout_print("  crushcode mcp discover [search]       Search for MCP servers\n", .{});
+        stdout_print("  crushcode mcp serve [--transport stdio|http] [--port 8080]  Start MCP server\n", .{});
         stdout_print("\nOptions:\n", .{});
         stdout_print("  --auto-connect    Auto-discover and connect MCP servers\n", .{});
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "serve")) {
+        const serve_args = if (args.remaining.len > 1) args.remaining[1..] else &[_][]const u8{};
+
+        var transport: enum { stdio, http } = .stdio;
+        var port: u16 = 8080;
+
+        var i: usize = 0;
+        while (i < serve_args.len) : (i += 1) {
+            if (std.mem.eql(u8, serve_args[i], "--transport")) {
+                i += 1;
+                if (i < serve_args.len) {
+                    if (std.mem.eql(u8, serve_args[i], "http")) {
+                        transport = .http;
+                    } else if (std.mem.eql(u8, serve_args[i], "stdio")) {
+                        transport = .stdio;
+                    }
+                }
+            } else if (std.mem.eql(u8, serve_args[i], "--port")) {
+                i += 1;
+                if (i < serve_args.len) {
+                    port = std.fmt.parseInt(u16, serve_args[i], 10) catch 8080;
+                }
+            }
+        }
+
+        var server = mcp_server_mod.MCPServer.init(allocator);
+        defer server.deinit();
+
+        switch (transport) {
+            .stdio => try server.runStdio(),
+            .http => try server.runHttp(port),
+        }
         return;
     }
 

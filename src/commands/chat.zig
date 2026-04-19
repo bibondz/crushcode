@@ -138,8 +138,13 @@ const client_mod = @import("client");
 const core = @import("core_api");
 const intent_gate_mod = @import("intent_gate");
 const lifecycle_hooks_mod = @import("lifecycle_hooks");
+const guardian_mod = @import("guardian");
 const compaction_mod = @import("compaction");
+const context_budget_mod = @import("context_budget");
+const project_memory_mod = @import("project_memory");
+const usage_pricing_mod = @import("usage_pricing");
 const graph_mod = @import("graph");
+const cognition_mod = @import("cognition");
 const mcp_bridge_mod = @import("mcp_bridge");
 const agent_loop_mod = @import("agent_loop");
 const tool_executors = @import("chat_tool_executors");
@@ -148,6 +153,13 @@ const tool_loader = @import("tool_loader");
 const skills_loader_mod = @import("skills_loader");
 const json_output_mod = @import("json_output");
 const permission_mod = @import("permission_evaluate");
+const audit_mod = @import("permission_audit");
+const env_mod = @import("env");
+const shell_state_mod = @import("shell_state");
+const shell_history_mod = @import("shell_history");
+const blocklist_mod = @import("permission_blocklist");
+const safelist_mod = @import("permission_safelist");
+const session_mod = @import("session");
 const theme_mod = @import("theme");
 const memory_mod = @import("memory");
 const slash_commands_mod = @import("slash_commands");
@@ -162,9 +174,14 @@ const adversarial_mod = @import("adversarial_review");
 const source_tracker_mod = @import("source_tracker");
 const knowledge_lint_mod = @import("knowledge_lint");
 const custom_commands_mod = @import("custom_commands.zig");
+const structured_log_mod = @import("structured_log");
 const spinner_mod = @import("spinner");
 const markdown_mod = @import("markdown_renderer");
 const error_display_mod = @import("error_display");
+const file_tracker_mod = @import("file_tracker");
+const autopilot_mod = @import("autopilot");
+const phase_runner_mod = @import("phase_runner");
+const orchestration_mod = @import("orchestration");
 
 const Config = config_mod.Config;
 const Profile = profile_mod.Profile;
@@ -174,6 +191,7 @@ const Style = color_mod.Style;
 const HookContext = lifecycle_hooks_mod.HookContext;
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
+const Guardian = guardian_mod.Guardian;
 const ContextCompactor = compaction_mod.ContextCompactor;
 const KnowledgeGraph = graph_mod.KnowledgeGraph;
 const Bridge = mcp_bridge_mod.Bridge;
@@ -501,21 +519,95 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         out("{s}[intensity: {s}]{s}\n", .{ Style.dimmed.start(), intensity_level.label(), Style.dimmed.reset() });
     }
 
+    // Load persistent permission config from disk, or fall back to defaults
+    const config_dir = env_mod.getConfigDir(allocator) catch blk: {
+        break :blk "/tmp/crushcode";
+    };
+    defer allocator.free(config_dir);
+
+    var perm_config = PermissionConfig.loadFromFile(allocator, config_dir) catch |err| switch (err) {
+        error.FileNotFound => permission_mod.createDefaultConfig(allocator) catch {
+            active_evaluator = null;
+            tool_executors.setPermissionEvaluator(null);
+            return;
+        },
+        else => permission_mod.createDefaultConfig(allocator) catch {
+            active_evaluator = null;
+            tool_executors.setPermissionEvaluator(null);
+            return;
+        },
+    };
+
+    // Override mode if CLI flag provided (--yolo, --auto, --plan, --permission)
     if (args.permission) |perm_str| {
         const mode = PermissionMode.fromString(perm_str) orelse blk: {
             out("Warning: Unknown permission mode '{s}' — using default\n", .{perm_str});
             break :blk PermissionMode.default;
         };
-        const perm_config = PermissionConfig.init(allocator);
-        var eval_config = perm_config;
-        eval_config.mode = mode;
-        active_evaluator = PermissionEvaluator.init(allocator, eval_config);
+        perm_config.mode = mode;
         out("{s}[Permission] mode: {s}{s}\n", .{ Style.dimmed.start(), mode.toString(), Style.dimmed.reset() });
     }
+
+    active_evaluator = PermissionEvaluator.init(allocator, perm_config);
     tool_executors.setPermissionEvaluator(if (active_evaluator) |*ev| ev else null);
+
+    // Initialize audit logger
+    var audit_logger = audit_mod.PermissionAuditLogger.init(allocator, config_dir) catch null;
+    defer {
+        if (audit_logger != null) {
+            audit_logger.?.deinit();
+        }
+    }
+    tool_executors.setPermissionAuditLogger(if (audit_logger) |*al| al else null);
+
+    // Initialize shell state (cwd, env tracking) and command history
+    var shell_state = shell_state_mod.ShellState.init(allocator) catch null;
+    defer {
+        if (shell_state != null) {
+            shell_state.?.deinit();
+        }
+    }
+    tool_executors.setShellState(if (shell_state) |*ss| ss else null);
+
+    var shell_history = shell_history_mod.ShellHistory.init(allocator, config_dir) catch null;
+    defer {
+        if (shell_history != null) {
+            shell_history.?.deinit();
+        }
+    }
+
+    // Initialize command blocklist and safelist for security (Phase 27)
+    var command_blocklist = blocklist_mod.CommandBlocklist.init(allocator);
+    command_blocklist.loadFromFile(config_dir) catch {};
+    defer command_blocklist.deinit();
+    tool_executors.setCommandBlocklist(&command_blocklist);
+
+    var safe_command_list = safelist_mod.SafeCommandList.init(allocator);
+    safe_command_list.loadFromFile(config_dir) catch {};
+    defer safe_command_list.deinit();
+    tool_executors.setSafeCommandList(&safe_command_list);
+
+    // Initialize file tracker to avoid re-reading unchanged files (Phase 32)
+    var file_tracker = file_tracker_mod.FileTracker.init(allocator);
+    defer file_tracker.deinit();
+    tool_executors.setFileTracker(&file_tracker);
+
+    // Initialize structured logger for JSONL logging (Phase 34)
+    var structured_logger = structured_log_mod.StructuredLogger.init(allocator) catch null;
+    defer {
+        if (structured_logger) |*sl| sl.deinit();
+    }
+
     defer {
         tool_executors.setPermissionEvaluator(null);
+        tool_executors.setPermissionAuditLogger(null);
+        tool_executors.setShellState(null);
+        tool_executors.setCommandBlocklist(null);
+        tool_executors.setSafeCommandList(null);
+        tool_executors.setFileTracker(null);
         if (active_evaluator) |*ev| {
+            // Save permissions back to disk before cleanup
+            ev.config.saveToFile(allocator, config_dir) catch {};
             ev.deinit();
             active_evaluator = null;
         }
@@ -585,48 +677,53 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    var kg = KnowledgeGraph.init(allocator);
-    defer kg.deinit();
+    var pipeline: cognition_mod.KnowledgePipeline = undefined;
+    var pipeline_initialized = false;
+
+    // Try with memory first (project dir "."), fall back without
+    pipeline = cognition_mod.KnowledgePipeline.init(allocator, ".") catch blk: {
+        const p = cognition_mod.KnowledgePipeline.init(allocator, null) catch {
+            // Fall back to a bare knowledge graph if pipeline init fails
+            var kg = KnowledgeGraph.init(allocator);
+            const graph_ctx_fallback = kg.toCompressedContext(allocator) catch null;
+            defer {
+                if (graph_ctx_fallback) |ctx| allocator.free(ctx);
+                kg.deinit();
+            }
+            return;
+        };
+        break :blk p;
+    };
+    pipeline_initialized = true;
+    defer {
+        if (pipeline_initialized) pipeline.deinit();
+    }
 
     const context_tier = LoadTier.focused;
     const max_files = context_tier.maxPages();
 
-    const default_src_files = [_][]const u8{
-        "src/main.zig",
-        "src/ai/client.zig",
-        "src/ai/registry.zig",
-        "src/commands/handlers.zig",
-        "src/commands/chat.zig",
-        "src/config/config.zig",
-        "src/cli/args.zig",
-        "src/agent/loop.zig",
-        "src/agent/compaction.zig",
-        "src/graph/graph.zig",
-        "src/graph/parser.zig",
-        "src/streaming/session.zig",
-        "src/plugin/mod.zig",
-        "src/tools/registry.zig",
-    };
-    var indexed_count: u32 = 0;
-    const files_to_index = @min(default_src_files.len, max_files);
-    for (default_src_files[0..files_to_index]) |file_path| {
-        kg.indexFile(file_path) catch continue;
-        indexed_count += 1;
-    }
-    kg.detectCommunities() catch {};
+    // Auto-scan src/ directory, index up to max_files code files
+    pipeline.scanProject("src", max_files) catch {};
+    pipeline.indexGraphToVault() catch {};
+
+    // Bridge vault nodes into layered memory
+    pipeline.syncVaultToMemory() catch {};
 
     // Convergence detector for agent loop iteration tracking (F14)
     var convergence_detector = ConvergenceDetector.init();
 
-    if (indexed_count > 0) {
-        const graph_ctx = kg.toCompressedContext(allocator) catch null;
-        if (graph_ctx) |ctx| {
+    if (pipeline_initialized and pipeline.pipeline_stats.files_indexed > 0) {
+        // Use smart context builder that combines tiered loading + optimization + intensity
+        const user_msg = if (args.remaining.len > 0) args.remaining[0] else "";
+        const smart_ctx = pipeline.buildSmartContext(user_msg, intensity_level) catch null;
+        if (smart_ctx) |ctx| {
+            defer allocator.free(ctx);
             const base_prompt = client.system_prompt orelse "You are a helpful AI coding assistant with access to the user's codebase.";
             const enhanced = std.fmt.allocPrint(allocator,
                 \\{s}
                 \\
-                \\## Codebase Context (Knowledge Graph)
-                \\The following is an auto-generated compressed representation of the local codebase structure.
+                \\## Codebase Context (Auto-Generated)
+                \\The following is auto-generated context from your local codebase.
                 \\Use this to understand the project architecture without needing to read every file.
                 \\
                 \\{s}
@@ -641,11 +738,13 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 \\- edit(file_path: string, old_string: string, new_string: string) — Replace text in a file
             , .{ base_prompt, ctx }) catch base_prompt;
             client.setSystemPrompt(enhanced);
-            out("{s}[graph: {d} files indexed, {d} symbols, {d:.1}x compression]{s}\n", .{
+            const selected_tier = tiered_loader_mod.selectTier(if (user_msg.len > 0) user_msg else "focused");
+            out("{s}[pipeline: {d} files indexed, {d} graph nodes, {d} vault nodes | tier: {s}]{s}\n", .{
                 Style.dimmed.start(),
-                indexed_count,
-                kg.nodes.count(),
-                kg.compressionRatio(),
+                pipeline.pipeline_stats.files_indexed,
+                pipeline.pipeline_stats.graph_nodes,
+                pipeline.pipeline_stats.vault_nodes,
+                selected_tier.label(),
                 Style.dimmed.reset(),
             });
         }
@@ -663,6 +762,17 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer hooks.deinit();
     try registerCoreChatHooks(&hooks);
 
+    var guardian: ?Guardian = Guardian.init(allocator) catch null;
+    defer {
+        if (guardian) |*g| {
+            g.notifySessionEnd();
+            g.deinit();
+        }
+    }
+    if (guardian) |*g| {
+        _ = g.discoverHooks() catch 0;
+    }
+
     var tool_registry = ToolRegistry.init(allocator);
     defer tool_registry.deinit();
     try tool_registry.registerBuiltinTools();
@@ -677,6 +787,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     agent_loop.setConfig(loop_config);
     try tool_executors.registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
 
+    var current_agent_mode: agent_loop_mod.AgentMode = .execute;
+    tool_executors.setAgentMode(current_agent_mode);
+
     var messages = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
     defer {
         for (messages.items) |msg| {
@@ -684,6 +797,75 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
         messages.deinit();
     }
+
+    // ── Session continuation (--continue / --session <id>) ──────────
+    const session_dir = session_mod.defaultSessionDir(allocator) catch null;
+    defer {
+        if (session_dir) |dir| allocator.free(dir);
+    }
+
+    var current_session_id = session_mod.generateSessionId(allocator) catch "unknown";
+    defer allocator.free(current_session_id);
+
+    if (session_dir) |dir| {
+        var loaded_session: ?session_mod.Session = null;
+
+        if (args.session_id) |requested_id| {
+            // Load specific session by ID
+            const path = session_mod.sessionFilePath(allocator, dir, requested_id) catch null;
+            if (path) |p| {
+                defer allocator.free(p);
+                loaded_session = session_mod.loadSession(allocator, p) catch blk: {
+                    out("{s}Warning: Could not load session '{s}'{s}\n", .{ Style.warning.start(), requested_id, Style.warning.reset() });
+                    break :blk null;
+                };
+            }
+        } else if (args.continue_session) {
+            // Load most recent session
+            const sessions = session_mod.listSessions(allocator, dir) catch null;
+            if (sessions) |all_sessions| {
+                defer {
+                    for (all_sessions) |*s| session_mod.deinitSession(allocator, s);
+                    allocator.free(all_sessions);
+                }
+                if (all_sessions.len > 0) {
+                    const path = session_mod.sessionFilePath(allocator, dir, all_sessions[0].id) catch null;
+                    if (path) |p| {
+                        defer allocator.free(p);
+                        loaded_session = session_mod.loadSession(allocator, p) catch null;
+                    }
+                }
+            }
+        }
+
+        if (loaded_session) |*session| {
+            // Replace generated ID with loaded session ID
+            allocator.free(current_session_id);
+            current_session_id = allocator.dupe(u8, session.id) catch "unknown";
+
+            // Copy messages into the chat
+            for (session.messages) |msg| {
+                const copied_msg = core.ChatMessage{
+                    .role = allocator.dupe(u8, msg.role) catch continue,
+                    .content = if (msg.content) |c| allocator.dupe(u8, c) catch null else null,
+                    .tool_call_id = if (msg.tool_call_id) |tc| allocator.dupe(u8, tc) catch null else null,
+                    .tool_calls = null, // tool_calls from previous sessions are not replayed
+                };
+                messages.append(copied_msg) catch continue;
+            }
+
+            out("{s}[session: continued from {s} ({d} messages loaded)]{s}\n", .{
+                Style.dimmed.start(),
+                session.id,
+                session.messages.len,
+                Style.dimmed.reset(),
+            });
+
+            session_mod.deinitSession(allocator, session);
+        }
+    }
+
+    const session_start_time = std.time.milliTimestamp();
 
     var total_input_tokens: u64 = 0;
     var total_output_tokens: u64 = 0;
@@ -696,18 +878,59 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer compactor.deinit();
     compactor.setRecentWindow(10); // Keep last 10 messages at full fidelity
 
+    var project_memory = project_memory_mod.ProjectMemory.init(allocator);
+    defer project_memory.deinit();
+    project_memory.load() catch {};
+
+    // Inject CLAUDE.md memory into system prompt
+    if (project_memory.hasMemory()) {
+        const base_prompt = config.getSystemPrompt() orelse "";
+        const injected = project_memory.injectIntoSystemPrompt(base_prompt) catch base_prompt;
+        if (injected.len > 0) {
+            client.system_prompt = injected;
+        }
+        out("{s}[memory: {d} bytes loaded]{s}\n", .{ Style.dimmed.start(), project_memory.totalSize(), Style.dimmed.reset() });
+    }
+
     out(Style.dimmed.start() ++ "── " ++ Style.heading.start() ++ "Crushcode" ++ Style.heading.reset() ++ " " ++ Style.muted.start(), .{});
-    out("{s}/{s}" ++ Style.muted.reset() ++ " " ++ Style.dimmed.start() ++ "──" ++ Style.dimmed.reset() ++ "\n", .{
+    out("{s}/{s}" ++ Style.muted.reset() ++ " ", .{
         current_provider_name,
         current_model_name,
     });
+    out(Style.dimmed.start() ++ "session:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start(), .{});
+    out("{s}" ++ Style.info.reset() ++ " " ++ Style.dimmed.start() ++ "──" ++ Style.dimmed.reset() ++ "\n", .{
+        current_session_id,
+    });
+
+    // Context budget header bar
+    {
+        const budget = context_budget_mod.ContextBudget.forModel(current_model_name);
+        out(Style.dimmed.start() ++ "ctx: " ++ Style.dimmed.reset() ++ "░░░░░░░░ 0% (0/{d})\n", .{
+            budget.max_context_tokens,
+        });
+    }
+
     if (stream_options.show_thinking) {
-        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start() ++ "on" ++ Style.info.reset() ++ " · /help /clear /model /compact /revise /lint /sources /exit" ++ Style.dimmed.reset() ++ "\n\n", .{});
+        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start() ++ "on" ++ Style.info.reset() ++ " " ++ Style.dimmed.start() ++ "mode:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start() ++ "{s}" ++ Style.info.reset() ++ " · /help /clear /model /mode /compact /cost /memory /revise /lint /sources /guardian /cognition /insights /autopilot /phase-run /team /spawn /session /sessions /cost /exit" ++ Style.dimmed.reset() ++ "\n\n", .{current_agent_mode.toString()});
     } else {
-        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.muted.start() ++ "off" ++ Style.muted.reset() ++ " · /help /clear /model /compact /revise /lint /sources /exit" ++ Style.dimmed.reset() ++ "\n\n", .{});
+        out(Style.dimmed.start() ++ "thinking:" ++ Style.dimmed.reset() ++ " " ++ Style.muted.start() ++ "off" ++ Style.muted.reset() ++ " " ++ Style.dimmed.start() ++ "mode:" ++ Style.dimmed.reset() ++ " " ++ Style.info.start() ++ "{s}" ++ Style.info.reset() ++ " · /help /clear /model /mode /compact /cost /memory /revise /lint /sources /guardian /cognition /insights /autopilot /phase-run /team /spawn /session /sessions /cost /exit" ++ Style.dimmed.reset() ++ "\n\n", .{current_agent_mode.toString()});
     }
 
     json_out.emitSessionStart(current_provider_name, current_model_name);
+
+    // Log session start
+    if (structured_logger) |*sl| {
+        sl.log(.info, "session started provider={s} model={s} session={s}", .{ current_provider_name, current_model_name, current_session_id });
+    }
+
+    // Guardian: fire session_start lifecycle event
+    if (guardian) |*g| {
+        g.notifySessionStart(current_provider_name, current_model_name);
+    }
+
+    var gate_override: bool = false;
+    var last_gate_verdict: []const u8 = "none";
+    const current_phase_name: []const u8 = "discuss";
 
     const stdin = file_compat.File.stdin();
     const stdin_reader = stdin.reader();
@@ -729,6 +952,292 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         if (std.mem.eql(u8, user_message, "/hooks")) {
             hooks.printHooks();
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/guardian")) {
+            if (guardian) |*g| {
+                g.printStats();
+            } else {
+                out("\n  Guardian not initialized (init failed)\n", .{});
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/cognition")) {
+            if (!pipeline_initialized) {
+                out("\n  Pipeline not initialized\n", .{});
+            } else {
+                const s = pipeline.stats();
+                out("\n=== Cognition Pipeline ===\n", .{});
+                out("  Files indexed:   {d}\n", .{s.files_indexed});
+                out("  Graph nodes:     {d}\n", .{s.graph_nodes});
+                out("  Graph edges:     {d}\n", .{s.graph_edges});
+                out("  Communities:     {d}\n", .{s.communities});
+                out("  Vault nodes:     {d}\n", .{s.vault_nodes});
+                out("  Memory entries:  {d}\n", .{s.memory_entries});
+                out("  Insights:        {d}\n", .{s.insights_count});
+                out("  Source tokens:   {d}\n", .{s.total_source_tokens});
+                if (s.files_indexed > 0 and s.graph_nodes > 0) {
+                    const ratio = @as(f64, @floatFromInt(s.total_source_tokens)) / @as(f64, @floatFromInt(s.graph_nodes));
+                    out("  Compression:     {d:.1}x\n", .{ratio});
+                }
+                out("  [context injected into system prompt]\n", .{});
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/insights")) {
+            if (!pipeline_initialized) {
+                out("\n  Pipeline not initialized\n", .{});
+            } else {
+                pipeline.printInsights();
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/autopilot") or std.mem.startsWith(u8, user_message, "/autopilot ")) {
+            const auto_sub = std.mem.trim(u8, user_message["/autopilot".len..], " ");
+            if (auto_sub.len == 0) {
+                out("\n=== Autopilot Engine ===\n", .{});
+                out("  Usage:\n", .{});
+                out("    /autopilot run <agent-id>  — run a specific agent\n", .{});
+                out("    /autopilot status [agent]  — show agent status\n", .{});
+                out("    /autopilot schedule        — run all scheduled agents\n", .{});
+                out("    /autopilot list            — list all agents\n", .{});
+            } else if (std.mem.startsWith(u8, auto_sub, "run ")) {
+                const agent_id = std.mem.trim(u8, auto_sub["run ".len..], " ");
+                if (agent_id.len == 0) {
+                    out("  Usage: /autopilot run <agent-id>\n", .{});
+                    continue;
+                }
+                if (!pipeline_initialized) {
+                    out("  Pipeline not initialized — cannot run autopilot\n", .{});
+                    continue;
+                }
+                const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                    out("  Failed to initialize autopilot engine\n", .{});
+                    continue;
+                };
+                defer engine.deinit();
+                const result = engine.runAgentWork(agent_id) catch |err| {
+                    out("  Agent '{s}' failed: {}\n", .{ agent_id, err });
+                    continue;
+                };
+                defer result.deinit(allocator);
+                out("\n  Agent: {s} ({s})\n", .{ result.agent_id, @tagName(result.agent_kind) });
+                out("  Status: {s}\n", .{@tagName(result.status)});
+                out("  Summary: {s}\n", .{result.work_summary});
+                if (result.error_message) |msg| {
+                    out("  Error: {s}\n", .{msg});
+                }
+                out("  Files scanned: {d} | Indexed: {d} | Vault: {d} | Graph: {d}\n", .{
+                    result.files_scanned, result.files_indexed, result.vault_nodes, result.graph_nodes,
+                });
+            } else if (std.mem.startsWith(u8, auto_sub, "status")) {
+                const status_arg = std.mem.trim(u8, auto_sub["status".len..], " ");
+                if (!pipeline_initialized) {
+                    out("  Pipeline not initialized\n", .{});
+                    continue;
+                }
+                const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                    out("  Failed to initialize autopilot engine\n", .{});
+                    continue;
+                };
+                defer engine.deinit();
+                if (status_arg.len > 0) {
+                    const status_text = engine.getAgentStatus(status_arg);
+                    if (status_text) |text| {
+                        out("\n  {s}\n", .{text});
+                        allocator.free(text);
+                    } else {
+                        out("  Agent '{s}' not found\n", .{status_arg});
+                    }
+                } else {
+                    engine.printStats();
+                }
+            } else if (std.mem.eql(u8, auto_sub, "schedule")) {
+                if (!pipeline_initialized) {
+                    out("  Pipeline not initialized — cannot run schedule\n", .{});
+                    continue;
+                }
+                const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                    out("  Failed to initialize autopilot engine\n", .{});
+                    continue;
+                };
+                defer engine.deinit();
+                out("\n  Running scheduled agents...\n", .{});
+                engine.runScheduledWork() catch {};
+                engine.printStats();
+            } else if (std.mem.eql(u8, auto_sub, "list")) {
+                if (!pipeline_initialized) {
+                    out("  Pipeline not initialized\n", .{});
+                    continue;
+                }
+                const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                    out("  Failed to initialize autopilot engine\n", .{});
+                    continue;
+                };
+                defer engine.deinit();
+                const listing = engine.listAgents(allocator) catch "  (failed to list agents)";
+                defer allocator.free(listing);
+                out("\n{s}\n", .{listing});
+            } else {
+                out("  Unknown autopilot subcommand: {s}\n", .{auto_sub});
+                out("  Use: run, status, schedule, list\n", .{});
+            }
+            continue;
+        }
+
+        // ── /team — show orchestration engine stats ─────────────────────────
+        if (std.mem.eql(u8, user_message, "/team")) {
+            var engine = orchestration_mod.OrchestrationEngine.init(allocator) catch {
+                out("\n  Error: failed to initialize orchestration engine\n", .{});
+                continue;
+            };
+            defer engine.deinit();
+            engine.printStats();
+            continue;
+        }
+
+        // ── /spawn <description> — spawn a 3-agent team and show the plan ────
+        if (std.mem.startsWith(u8, user_message, "/spawn ")) {
+            const spawn_desc = std.mem.trim(u8, user_message["/spawn ".len..], " ");
+            if (spawn_desc.len == 0) {
+                out("  Usage: /spawn <task description>\n", .{});
+                continue;
+            }
+            var engine = orchestration_mod.OrchestrationEngine.init(allocator) catch {
+                out("  Error: failed to initialize orchestration engine\n", .{});
+                continue;
+            };
+            defer engine.deinit();
+            const result = engine.spawnTeam(spawn_desc, 3) catch {
+                out("  Error: failed to spawn team\n", .{});
+                continue;
+            };
+            defer result.deinit(allocator);
+            out("\n=== Team Spawned ===\n", .{});
+            out("  Team:   {s} ({s})\n", .{ result.team_name, result.team_id });
+            out("  Agents: {d}\n", .{result.agent_count});
+            out("  Cost:   ${d:.4}\n", .{result.total_estimated_cost});
+            out("\n  Phases ({d}):\n", .{result.plan.total_phases});
+            for (result.plan.phases, 0..) |phase, idx| {
+                out("    {d}. {s} — {s} [{s}]\n", .{
+                    idx + 1,
+                    phase.phase_name,
+                    phase.phase_description,
+                    phase.recommended_model,
+                });
+            }
+            out("\n  Agents:\n", .{});
+            for (result.agents, 0..) |agent, idx| {
+                out("    {d}. {s} [{s}] → {s}\n", .{ idx + 1, agent.agent_name, @tagName(agent.specialty), agent.model });
+            }
+            out("\n", .{});
+            continue;
+        }
+
+        // ── /cost <description> — show cost estimate for a task ──────────────
+        if (std.mem.startsWith(u8, user_message, "/cost ")) {
+            const cost_desc = std.mem.trim(u8, user_message["/cost ".len..], " ");
+            if (cost_desc.len == 0) {
+                out("  Usage: /cost <task description>\n", .{});
+                continue;
+            }
+            var engine = orchestration_mod.OrchestrationEngine.init(allocator) catch {
+                out("  Error: failed to initialize orchestration engine\n", .{});
+                continue;
+            };
+            defer engine.deinit();
+            const estimate = engine.estimateCost(cost_desc) catch {
+                out("  Error: failed to estimate cost\n", .{});
+                continue;
+            };
+            defer estimate.deinit(allocator);
+            out("\n=== Cost Estimate ===\n", .{});
+            out("  Task:     {s}\n", .{cost_desc});
+            out("  Category: {s}\n", .{@tagName(estimate.task_category)});
+            out("  Model:    {s}\n", .{estimate.recommended_model});
+            out("  Tokens:   {d}\n", .{estimate.estimated_tokens});
+            out("  Cost:     ${d:.4}\n", .{estimate.estimated_cost});
+            out("\n", .{});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/phase-run") or std.mem.startsWith(u8, user_message, "/phase-run ")) {
+            const phase_arg = std.mem.trim(u8, user_message["/phase-run".len..], " ");
+            if (phase_arg.len == 0) {
+                out("\n=== Phase Runner ===\n", .{});
+                out("  Usage:\n", .{});
+                out("    /phase-run <name>  — run a simple 2-phase workflow\n", .{});
+                out("    /phase-run status  — show phase runner info\n", .{});
+            } else if (std.mem.eql(u8, phase_arg, "status")) {
+                out("\n=== Phase Runner Status ===\n", .{});
+                out("  Pipeline: {s}\n", .{if (pipeline_initialized) "initialized" else "not initialized"});
+                out("  Guardian: {s}\n", .{if (guardian != null) "active" else "disabled"});
+            } else {
+                var runner = phase_runner_mod.PhaseRunner.init(allocator, .{
+                    .name = phase_arg,
+                    .use_adversarial_gates = false,
+                    .verbose = false,
+                }) catch {
+                    out("  Failed to initialize phase runner\n", .{});
+                    continue;
+                };
+                defer runner.deinit();
+
+                const discuss_tasks = [_][]const u8{ "Gather requirements", "Clarify scope" };
+                runner.addPhase(1, "discuss", "Gather requirements and clarify scope for the user goal objective", &discuss_tasks) catch {
+                    out("  Failed to add discuss phase\n", .{});
+                    continue;
+                };
+                const plan_tasks = [_][]const u8{ "Create implementation plan", "Define tasks and steps to build" };
+                runner.addPhase(2, "plan", "Create implementation plan with tasks steps build create write add fix update", &plan_tasks) catch {
+                    out("  Failed to add plan phase\n", .{});
+                    continue;
+                };
+
+                var result = runner.run() catch {
+                    out("  Phase run failed\n", .{});
+                    continue;
+                };
+                defer result.deinit();
+                phase_runner_mod.printResult(&result);
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/memory")) {
+            out("\n=== Project Memory ===\n", .{});
+            if (project_memory.user_path.len > 0) {
+                out("  User: {s} ({d} bytes)\n", .{ project_memory.user_path, project_memory.user_memory.len });
+            }
+            if (project_memory.project_path.len > 0) {
+                out("  Project: {s} ({d} bytes)\n", .{ project_memory.project_path, project_memory.project_memory.len });
+            }
+            out("  Total: {d} bytes\n", .{project_memory.totalSize()});
+            out("  Status: {s}\n", .{if (project_memory.hasMemory()) "loaded" else "empty"});
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, user_message, "/memory ")) {
+            const sub = user_message["/memory ".len..];
+            if (std.mem.eql(u8, sub, "reload")) {
+                project_memory.reload() catch {};
+                out("Memory reloaded ({d} bytes)\n", .{project_memory.totalSize()});
+                continue;
+            }
+            if (std.mem.eql(u8, sub, "clear")) {
+                project_memory.clear();
+                out("Memory cleared for this session\n", .{});
+                continue;
+            }
+            out("Usage: /memory [reload|clear]\n", .{});
             continue;
         }
 
@@ -783,20 +1292,56 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
 
         if (std.mem.eql(u8, user_message, "/graph")) {
             out("\n=== Knowledge Graph Status ===\n", .{});
-            out("  Files indexed: {d}\n", .{kg.file_count});
-            out("  Nodes: {d}\n", .{kg.nodes.count()});
-            out("  Edges: {d}\n", .{kg.edges.items.len});
-            out("  Communities: {d}\n", .{kg.communities.items.len});
-            if (kg.compressionRatio() > 0) {
-                out("  Compression: {d:.1}x\n", .{kg.compressionRatio()});
+            out("  Files indexed: {d}\n", .{pipeline.pipeline_stats.files_indexed});
+            out("  Nodes: {d}\n", .{pipeline.kg.nodes.count()});
+            out("  Edges: {d}\n", .{pipeline.kg.edges.items.len});
+            out("  Communities: {d}\n", .{pipeline.kg.communities.items.len});
+            out("  Vault nodes: {d}\n", .{pipeline.vault.count()});
+            if (pipeline.kg.compressionRatio() > 0) {
+                out("  Compression: {d:.1}x\n", .{pipeline.kg.compressionRatio()});
             }
             out("  [graph context already injected into system prompt]\n", .{});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/worktree")) {
+            out("\n=== Git Worktrees ===\n", .{});
+            const shell_mod = @import("shell");
+            _ = shell_mod.executeShellCommand("git worktree list", null) catch {
+                out("  Unable to list worktrees (not in a git repo?)\n", .{});
+            };
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/wave")) {
+            out("\n=== Wave Execution ===\n", .{});
+            out("  Use --wave flag with agent commands for wave-based execution\n", .{});
+            out("  Tasks with dependencies execute in correct order\n", .{});
+            out("  Each completed task creates an atomic commit\n", .{});
             continue;
         }
 
         if (std.mem.eql(u8, user_message, "/thinking")) {
             stream_options.show_thinking = !stream_options.show_thinking;
             out("Thinking: {s}\n", .{if (stream_options.show_thinking) "on" else "off"});
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/mode") or std.mem.startsWith(u8, user_message, "/mode ")) {
+            const mode_arg = std.mem.trim(u8, user_message["/mode".len..], " ");
+            if (mode_arg.len == 0) {
+                out("Current mode: {s} — {s}\n", .{ current_agent_mode.toString(), current_agent_mode.description() });
+            } else {
+                const new_mode = agent_loop_mod.AgentMode.fromString(mode_arg) orelse {
+                    out("{s}Unknown mode '{s}'. Available: plan, build, execute{s}\n", .{ Style.err.start(), mode_arg, Style.err.reset() });
+                    continue;
+                };
+                current_agent_mode = new_mode;
+                loop_config.agent_mode = new_mode;
+                agent_loop.setConfig(loop_config);
+                tool_executors.setAgentMode(new_mode);
+                out("Switched to {s} — {s}\n", .{ new_mode.toString(), new_mode.description() });
+            }
             continue;
         }
 
@@ -1065,6 +1610,27 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             continue;
         }
 
+        if (std.mem.eql(u8, user_message, "/gate") or std.mem.startsWith(u8, user_message, "/gate ")) {
+            const gate_arg = std.mem.trim(u8, user_message["/gate".len..], " ");
+            if (std.mem.eql(u8, gate_arg, "override")) {
+                gate_override = true;
+                out("Gate override — proceeding to next phase\n", .{});
+            } else if (std.mem.eql(u8, gate_arg, "reset")) {
+                gate_override = false;
+                last_gate_verdict = "none";
+                out("Gate status reset\n", .{});
+            } else {
+                out("\n=== Phase Gate Status ===\n", .{});
+                out("  Current phase: {s}\n", .{current_phase_name});
+                out("  Gate status: {s}\n", .{last_gate_verdict});
+                out("  Override: {s}\n", .{if (gate_override) "active (gates bypassed)" else "inactive"});
+                out("\n  Commands:\n", .{});
+                out("    /gate override — bypass blocked gates\n", .{});
+                out("    /gate reset    — reset gate status\n", .{});
+            }
+            continue;
+        }
+
         if (std.mem.eql(u8, user_message, "/sources")) {
             if (messages.items.len == 0) {
                 out("{s}Not available in this context{s}\n", .{ Style.warning.start(), Style.warning.reset() });
@@ -1196,6 +1762,102 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             out("\n=== Session Usage ===\n", .{});
             out("  Requests: {d}\n", .{request_count});
             out("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
+
+            // Show cost if pricing available
+            var pricing = usage_pricing_mod.PricingTable.init(allocator) catch null;
+            if (pricing) |*pt| {
+                defer pt.deinit();
+                const cost = pt.estimateCostSimple(current_provider_name, current_model_name, @as(u32, @intCast(total_input_tokens)), @as(u32, @intCast(total_output_tokens)));
+                if (cost > 0) {
+                    out("  Estimated cost: ${d:.4}\n", .{cost});
+                }
+            }
+            continue;
+        }
+
+        if (std.mem.eql(u8, user_message, "/cost")) {
+            out("\n=== Session Cost ===\n", .{});
+            out("  Turns: {d}\n", .{request_count});
+            out("  Tokens: {d} in / {d} out\n", .{ total_input_tokens, total_output_tokens });
+
+            var pricing = usage_pricing_mod.PricingTable.init(allocator) catch {
+                out("  Cost: unable to calculate (pricing unavailable)\n", .{});
+                continue;
+            };
+            defer pricing.deinit();
+
+            const cost = pricing.estimateCostSimple(current_provider_name, current_model_name, @as(u32, @intCast(total_input_tokens)), @as(u32, @intCast(total_output_tokens)));
+            out("  Cost: ${d:.4}\n", .{cost});
+            out("  Model: {s}/{s}\n", .{ current_provider_name, current_model_name });
+            continue;
+        }
+
+        if (std.mem.startsWith(u8, user_message, "/cost budget ")) {
+            const amount_str = user_message["/cost budget ".len..];
+            const amount = std.fmt.parseFloat(f64, amount_str) catch {
+                out("Usage: /cost budget <amount_usd>\n", .{});
+                continue;
+            };
+            out("Session budget set to ${d:.2}\n", .{amount});
+            continue;
+        }
+
+        // ── /session — show current session info ────────────────────────
+        if (std.mem.eql(u8, user_message, "/session")) {
+            out("\n=== Current Session ===\n", .{});
+            out("  ID:       {s}\n", .{current_session_id});
+            out("  Model:    {s}/{s}\n", .{ current_provider_name, current_model_name });
+            out("  Turns:    {d}\n", .{request_count});
+            out("  Messages: {d}\n", .{messages.items.len});
+            out("  Tokens:   {d} in + {d} out = {d} total\n", .{
+                total_input_tokens,
+                total_output_tokens,
+                total_input_tokens + total_output_tokens,
+            });
+            var pricing = usage_pricing_mod.PricingTable.init(allocator) catch null;
+            if (pricing) |*pt| {
+                defer pt.deinit();
+                const cost = pt.estimateCostSimple(current_provider_name, current_model_name, @as(u32, @intCast(total_input_tokens)), @as(u32, @intCast(total_output_tokens)));
+                if (cost > 0) {
+                    out("  Cost:     ${d:.4}\n", .{cost});
+                }
+            }
+            const elapsed_ms = std.time.milliTimestamp() - session_start_time;
+            const elapsed_s: u32 = if (elapsed_ms >= 0) @intCast(@divTrunc(elapsed_ms, 1000)) else 0;
+            out("  Duration: {d}s\n", .{elapsed_s});
+            continue;
+        }
+
+        // ── /sessions — list all saved sessions ──────────────────────────
+        if (std.mem.eql(u8, user_message, "/sessions")) {
+            if (session_dir) |dir| {
+                const all_sessions = session_mod.listSessions(allocator, dir) catch {
+                    out("  Error listing sessions\n", .{});
+                    continue;
+                };
+                defer {
+                    for (all_sessions) |*s| session_mod.deinitSession(allocator, s);
+                    allocator.free(all_sessions);
+                }
+                if (all_sessions.len == 0) {
+                    out("  No saved sessions.\n", .{});
+                } else {
+                    out("\n  Saved Sessions ({d}):\n\n", .{all_sessions.len});
+                    for (all_sessions, 0..) |session, i| {
+                        const short_id = if (session.id.len > 30) session.id[0..30] else session.id;
+                        out("  {d}. {s}  ({d} msgs, {d} turns, {d} tokens)\n", .{
+                            i + 1,
+                            short_id,
+                            session.messages.len,
+                            session.turn_count,
+                            session.total_tokens,
+                        });
+                    }
+                    out("\n  Resume with: crushcode --session <id>\n\n", .{});
+                }
+            } else {
+                out("  Session directory not available.\n", .{});
+            }
             continue;
         }
 
@@ -1262,6 +1924,64 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         tool_executors.setJsonOutput(json_out);
         chat_bridge.active_streaming_enabled = args.stream;
         chat_bridge.active_show_thinking = stream_options.show_thinking;
+
+        // ── Auto-compaction check before API call ──────────────────
+        {
+            var estimated_tokens: u64 = 0;
+            for (messages.items) |msg| {
+                if (msg.content) |content| {
+                    estimated_tokens += ContextCompactor.estimateTokens(content);
+                }
+            }
+            const budget = context_budget_mod.ContextBudget.forModel(current_model_name);
+            if (budget.needsCompaction(estimated_tokens) and messages.items.len > 12) {
+                out("{s}[auto-compacting: {d:.0}% context used]{s}\n", .{
+                    Style.warning.start(),
+                    budget.usagePercent(estimated_tokens) * 100.0,
+                    Style.warning.reset(),
+                });
+
+                doAutoCompact: {
+                    var compact_msgs = array_list_compat.ArrayList(compaction_mod.CompactMessage).initCapacity(allocator, messages.items.len) catch break :doAutoCompact;
+                    defer compact_msgs.deinit();
+                    for (messages.items) |msg| {
+                        compact_msgs.appendAssumeCapacity(.{
+                            .role = msg.role,
+                            .content = msg.content orelse "",
+                            .timestamp = null,
+                        });
+                    }
+                    const result = compactor.compact(compact_msgs.items) catch break :doAutoCompact;
+                    if (result.messages_summarized > 0) {
+                        for (messages.items) |msg| {
+                            chat_helpers.freeChatMessage(msg, allocator);
+                        }
+                        messages.clearRetainingCapacity();
+                        const summary_content = std.fmt.allocPrint(allocator, "{s}", .{result.summary}) catch break :doAutoCompact;
+                        messages.append(.{
+                            .role = allocator.dupe(u8, "system") catch break :doAutoCompact,
+                            .content = summary_content,
+                            .tool_call_id = null,
+                            .tool_calls = null,
+                        }) catch break :doAutoCompact;
+                        for (result.messages) |compact_msg| {
+                            messages.append(.{
+                                .role = allocator.dupe(u8, compact_msg.role) catch break :doAutoCompact,
+                                .content = if (compact_msg.content.len > 0) allocator.dupe(u8, compact_msg.content) catch break :doAutoCompact else null,
+                                .tool_call_id = null,
+                                .tool_calls = null,
+                            }) catch break :doAutoCompact;
+                        }
+                        allocator.free(result.summary);
+                        out("  Compacted {d} messages, saved ~{d} tokens.\n", .{
+                            result.messages_summarized,
+                            result.tokens_saved,
+                        });
+                    }
+                }
+            }
+        }
+
         var loop_result = try agent_loop.run(chat_bridge.sendInteractiveLoopMessages, user_message);
         chat_bridge.active_bridge_context = null;
         tool_executors.setJsonOutput(.{ .enabled = false });
@@ -1440,6 +2160,112 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 .none => {},
             }
         }
+
+        // ── Auto-save session after each turn ──────────────────────
+        if (session_dir) |dir| {
+            var auto_msgs = array_list_compat.ArrayList(session_mod.Message).init(allocator);
+            defer {
+                for (auto_msgs.items) |*msg| {
+                    allocator.free(msg.role);
+                    if (msg.content) |c| allocator.free(c);
+                    if (msg.tool_call_id) |tc| allocator.free(tc);
+                    if (msg.tool_calls) |calls| {
+                        for (calls) |*tc| {
+                            allocator.free(tc.id);
+                            allocator.free(tc.name);
+                            allocator.free(tc.arguments);
+                        }
+                        allocator.free(calls);
+                    }
+                }
+                auto_msgs.deinit();
+            }
+
+            for (messages.items) |chat_msg| {
+                const session_msg = session_mod.Message{
+                    .role = allocator.dupe(u8, chat_msg.role) catch continue,
+                    .content = if (chat_msg.content) |c| allocator.dupe(u8, c) catch null else null,
+                    .tool_call_id = if (chat_msg.tool_call_id) |tc| allocator.dupe(u8, tc) catch null else null,
+                    .tool_calls = null,
+                };
+                auto_msgs.append(session_msg) catch continue;
+            }
+
+            const auto_now = std.time.timestamp();
+            const auto_elapsed_ms = std.time.milliTimestamp() - session_start_time;
+            const auto_elapsed_s: u32 = if (auto_elapsed_ms >= 0) @intCast(@divTrunc(auto_elapsed_ms, 1000)) else 0;
+            const auto_session = session_mod.Session{
+                .id = current_session_id,
+                .created_at = auto_now,
+                .updated_at = auto_now,
+                .title = "",
+                .messages = auto_msgs.items,
+                .model = current_model_name,
+                .provider = current_provider_name,
+                .total_tokens = total_input_tokens + total_output_tokens,
+                .total_cost = 0.0,
+                .turn_count = request_count,
+                .duration_seconds = auto_elapsed_s,
+            };
+
+            session_mod.saveSession(allocator, dir, &auto_session) catch {};
+        }
+    }
+
+    // ── Save session on exit ────────────────────────────────────────
+    if (session_dir) |dir| {
+        var session_messages = array_list_compat.ArrayList(session_mod.Message).init(allocator);
+        defer {
+            for (session_messages.items) |*msg| {
+                allocator.free(msg.role);
+                if (msg.content) |c| allocator.free(c);
+                if (msg.tool_call_id) |tc| allocator.free(tc);
+                if (msg.tool_calls) |calls| {
+                    for (calls) |*tc| {
+                        allocator.free(tc.id);
+                        allocator.free(tc.name);
+                        allocator.free(tc.arguments);
+                    }
+                    allocator.free(calls);
+                }
+            }
+            session_messages.deinit();
+        }
+
+        for (messages.items) |chat_msg| {
+            const session_msg = session_mod.Message{
+                .role = allocator.dupe(u8, chat_msg.role) catch continue,
+                .content = if (chat_msg.content) |c| allocator.dupe(u8, c) catch null else null,
+                .tool_call_id = if (chat_msg.tool_call_id) |tc| allocator.dupe(u8, tc) catch null else null,
+                .tool_calls = null,
+            };
+            session_messages.append(session_msg) catch continue;
+        }
+
+        const now = std.time.timestamp();
+        const final_elapsed_ms = std.time.milliTimestamp() - session_start_time;
+        const final_elapsed_s: u32 = if (final_elapsed_ms >= 0) @intCast(@divTrunc(final_elapsed_ms, 1000)) else 0;
+        const session = session_mod.Session{
+            .id = current_session_id,
+            .created_at = now,
+            .updated_at = now,
+            .title = "",
+            .messages = session_messages.items,
+            .model = current_model_name,
+            .provider = current_provider_name,
+            .total_tokens = total_input_tokens + total_output_tokens,
+            .total_cost = 0.0,
+            .turn_count = request_count,
+            .duration_seconds = final_elapsed_s,
+        };
+
+        // Log session end
+        if (structured_logger) |*sl| {
+            sl.log(.info, "session ending requests={d} tokens_in={d} tokens_out={d}", .{ request_count, total_input_tokens, total_output_tokens });
+        }
+
+        session_mod.saveSession(allocator, dir, &session) catch {};
+        out("{s}[session saved: {s}]{s}\n", .{ Style.dimmed.start(), current_session_id, Style.dimmed.reset() });
     }
 }
 

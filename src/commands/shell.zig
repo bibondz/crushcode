@@ -13,6 +13,37 @@ pub const ShellResult = struct {
     stderr: []const u8,
 };
 
+/// Maximum output size before truncation (30KB)
+pub const MAX_OUTPUT_CHARS: usize = 30 * 1024;
+
+/// Count the number of newlines in a string
+fn countLines(text: []const u8) usize {
+    var count: usize = 0;
+    for (text) |c| {
+        if (c == '\n') count += 1;
+    }
+    return count;
+}
+
+/// Truncate output to MAX_OUTPUT_CHARS using smart midpoint style:
+/// show first 40% + last 40%, truncate middle 20%.
+/// Caller must free the returned string.
+/// If output is within limits, returns a duplicate.
+pub fn truncateOutputAlloc(allocator: std.mem.Allocator, output: []const u8) ![]const u8 {
+    if (output.len <= MAX_OUTPUT_CHARS) {
+        return try allocator.dupe(u8, output);
+    }
+    const head_size = MAX_OUTPUT_CHARS * 40 / 100;
+    const tail_size = MAX_OUTPUT_CHARS * 40 / 100;
+    const removed = output[head_size .. output.len - tail_size];
+    const removed_bytes = removed.len;
+    return try std.fmt.allocPrint(allocator, "{s}\n\n... [{d} bytes truncated — use grep/read_file for specific sections] ...\n\n{s}", .{
+        output[0..head_size],
+        removed_bytes,
+        output[output.len - tail_size ..],
+    });
+}
+
 /// Redirection types (using integers to avoid enum parsing issues)
 const RT_OUTPUT: u8 = 0;
 const RT_APPEND: u8 = 1;
