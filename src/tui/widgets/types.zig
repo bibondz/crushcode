@@ -2,7 +2,7 @@ const std = @import("std");
 const core = @import("core_api");
 const session_mod = @import("session");
 
-pub const app_version = "0.7.0";
+pub const app_version = "0.26.0";
 
 pub const WorkerStatus = enum {
     pending,
@@ -58,6 +58,7 @@ pub const PermissionDecision = enum {
 pub const ToolPermission = struct {
     tool_name: []const u8,
     arguments: []const u8,
+    preview_diff: ?[]const u8 = null,
 };
 
 pub const FallbackProvider = struct {
@@ -104,6 +105,47 @@ pub const context_source_files = [_][]const u8{
     "src/ai/registry.zig",
     "src/tui/chat_tui_app.zig",
 };
+
+/// Discover all .zig source files in src/ directory dynamically
+pub fn discoverSourceFiles(allocator: std.mem.Allocator) ![]const []const u8 {
+    var files = std.ArrayList([]const u8).initCapacity(allocator, 32) catch
+        return fallbackSourceFiles(allocator);
+    errdefer {
+        for (files.items) |f| allocator.free(f);
+        files.deinit(allocator);
+    }
+
+    var src_dir = std.fs.cwd().openDir("src", .{ .iterate = true }) catch
+        return fallbackSourceFiles(allocator);
+    defer src_dir.close();
+
+    var walker = src_dir.walk(allocator) catch
+        return fallbackSourceFiles(allocator);
+    defer walker.deinit();
+
+    while (walker.next() catch return fallbackSourceFiles(allocator)) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.basename, ".zig")) continue;
+        if (std.mem.indexOf(u8, entry.path, "test_") != null) continue;
+        if (std.mem.indexOf(u8, entry.basename, "_test.") != null) continue;
+
+        const full_path = std.fmt.allocPrint(allocator, "src/{s}", .{entry.path}) catch continue;
+        files.append(allocator, full_path) catch continue;
+    }
+
+    files.append(allocator, allocator.dupe(u8, "build.zig") catch "") catch {};
+
+    if (files.items.len == 0) return fallbackSourceFiles(allocator);
+    return files.toOwnedSlice(allocator) catch fallbackSourceFiles(allocator);
+}
+
+fn fallbackSourceFiles(allocator: std.mem.Allocator) ![]const []const u8 {
+    const result = try allocator.alloc([]const u8, context_source_files.len);
+    for (context_source_files, 0..) |src, i| {
+        result[i] = try allocator.dupe(u8, src);
+    }
+    return result;
+}
 
 pub const builtin_tool_schemas = [_]core.ToolSchema{
     .{

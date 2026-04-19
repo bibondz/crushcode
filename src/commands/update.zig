@@ -7,7 +7,7 @@ const json_extract = @import("json_extract");
 
 const Allocator = std.mem.Allocator;
 
-const current_version = "0.7.0";
+const current_version = "0.26.0";
 const releases_base = "https://github.com/crushcode/crushcode/releases";
 const api_base = "https://api.github.com/repos/crushcode/crushcode/releases/latest";
 
@@ -20,7 +20,7 @@ pub const UpdateOptions = struct {
 
 pub const Updater = struct {
     /// Check if a newer version is available on GitHub.
-    /// Returns the latest version tag (e.g., "0.7.0") or null if current is latest.
+    /// Returns the latest version tag (e.g., "0.26.0") or null if current is latest.
     pub fn checkForUpdate(allocator: Allocator) !?[]const u8 {
         const headers = [_]std.http.Header{
             .{ .name = "User-Agent", .value = "crushcode-update-checker" },
