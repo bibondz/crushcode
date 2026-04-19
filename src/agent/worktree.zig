@@ -70,7 +70,7 @@ pub const WorktreeManager = struct {
         for (self.active_worktrees.items, 0..) |info, i| {
             if (std.mem.eql(u8, info.task_id, task_id) and info.active) {
                 const result = shell.executeShellCommand(try std.fmt.allocPrint(self.allocator, "git worktree remove {s}", .{info.path}), null) catch null;
-                if (result == null or result.exit_code != 0) {
+                if (result == null or result.?.exit_code != 0) {
                     std.fs.cwd().deleteTree(info.path) catch {};
                 }
 

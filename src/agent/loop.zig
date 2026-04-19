@@ -180,12 +180,70 @@ pub const RetryConfig = struct {
     }
 };
 
+/// Agent mode — controls which tools are available during execution
+pub const AgentMode = enum {
+    /// Read-only: can read, search, glob but NOT write, edit, or run shell
+    plan,
+    /// Safe build: can read + write + edit, but shell requires approval
+    build,
+    /// Full access: everything allowed (current default)
+    execute,
+
+    pub fn toString(self: AgentMode) []const u8 {
+        return switch (self) {
+            .plan => "plan",
+            .build => "build",
+            .execute => "execute",
+        };
+    }
+
+    pub fn fromString(str: []const u8) ?AgentMode {
+        if (std.mem.eql(u8, str, "plan")) return .plan;
+        if (std.mem.eql(u8, str, "build")) return .build;
+        if (std.mem.eql(u8, str, "execute")) return .execute;
+        return null;
+    }
+
+    /// Returns true if the given tool name is allowed in this mode
+    pub fn isToolAllowed(self: AgentMode, tool_name: []const u8) bool {
+        return switch (self) {
+            .plan => std.mem.eql(u8, tool_name, "read_file") or
+                std.mem.eql(u8, tool_name, "glob") or
+                std.mem.eql(u8, tool_name, "grep"),
+            .build => std.mem.eql(u8, tool_name, "read_file") or
+                std.mem.eql(u8, tool_name, "glob") or
+                std.mem.eql(u8, tool_name, "grep") or
+                std.mem.eql(u8, tool_name, "write_file") or
+                std.mem.eql(u8, tool_name, "edit"),
+            .execute => true,
+        };
+    }
+
+    /// Returns a list of allowed tools for the current mode (for error messages)
+    pub fn allowedToolsList(self: AgentMode) []const u8 {
+        return switch (self) {
+            .plan => "read_file, glob, grep",
+            .build => "read_file, glob, grep, write_file, edit",
+            .execute => "all tools",
+        };
+    }
+
+    pub fn description(self: AgentMode) []const u8 {
+        return switch (self) {
+            .plan => "Plan mode — read-only, changes previewed only",
+            .build => "Build mode — read/write/edit, shell requires approval",
+            .execute => "Execute mode — full access",
+        };
+    }
+};
+
 /// Agent loop configuration
 pub const LoopConfig = struct {
     max_iterations: u32,
     retry_config: RetryConfig,
     show_intermediate: bool,
     tool_timeout_ms: u64,
+    agent_mode: AgentMode,
 
     pub fn init() LoopConfig {
         return LoopConfig{
@@ -193,6 +251,7 @@ pub const LoopConfig = struct {
             .retry_config = RetryConfig.init(),
             .show_intermediate = true,
             .tool_timeout_ms = 30000,
+            .agent_mode = .execute,
         };
     }
 };
@@ -246,6 +305,16 @@ pub const AgentLoop = struct {
 
     /// Execute a tool call with retry
     pub fn executeTool(self: *AgentLoop, call: *ToolCall) !?ToolResult {
+        // Check if tool is allowed in current agent mode
+        if (!self.config.agent_mode.isToolAllowed(call.name)) {
+            const err_msg = std.fmt.allocPrint(
+                self.allocator,
+                "Tool '{s}' is not available in {s} mode. Available tools: {s}. Use /mode to switch modes.",
+                .{ call.name, self.config.agent_mode.toString(), self.config.agent_mode.allowedToolsList() },
+            ) catch "Tool restricted by agent mode";
+            return ToolResult.init(self.allocator, call.id, err_msg, false) catch null;
+        }
+
         const executor = self.registered_tools.get(call.name) orelse {
             std.log.warn("Tool '{s}' not registered", .{call.name});
             return null;
