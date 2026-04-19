@@ -1301,6 +1301,16 @@ pub const Model = struct {
                 \\- glob(pattern)
                 \\- grep(pattern)
                 \\- edit(file_path, old_string, new_string)
+                \\- list_directory(path)
+                \\- create_file(path, content)
+                \\- move_file(source, destination)
+                \\- copy_file(source, destination)
+                \\- delete_file(path)
+                \\- file_info(path)
+                \\- git_status()
+                \\- git_diff(target?, file_path?, staged?)
+                \\- git_log(count?, oneline?, file_path?)
+                \\- search_files(pattern, directory?, max_results?)
             , .{}) catch {};
             if (self.hybrid_bridge) |hb| {
                 const all_schemas = hb.getAllToolSchemas() catch null;
@@ -1313,7 +1323,7 @@ pub const Model = struct {
                         }
                         self.allocator.free(schemas);
                     }
-                    // Count MCP tools (schemas beyond the 6 builtins)
+                    // Count MCP tools (schemas beyond the 12 builtins)
                     const builtin_count = builtin_tool_schemas.len;
                     const mcp_count = if (schemas.len > builtin_count) schemas.len - builtin_count else 0;
                     if (mcp_count > 0) {

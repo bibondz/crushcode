@@ -297,6 +297,47 @@ fn editExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []
     return adaptToolExecution(allocator, call_id, "edit", arguments, executeEditTool);
 }
 
+fn listDirectoryExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "list_directory", arguments, executeListDirectoryTool);
+}
+
+fn createFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "create_file", arguments, executeCreateFileTool);
+}
+
+fn moveFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "move_file", arguments, executeMoveFileTool);
+}
+
+fn copyFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "copy_file", arguments, executeCopyFileTool);
+}
+
+fn deleteFileExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "delete_file", arguments, executeDeleteFileTool);
+}
+
+fn fileInfoExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "file_info", arguments, executeFileInfoTool);
+}
+
+// Git and search tool executors
+fn gitStatusExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "git_status", arguments, executeGitStatusTool);
+}
+
+fn gitDiffExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "git_diff", arguments, executeGitDiffTool);
+}
+
+fn gitLogExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "git_log", arguments, executeGitLogTool);
+}
+
+fn searchFilesExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "search_files", arguments, executeSearchFilesTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -304,6 +345,16 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "glob", .executor = globExecutor },
     .{ .name = "grep", .executor = grepExecutor },
     .{ .name = "edit", .executor = editExecutor },
+    .{ .name = "list_directory", .executor = listDirectoryExecutor },
+    .{ .name = "create_file", .executor = createFileExecutor },
+    .{ .name = "move_file", .executor = moveFileExecutor },
+    .{ .name = "copy_file", .executor = copyFileExecutor },
+    .{ .name = "delete_file", .executor = deleteFileExecutor },
+    .{ .name = "file_info", .executor = fileInfoExecutor },
+    .{ .name = "git_status", .executor = gitStatusExecutor },
+    .{ .name = "git_diff", .executor = gitDiffExecutor },
+    .{ .name = "git_log", .executor = gitLogExecutor },
+    .{ .name = "search_files", .executor = searchFilesExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -789,6 +840,615 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     };
 }
 
+fn executeGitStatusTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    _ = tool_call;
+
+    const argv: [3][]const u8 = .{ "sh", "-c", "git status --porcelain 2>&1" };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    _ = try child.spawn();
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+    const term = try child.wait();
+    const exit_code: u8 = switch (term) {
+        .Exited => |code| @intCast(code),
+        .Signal => |code| @intCast(code),
+        else => 1,
+    };
+
+    if (exit_code != 0) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 git_status → not a git repository\n", .{}),
+            .result = try std.fmt.allocPrint(allocator, "Not a git repository (exit code {d})", .{exit_code}),
+        };
+    }
+
+    const trimmed = std.mem.trim(u8, stdout.items, " \t\r\n");
+    if (trimmed.len == 0) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 git_status → clean\n", .{}),
+            .result = try allocator.dupe(u8, "Working tree clean"),
+        };
+    }
+
+    const truncated = try truncateToolOutput(allocator, trimmed);
+    const truncated_owned = if (truncated.ptr == trimmed.ptr) try allocator.dupe(u8, truncated) else truncated;
+    defer {
+        if (truncated.ptr != trimmed.ptr) allocator.free(truncated);
+    }
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 git_status → {d} bytes\n", .{trimmed.len}),
+        .result = truncated_owned,
+    };
+}
+
+fn executeGitDiffTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const GitDiffArgs = struct {
+        target: ?[]const u8 = null,
+        file_path: ?[]const u8 = null,
+        staged: bool = false,
+    };
+
+    var parsed = try std.json.parseFromSlice(GitDiffArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    var cmd_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer cmd_buf.deinit();
+    const writer = cmd_buf.writer();
+
+    try writer.writeAll("git diff");
+
+    if (parsed.value.staged) {
+        try writer.writeAll(" --cached");
+    }
+
+    if (parsed.value.target) |target| {
+        try writer.print(" {s}", .{target});
+    }
+
+    if (parsed.value.file_path) |fp| {
+        try writer.print(" -- {s}", .{fp});
+    }
+
+    // Redirect stderr to stdout so we can capture error messages
+    try writer.writeAll(" 2>&1");
+
+    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    _ = try child.spawn();
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+    _ = try child.wait();
+
+    const trimmed = std.mem.trim(u8, stdout.items, " \t\r\n");
+    if (trimmed.len == 0) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 git_diff → no changes\n", .{}),
+            .result = try allocator.dupe(u8, "No changes"),
+        };
+    }
+
+    // Truncate to 500 lines
+    const truncated = try truncateToolOutput(allocator, trimmed);
+    const truncated_owned = if (truncated.ptr == trimmed.ptr) try allocator.dupe(u8, truncated) else truncated;
+    defer {
+        if (truncated.ptr != trimmed.ptr) allocator.free(truncated);
+    }
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 git_diff → {d} bytes\n", .{trimmed.len}),
+        .result = truncated_owned,
+    };
+}
+
+fn executeGitLogTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const GitLogArgs = struct {
+        count: ?u32 = 10,
+        oneline: bool = true,
+        file_path: ?[]const u8 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(GitLogArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const count = parsed.value.count orelse 10;
+
+    var cmd_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer cmd_buf.deinit();
+    const writer = cmd_buf.writer();
+
+    try writer.writeAll("git log");
+    if (parsed.value.oneline) {
+        try writer.writeAll(" --oneline");
+    }
+    try writer.print(" -n {d}", .{count});
+
+    if (parsed.value.file_path) |fp| {
+        try writer.print(" -- {s}", .{fp});
+    }
+
+    try writer.writeAll(" 2>&1");
+
+    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    _ = try child.spawn();
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+    _ = try child.wait();
+
+    const truncated = try truncateToolOutput(allocator, stdout.items);
+    const truncated_owned = if (truncated.ptr == stdout.items.ptr) try allocator.dupe(u8, truncated) else truncated;
+    defer {
+        if (truncated.ptr != stdout.items.ptr) allocator.free(truncated);
+    }
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 git_log(-n{d}) → {d} bytes\n", .{ count, stdout.items.len }),
+        .result = truncated_owned,
+    };
+}
+
+fn executeSearchFilesTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const SearchFilesArgs = struct {
+        pattern: []const u8,
+        directory: ?[]const u8 = null,
+        max_results: ?u32 = 50,
+    };
+
+    var parsed = try std.json.parseFromSlice(SearchFilesArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.pattern.len == 0) {
+        return buildValidationError(allocator, "search_files", "search_files requires a 'pattern' parameter (e.g., '*.zig').");
+    }
+
+    const directory = parsed.value.directory orelse ".";
+    const max_results = parsed.value.max_results orelse 50;
+
+    const find_cmd = try std.fmt.allocPrint(allocator, "find '{s}' -name '{s}' -type f 2>/dev/null | head -{d}", .{ directory, parsed.value.pattern, max_results });
+    defer allocator.free(find_cmd);
+
+    const argv: [3][]const u8 = .{ "sh", "-c", find_cmd };
+    var child = std.process.Child.init(&argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    _ = try child.spawn();
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
+    _ = try child.wait();
+
+    var count: u32 = 0;
+    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
+    while (lines.next()) |line| {
+        if (line.len > 0) count += 1;
+    }
+
+    const truncated_output = try truncateToolOutput(allocator, stdout.items);
+    defer {
+        if (truncated_output.ptr != stdout.items.ptr) allocator.free(truncated_output);
+    }
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 search_files(\"{s}\") → {d} files\n", .{ parsed.value.pattern, count }),
+        .result = try std.fmt.allocPrint(allocator, "Found {d} files matching '{s}':\n{s}", .{ count, parsed.value.pattern, truncated_output }),
+    };
+}
+
+fn formatFileSize(bytes: u64) struct { value: f64, unit: []const u8 } {
+    if (bytes < 1024) return .{ .value = @as(f64, @floatFromInt(bytes)), .unit = "B" };
+    const kb: f64 = @as(f64, @floatFromInt(bytes)) / 1024.0;
+    if (kb < 1024.0) return .{ .value = kb, .unit = "KB" };
+    const mb: f64 = kb / 1024.0;
+    if (mb < 1024.0) return .{ .value = mb, .unit = "MB" };
+    const gb: f64 = mb / 1024.0;
+    return .{ .value = gb, .unit = "GB" };
+}
+
+fn executeListDirectoryTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const ListDirArgs = struct {
+        path: ?[]const u8 = null,
+        show_hidden: bool = false,
+    };
+
+    var parsed = try std.json.parseFromSlice(ListDirArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    const dir_path = parsed.value.path orelse ".";
+    const show_hidden = parsed.value.show_hidden;
+
+    var dir = try std.fs.cwd().openDir(dir_path, .{ .iterate = true });
+    defer dir.close();
+
+    var entries = array_list_compat.ArrayList([]const u8).init(allocator);
+    defer {
+        for (entries.items) |entry| allocator.free(entry);
+        entries.deinit();
+    }
+
+    var iter = dir.iterate();
+    while (try iter.next()) |entry| {
+        if (!show_hidden and entry.name.len > 0 and entry.name[0] == '.') continue;
+
+        const type_str: []const u8 = switch (entry.kind) {
+            .file => "file",
+            .directory => "directory",
+            .sym_link => "symlink",
+            else => "other",
+        };
+
+        var size_str: []const u8 = "";
+        if (entry.kind == .file) {
+            if (dir.statFile(entry.name)) |stat| {
+                const fmt = formatFileSize(stat.size);
+                const tmp = try std.fmt.allocPrint(allocator, ", {d:.1}{s}", .{ fmt.value, fmt.unit });
+                size_str = tmp;
+            } else |_| {}
+        }
+        defer if (size_str.len > 0) allocator.free(size_str);
+
+        const suffix: []const u8 = if (entry.kind == .directory) "/" else "";
+        const line = try std.fmt.allocPrint(allocator, "{s}{s} ({s}{s})", .{ entry.name, suffix, type_str, size_str });
+        try entries.append(line);
+    }
+
+    // Sort entries alphabetically
+    std.sort.insertion([]const u8, entries.items, {}, struct {
+        fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+            return std.mem.lessThan(u8, a, b);
+        }
+    }.lessThan);
+
+    var result_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer result_buf.deinit();
+    const writer = result_buf.writer();
+
+    try writer.print("Directory listing: {s} ({d} entries)\n", .{ dir_path, entries.items.len });
+    for (entries.items) |entry_line| {
+        try writer.print("  {s}\n", .{entry_line});
+    }
+
+    const result_str = try result_buf.toOwnedSlice();
+    const truncated = try truncateToolOutput(allocator, result_str);
+    defer {
+        if (truncated.ptr != result_str.ptr) allocator.free(truncated);
+        allocator.free(result_str);
+    }
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 list_directory(\"{s}\") → {d} entries\n", .{ dir_path, entries.items.len }),
+        .result = if (truncated.ptr == result_str.ptr) try allocator.dupe(u8, truncated) else truncated,
+    };
+}
+
+fn executeCreateFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const CreateFileArgs = struct {
+        path: []const u8,
+        content: []const u8 = "",
+    };
+
+    var parsed = try std.json.parseFromSlice(CreateFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.path.len == 0) {
+        return buildValidationError(allocator, "create_file", "create_file requires a 'path' parameter.");
+    }
+
+    // Check if file already exists
+    if (std.fs.cwd().openFile(parsed.value.path, .{})) |_| {
+        return buildValidationError(allocator, "create_file", "File already exists. Use write_file to overwrite.");
+    } else |_| {}
+
+    // Create parent directories if needed
+    if (std.fs.path.dirname(parsed.value.path)) |dir_part| {
+        if (dir_part.len > 0) {
+            std.fs.cwd().makePath(dir_part) catch {};
+        }
+    }
+
+    const file = try std.fs.cwd().createFile(parsed.value.path, .{});
+    defer file.close();
+    if (parsed.value.content.len > 0) {
+        try file.writeAll(parsed.value.content);
+    }
+
+    // Invalidate cache after create
+    if (active_file_tracker) |tracker| {
+        tracker.invalidate(parsed.value.path);
+    }
+
+    const content_len = parsed.value.content.len;
+    const result_msg = if (content_len > 0)
+        try std.fmt.allocPrint(allocator, "Created file: {s} ({d} bytes)", .{ parsed.value.path, content_len })
+    else
+        try std.fmt.allocPrint(allocator, "Created file: {s}", .{parsed.value.path});
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 create_file(\"{s}\")\n", .{parsed.value.path}),
+        .result = result_msg,
+    };
+}
+
+fn executeMoveFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const MoveFileArgs = struct {
+        source: []const u8,
+        destination: []const u8,
+    };
+
+    var parsed = try std.json.parseFromSlice(MoveFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.source.len == 0) {
+        return buildValidationError(allocator, "move_file", "move_file requires a 'source' parameter.");
+    }
+    if (parsed.value.destination.len == 0) {
+        return buildValidationError(allocator, "move_file", "move_file requires a 'destination' parameter.");
+    }
+
+    // Create parent directories for destination if needed
+    if (std.fs.path.dirname(parsed.value.destination)) |dir_part| {
+        if (dir_part.len > 0) {
+            std.fs.cwd().makePath(dir_part) catch {};
+        }
+    }
+
+    // Try atomic rename first (same filesystem)
+    std.fs.cwd().rename(parsed.value.source, parsed.value.destination) catch {
+        // Fallback: copy + delete for cross-device moves
+        const src_file = try std.fs.cwd().openFile(parsed.value.source, .{});
+        defer src_file.close();
+        const src_stat = try src_file.stat();
+
+        const content = try src_file.readToEndAlloc(allocator, src_stat.size);
+        defer allocator.free(content);
+
+        const dst_file = try std.fs.cwd().createFile(parsed.value.destination, .{});
+        defer dst_file.close();
+        try dst_file.writeAll(content);
+
+        try std.fs.cwd().deleteFile(parsed.value.source);
+    };
+
+    // Invalidate cache
+    if (active_file_tracker) |tracker| {
+        tracker.invalidate(parsed.value.source);
+        tracker.invalidate(parsed.value.destination);
+    }
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 move_file(\"{s}\" → \"{s}\")\n", .{ parsed.value.source, parsed.value.destination }),
+        .result = try std.fmt.allocPrint(allocator, "Moved {s} → {s}", .{ parsed.value.source, parsed.value.destination }),
+    };
+}
+
+fn executeCopyFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const CopyFileArgs = struct {
+        source: []const u8,
+        destination: []const u8,
+    };
+
+    var parsed = try std.json.parseFromSlice(CopyFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.source.len == 0) {
+        return buildValidationError(allocator, "copy_file", "copy_file requires a 'source' parameter.");
+    }
+    if (parsed.value.destination.len == 0) {
+        return buildValidationError(allocator, "copy_file", "copy_file requires a 'destination' parameter.");
+    }
+
+    const src_file = try std.fs.cwd().openFile(parsed.value.source, .{});
+    defer src_file.close();
+    const src_stat = try src_file.stat();
+
+    if (src_stat.kind != .file) {
+        return buildValidationError(allocator, "copy_file", "Source is not a regular file. Only files can be copied.");
+    }
+
+    const content = try src_file.readToEndAlloc(allocator, src_stat.size);
+    defer allocator.free(content);
+
+    // Create parent directories for destination if needed
+    if (std.fs.path.dirname(parsed.value.destination)) |dir_part| {
+        if (dir_part.len > 0) {
+            std.fs.cwd().makePath(dir_part) catch {};
+        }
+    }
+
+    const dst_file = try std.fs.cwd().createFile(parsed.value.destination, .{});
+    defer dst_file.close();
+    try dst_file.writeAll(content);
+
+    // Invalidate cache
+    if (active_file_tracker) |tracker| {
+        tracker.invalidate(parsed.value.destination);
+    }
+
+    const fmt = formatFileSize(src_stat.size);
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 copy_file(\"{s}\" → \"{s}\") → {d:.1}{s}\n", .{ parsed.value.source, parsed.value.destination, fmt.value, fmt.unit }),
+        .result = try std.fmt.allocPrint(allocator, "Copied {s} → {s} ({d} bytes)", .{ parsed.value.source, parsed.value.destination, src_stat.size }),
+    };
+}
+
+fn executeDeleteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const DeleteFileArgs = struct {
+        path: []const u8,
+    };
+
+    var parsed = try std.json.parseFromSlice(DeleteFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.path.len == 0) {
+        return buildValidationError(allocator, "delete_file", "delete_file requires a 'path' parameter.");
+    }
+
+    // Safety: block paths containing wildcard or parent traversal
+    if (std.mem.indexOf(u8, parsed.value.path, "*") != null) {
+        return buildValidationError(allocator, "delete_file", "Wildcard paths are not allowed for deletion. Specify an exact file path.");
+    }
+    if (std.mem.indexOf(u8, parsed.value.path, "..") != null) {
+        return buildValidationError(allocator, "delete_file", "Parent directory traversal (..) is not allowed in delete paths.");
+    }
+    if (parsed.value.path.len > 0 and parsed.value.path[0] == '/') {
+        return buildValidationError(allocator, "delete_file", "Absolute paths are not allowed for deletion. Use a relative path.");
+    }
+
+    // Check it's a file (not a directory) and get size
+    const stat = std.fs.cwd().statFile(parsed.value.path) catch |err| {
+        return buildValidationError(allocator, "delete_file", switch (err) {
+            error.FileNotFound => "File not found.",
+            error.IsDir => "Path is a directory. Directory deletion is not supported for safety. Use shell with caution.",
+            else => "Cannot access file.",
+        });
+    };
+
+    if (stat.kind == .directory) {
+        return buildValidationError(allocator, "delete_file", "Directory deletion is not supported for safety. Use shell with caution.");
+    }
+
+    // Safety: block files larger than 1MB
+    if (stat.size > 1024 * 1024) {
+        const msg = try std.fmt.allocPrint(allocator, "File is too large to delete safely ({d} bytes > 1MB). Use shell for large file cleanup.", .{stat.size});
+        defer allocator.free(msg);
+        return buildValidationError(allocator, "delete_file", msg);
+    }
+
+    try std.fs.cwd().deleteFile(parsed.value.path);
+
+    // Invalidate cache
+    if (active_file_tracker) |tracker| {
+        tracker.invalidate(parsed.value.path);
+    }
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 delete_file(\"{s}\")\n", .{parsed.value.path}),
+        .result = try std.fmt.allocPrint(allocator, "Deleted: {s}", .{parsed.value.path}),
+    };
+}
+
+fn executeFileInfoTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const FileInfoArgs = struct {
+        path: []const u8,
+    };
+
+    var parsed = try std.json.parseFromSlice(FileInfoArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (parsed.value.path.len == 0) {
+        return buildValidationError(allocator, "file_info", "file_info requires a 'path' parameter.");
+    }
+
+    const stat = try std.fs.cwd().statFile(parsed.value.path);
+
+    const type_str: []const u8 = switch (stat.kind) {
+        .file => "file",
+        .directory => "directory",
+        .sym_link => "symlink",
+        else => "unknown",
+    };
+
+    const fmt = formatFileSize(stat.size);
+
+    // Convert modified timestamp to epoch seconds
+    const mtime_sec = @divTrunc(stat.mtime, std.time.ns_per_s);
+    const mtime_epoch: u64 = if (mtime_sec >= 0) @intCast(mtime_sec) else 0;
+
+    // Format time as YYYY-MM-DD HH:MM:SS using a simple calculation
+    const days_since_epoch: u64 = mtime_epoch / 86400;
+    const time_of_day: u64 = mtime_epoch % 86400;
+    const hours: u64 = time_of_day / 3600;
+    const minutes: u64 = (time_of_day % 3600) / 60;
+    const seconds: u64 = time_of_day % 60;
+
+    // Calculate year/month/day from days since epoch
+    var year: u64 = 1970;
+    var remaining_days = days_since_epoch;
+    while (true) {
+        const days_in_year: u64 = if (isLeapYear(year)) 366 else 365;
+        if (remaining_days < days_in_year) break;
+        remaining_days -= days_in_year;
+        year += 1;
+    }
+    const month_days = [_]u64{ 31, if (isLeapYear(year)) 29 else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };
+    var month: u64 = 0;
+    for (month_days) |days_in_month| {
+        if (remaining_days < days_in_month) break;
+        remaining_days -= days_in_month;
+        month += 1;
+    }
+    const day: u64 = remaining_days + 1;
+    month += 1; // 1-indexed
+
+    // Permissions — extracted from mode bits
+    const mode_bits: u32 = @intCast(stat.mode);
+    var perm_buf: [10]u8 = undefined;
+    perm_buf[0] = if (stat.kind == .directory) 'd' else '-';
+    perm_buf[1] = if ((mode_bits & 0o400) != 0) 'r' else '-';
+    perm_buf[2] = if ((mode_bits & 0o200) != 0) 'w' else '-';
+    perm_buf[3] = if ((mode_bits & 0o100) != 0) 'x' else '-';
+    perm_buf[4] = if ((mode_bits & 0o040) != 0) 'r' else '-';
+    perm_buf[5] = if ((mode_bits & 0o020) != 0) 'w' else '-';
+    perm_buf[6] = if ((mode_bits & 0o010) != 0) 'x' else '-';
+    perm_buf[7] = if ((mode_bits & 0o004) != 0) 'r' else '-';
+    perm_buf[8] = if ((mode_bits & 0o002) != 0) 'w' else '-';
+    perm_buf[9] = if ((mode_bits & 0o001) != 0) 'x' else '-';
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 file_info(\"{s}\")\n", .{parsed.value.path}),
+        .result = try std.fmt.allocPrint(allocator, "File: {s}\nSize: {d} bytes ({d:.1}{s})\nType: {s}\nModified: {d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}\nPermissions: {s}", .{
+            parsed.value.path,
+            stat.size,
+            fmt.value,
+            fmt.unit,
+            type_str,
+            year,
+            month,
+            day,
+            hours,
+            minutes,
+            seconds,
+            perm_buf[0..],
+        }),
+    };
+}
+
+fn isLeapYear(year: u64) bool {
+    return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
+}
+
 fn countLines(text: []const u8) u32 {
     var count: u32 = 0;
     var lines = std.mem.splitSequence(u8, text, "\n");
@@ -821,6 +1481,36 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "edit")) {
         return executeEditTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "list_directory")) {
+        return executeListDirectoryTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "create_file")) {
+        return executeCreateFileTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "move_file")) {
+        return executeMoveFileTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "copy_file")) {
+        return executeCopyFileTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "delete_file")) {
+        return executeDeleteFileTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "file_info")) {
+        return executeFileInfoTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "git_status")) {
+        return executeGitStatusTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "git_diff")) {
+        return executeGitDiffTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "git_log")) {
+        return executeGitLogTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "search_files")) {
+        return executeSearchFilesTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }
