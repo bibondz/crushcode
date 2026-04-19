@@ -50,6 +50,7 @@ const user_model_mod = @import("user_model");
 const auto_gen_mod = @import("auto_gen");
 const plan_mod = @import("plan_handler");
 const feedback_mod = @import("feedback");
+const delegate_mod = @import("delegate");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -282,8 +283,10 @@ pub const Model = struct {
     user_model: ?user_model_mod.UserModel = null,
     auto_gen: ?auto_gen_mod.AutoSkillGenerator = null,
     feedback: ?feedback_mod.FeedbackStore = null,
-    plan_mode: plan_mod.PlanMode,
-    context_total_files: u32 = 0,
+        plan_mode: plan_mod.PlanMode,
+        delegator: delegate_mod.SubAgentDelegator,
+        delegate_mode: bool = false,
+        context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
@@ -397,6 +400,7 @@ pub const Model = struct {
             .parallel_executor = parallel_mod.ParallelExecutor.init(allocator, 3),
             .plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, ""),
             .plan_mode = plan_mod.PlanMode.init(allocator),
+            .delegator = delegate_mod.SubAgentDelegator.init(allocator, delegate_mod.DelegationConfig.init(allocator)),
         };
         errdefer model.destroy();
 
@@ -610,6 +614,8 @@ pub const Model = struct {
         self.parallel_executor.deinit();
         // Clean up plan mode
         self.plan_mode.deinit();
+        // Clean up sub-agent delegator
+        self.delegator.deinit();
         // Clean up memory
         self.memory.deinit();
         // Execute session_end lifecycle hook
@@ -2753,6 +2759,29 @@ pub const Model = struct {
             } else {
                 try self.addMessageUnlocked("assistant", "Feedback store not initialized.");
             }
+        } else if (std.mem.eql(u8, name, "/delegate") or std.mem.startsWith(u8, name, "/delegate ")) {
+            const del_sub = std.mem.trim(u8, name["/delegate".len..], " ");
+            if (del_sub.len == 0 or std.mem.eql(u8, del_sub, "status")) {
+                const stats = self.delegator.getStats(self.allocator) catch "Error getting delegation stats";
+                defer self.allocator.free(stats);
+                const mode_str: []const u8 = if (self.delegate_mode) "ON" else "OFF";
+                const text = try std.fmt.allocPrint(self.allocator, "{s}\n  Delegate mode: {s}", .{ stats, mode_str });
+                defer self.allocator.free(text);
+                try self.addMessageUnlocked("assistant", text);
+            } else if (std.mem.eql(u8, del_sub, "on")) {
+                self.delegate_mode = true;
+                try self.addMessageUnlocked("assistant", "Delegate mode enabled. Multiple tool calls will be batched through sub-agents.");
+            } else if (std.mem.eql(u8, del_sub, "off")) {
+                self.delegate_mode = false;
+                try self.addMessageUnlocked("assistant", "Delegate mode disabled. Tool calls execute sequentially.");
+            } else {
+                try self.addMessageUnlocked("assistant",
+                    \\Delegate Commands:
+                    \\  /delegate          — show delegation stats and mode
+                    \\  /delegate on       — enable delegation mode (batch tool calls)
+                    \\  /delegate off      — disable delegation mode
+                );
+            }
         } else if (std.mem.eql(u8, name, "/autopilot") or std.mem.startsWith(u8, name, "/autopilot ")) {
             const auto_sub = std.mem.trim(u8, name["/autopilot".len..], " ");
             if (auto_sub.len == 0) {
@@ -3494,6 +3523,34 @@ pub const Model = struct {
                 self.lock.unlock();
             }
             return;
+        }
+
+        // Delegation mode: batch multiple tool calls through sub-agent
+        if (self.delegate_mode and tool_calls.len > 1) {
+            var task_buf = array_list_compat.ArrayList(u8).init(self.allocator);
+            defer task_buf.deinit();
+            const writer = task_buf.writer();
+            writer.print("Execute {d} tool calls: ", .{tool_calls.len}) catch {};
+            for (tool_calls, 0..) |tc, i| {
+                if (i > 0) writer.print(", ", .{}) catch {};
+                writer.print("{s}", .{tc.name}) catch {};
+            }
+            const task_desc = task_buf.items;
+
+            if (self.delegator.canDelegate(0)) {
+                var result = self.delegator.delegate(0, task_desc, .general) catch |err| {
+                    const err_msg = std.fmt.allocPrint(self.allocator, "error: delegation failed: {s}", .{@errorName(err)}) catch "error: delegation failed";
+                    self.lock.lock();
+                    try self.addMessageUnlocked("tool", err_msg);
+                    self.lock.unlock();
+                    return;
+                };
+                defer result.deinit(self.allocator);
+                self.lock.lock();
+                try self.addMessageUnlocked("assistant", result.output);
+                self.lock.unlock();
+                return;
+            }
         }
 
         for (tool_calls) |tool_call| {
