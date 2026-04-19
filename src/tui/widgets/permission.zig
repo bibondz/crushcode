@@ -11,6 +11,39 @@ const ToolPermission = widget_types.ToolPermission;
 
 const drawBorder = widget_helpers.drawBorder;
 
+const DiffStats = struct {
+    added: usize,
+    removed: usize,
+    files: usize,
+};
+
+const DiffType = enum {
+    edit,
+    new_file,
+    delete,
+};
+
+fn countDiffStats(diff_text: []const u8) DiffStats {
+    var stats = DiffStats{ .added = 0, .removed = 0, .files = 0 };
+    var lines = std.mem.splitSequence(u8, diff_text, "\n");
+    while (lines.next()) |line| {
+        if (std.mem.startsWith(u8, line, "+++")) {
+            stats.files += 1;
+        } else if (line.len > 0 and line[0] == '+' and !std.mem.startsWith(u8, line, "++")) {
+            stats.added += 1;
+        } else if (line.len > 0 and line[0] == '-' and !std.mem.startsWith(u8, line, "--")) {
+            stats.removed += 1;
+        }
+    }
+    return stats;
+}
+
+fn classifyDiff(stats: DiffStats) DiffType {
+    if (stats.removed == 0 and stats.added > 0) return .new_file;
+    if (stats.added == 0 and stats.removed > 0) return .delete;
+    return .edit;
+}
+
 pub const PermissionContext = struct {
     pending: ?ToolPermission,
     theme: *const theme_mod.Theme,
@@ -117,6 +150,52 @@ pub const PermissionDialogWidget = struct {
         // Diff preview section (Phase 23)
         var current_row: u16 = @intCast(tier_row + 2 + tier_surface.size.height + args_surface.size.height);
         if (pending.preview_diff) |diff_text| {
+            const stats = countDiffStats(diff_text);
+            const diff_kind = classifyDiff(stats);
+
+            // Diff stats summary line with color-coded segments
+            const diff_type_label: []const u8 = switch (diff_kind) {
+                .edit => "[EDIT]",
+                .new_file => "[NEW FILE]",
+                .delete => "[DELETE]",
+            };
+            const diff_type_fg: vaxis.Color = switch (diff_kind) {
+                .edit => self.context.theme.header_fg,
+                .new_file => self.context.theme.tool_success,
+                .delete => self.context.theme.error_fg,
+            };
+
+            // Build stats line: "[EDIT] 2 additions (+), 1 deletion (-) across 1 file(s)"
+            const stats_label = try std.fmt.allocPrint(ctx.arena, "{d} addition{s} (+), {d} deletion{s} (-) across {d} file{s}", .{
+                stats.added,
+                if (stats.added == 1) @as([]const u8, "") else "s",
+                stats.removed,
+                if (stats.removed == 1) @as([]const u8, "") else "s",
+                stats.files,
+                if (stats.files == 1) @as([]const u8, "") else "s",
+            });
+
+            const type_segment = vxfw.RichText{
+                .text = &.{
+                    .{ .text = diff_type_label, .style = .{ .fg = diff_type_fg, .bold = true } },
+                    .{ .text = "  ", .style = .{} },
+                    .{ .text = stats_label, .style = .{ .fg = self.context.theme.dimmed } },
+                },
+                .softwrap = false,
+                .width_basis = .parent,
+            };
+            if (type_segment.draw(ctx.withConstraints(
+                .{ .width = inner_width, .height = 1 },
+                .{ .width = inner_width, .height = 1 },
+            ))) |stats_surf| {
+                try child_list.append(ctx.arena, .{
+                    .origin = .{ .row = @intCast(current_row), .col = 2 },
+                    .surface = stats_surf,
+                });
+                current_row += @intCast(stats_surf.size.height + 1);
+            } else |_| {}
+
+            // Diff content
             const diff_theme = diff_mod.diffThemeFromAppTheme(self.context.theme);
             const diff_segments = diff_mod.parseDiff(ctx.arena, diff_text, 20, diff_theme) catch &.{};
             if (diff_segments.len > 0) {

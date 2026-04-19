@@ -60,6 +60,7 @@ pub const ToolPermission = struct {
     arguments: []const u8,
     preview_diff: ?[]const u8 = null,
     tool_tier: []const u8 = "unknown",
+    diff_refresh_count: u32 = 0,
 };
 
 pub const FallbackProvider = struct {
