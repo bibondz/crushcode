@@ -61,8 +61,7 @@ pub const HybridBridge = struct {
                         defer p.deinit();
                         request.params = p.value;
                     }
-                    var mut_plugin = plugin;
-                    const response = mut_plugin.sendRequest(request) catch return error.UnsupportedTool;
+                    const response = plugin.sendRequest(request) catch return error.UnsupportedTool;
                     if (response.@"error") |_| {
                         return error.UnsupportedTool;
                     }

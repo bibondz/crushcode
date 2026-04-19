@@ -210,6 +210,13 @@ pub const ExternalPluginManager = struct {
 
         const exec_path = try std.fs.path.join(self.allocator, &.{ self.plugin_dir, parsed.value.executable });
         defer self.allocator.free(exec_path);
+
+        // Validate executable exists before spawning
+        std.fs.cwd().access(exec_path, .{}) catch {
+            std.log.warn("Plugin executable not found: {s}", .{exec_path});
+            return error.ExecutableNotFound;
+        };
+
         try plugin.start(exec_path);
 
         try self.plugins.put(plugin.name, plugin);
@@ -217,8 +224,8 @@ pub const ExternalPluginManager = struct {
         std.log.info("Loaded plugin: {s} v{s}", .{ plugin.name, plugin.version });
     }
 
-    pub fn getPlugin(self: Self, name: []const u8) ?RuntimePlugin {
-        return self.plugins.get(name);
+    pub fn getPlugin(self: *Self, name: []const u8) ?*RuntimePlugin {
+        return self.plugins.getPtr(name);
     }
 
     pub fn getAllPlugins(self: Self) []const []const u8 {

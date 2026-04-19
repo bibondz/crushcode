@@ -169,12 +169,12 @@ pub const ParallelExecutor = struct {
     /// Submit a new task to the executor.
     /// If a slot is available, the task is immediately spawned on a new thread.
     /// Otherwise it stays pending until a slot frees up.
-    pub fn submit(self: *ParallelExecutor, prompt: []const u8, provider: []const u8, model: []const u8, api_key: []const u8, category: AgentCategory) ![]const u8 {
+    pub fn submit(self: *ParallelExecutor, prompt: []const u8, provider: []const u8, model: []const u8, api_key: []const u8, base_url: []const u8, category: AgentCategory) ![]const u8 {
         const id = try std.fmt.allocPrint(self.allocator, "task_{d}", .{self.next_id});
         self.next_id += 1;
 
         const parallel_task = try self.allocator.create(ParallelTask);
-        parallel_task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model, api_key, category);
+        parallel_task.* = try ParallelTask.init(self.allocator, id, prompt, provider, model, api_key, base_url, category);
         parallel_task.executor = self;
 
         try self.tasks.append(parallel_task);
@@ -417,6 +417,7 @@ pub const ParallelTask = struct {
     provider: []const u8,
     model: []const u8,
     api_key: []const u8,
+    base_url: []const u8,
     category: AgentCategory,
     priority: u32,
     status: task.RunState,
@@ -425,13 +426,14 @@ pub const ParallelTask = struct {
     thread: ?std.Thread = null,
     executor: ?*ParallelExecutor = null,
 
-    pub fn init(allocator: Allocator, id: []const u8, prompt: []const u8, provider: []const u8, model: []const u8, api_key: []const u8, category: AgentCategory) !ParallelTask {
+    pub fn init(allocator: Allocator, id: []const u8, prompt: []const u8, provider: []const u8, model: []const u8, api_key: []const u8, base_url: []const u8, category: AgentCategory) !ParallelTask {
         return ParallelTask{
             .id = try allocator.dupe(u8, id),
             .prompt = try allocator.dupe(u8, prompt),
             .provider = try allocator.dupe(u8, provider),
             .model = try allocator.dupe(u8, model),
             .api_key = try allocator.dupe(u8, api_key),
+            .base_url = try allocator.dupe(u8, base_url),
             .category = category,
             .priority = 0,
             .status = .pending,
@@ -446,12 +448,15 @@ pub const ParallelTask = struct {
         self.allocator.free(self.provider);
         self.allocator.free(self.model);
         self.allocator.free(self.api_key);
+        self.allocator.free(self.base_url);
         if (self.result) |r| self.allocator.free(r);
     }
 };
 
 /// Worker thread entry point.
-/// Runs simulated work (DEC-6 — real AI integration is future scope).
+/// Uses a thread-local ArenaAllocator for AI calls to avoid sharing
+/// allocator state across threads. Response content is duped onto
+/// the executor's allocator before the arena is freed.
 /// Never panics — all errors caught and recorded as failures.
 fn workerThreadMain(task_ptr: *ParallelTask) void {
     task_ptr.status = .running;
@@ -470,17 +475,23 @@ fn workerThreadMain(task_ptr: *ParallelTask) void {
         output: []const u8,
         duration_ms: u64,
     } = blk: {
+        // Thread-local arena — each worker gets its own allocator so
+        // std.http.Client internal state is never shared across threads.
+        var arena = std.heap.ArenaAllocator.init(std.heap.page_allocator);
+        defer arena.deinit();
+        const arena_allocator = arena.allocator();
+
         const provider = registry.Provider{
             .name = task_ptr.provider,
             .config = .{
-                .base_url = "",
+                .base_url = task_ptr.base_url,
                 .api_key = task_ptr.api_key,
                 .models = &.{},
             },
-            .allocator = task_ptr.allocator,
+            .allocator = arena_allocator,
         };
 
-        var client = core.AIClient.init(task_ptr.allocator, provider, task_ptr.model, task_ptr.api_key) catch |err| {
+        var client = core.AIClient.init(arena_allocator, provider, task_ptr.model, task_ptr.api_key) catch |err| {
             const err_msg = std.fmt.allocPrint(task_ptr.allocator, "AIClient init failed: {any}", .{err}) catch "AIClient init failed";
             break :blk .{
                 .success = false,
@@ -500,9 +511,11 @@ fn workerThreadMain(task_ptr: *ParallelTask) void {
         };
 
         const response_content = if (response.choices.len > 0) response.choices[0].message.content orelse "" else "";
+        // Dupe onto executor's allocator so content outlives the thread-local arena
+        const owned_content = task_ptr.allocator.dupe(u8, response_content) catch "";
         break :blk .{
             .success = true,
-            .output = response_content,
+            .output = owned_content,
             .duration_ms = @as(u64, @intCast(std.time.milliTimestamp() - start_time)),
         };
     };

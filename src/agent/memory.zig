@@ -92,15 +92,12 @@ pub const Memory = struct {
         const file = file_compat.wrap(try std.fs.cwd().createFile(self.file_path, .{ .truncate = true }));
         defer file.close();
 
-        const writer = file.writer();
+        // Serialize messages to JSON using stdlib for proper escaping
+        const json_bytes = try std.json.Stringify.valueAlloc(self.allocator, self.messages.items, .{ .whitespace = .indent_2 });
+        defer self.allocator.free(json_bytes);
 
-        try writer.writeAll("[\n");
-        for (self.messages.items, 0..) |msg, i| {
-            try writer.print("  {{\"role\": \"{s}\", \"content\": \"{s}\", \"timestamp\": {}}}", .{ msg.role, msg.content, msg.timestamp });
-            if (i < self.messages.items.len - 1) try writer.writeAll(",");
-            try writer.writeAll("\n");
-        }
-        try writer.writeAll("]\n");
+        try file.writeAll(json_bytes);
+        try file.writeAll("\n");
     }
 
     /// Load memory from file
@@ -224,6 +221,64 @@ test "Memory - save and load" {
         try std.testing.expectEqual(@as(usize, 2), mem2.count());
         try std.testing.expect(std.mem.eql(u8, mem2.messages.items[0].content, "Persistent message"));
         try std.testing.expect(std.mem.eql(u8, mem2.messages.items[1].content, "Persistent response"));
+    }
+
+    std.fs.cwd().deleteFile(path) catch {};
+}
+
+test "Memory - save and load with special characters" {
+    const allocator = std.testing.allocator;
+    const path = "/tmp/crushcode_test_memory_special.json";
+
+    std.fs.cwd().deleteFile(path) catch {};
+
+    // Save message with quotes, backslash, and newline
+    {
+        var mem = Memory.init(allocator, path, 100);
+        defer mem.deinit();
+
+        try mem.addMessage("user", "\"hello\\nworld\"");
+        try mem.save();
+    }
+
+    // Load and verify round-trip
+    {
+        var mem = Memory.init(allocator, path, 100);
+        defer mem.deinit();
+
+        try mem.load();
+        try std.testing.expectEqual(@as(usize, 1), mem.count());
+        try std.testing.expect(std.mem.eql(u8, mem.messages.items[0].content, "\"hello\\nworld\""));
+        try std.testing.expect(std.mem.eql(u8, mem.messages.items[0].role, "user"));
+    }
+
+    std.fs.cwd().deleteFile(path) catch {};
+}
+
+test "Memory - save and load with JSON in content" {
+    const allocator = std.testing.allocator;
+    const path = "/tmp/crushcode_test_memory_json_content.json";
+
+    std.fs.cwd().deleteFile(path) catch {};
+
+    // Save message containing JSON object literal
+    {
+        var mem = Memory.init(allocator, path, 100);
+        defer mem.deinit();
+
+        try mem.addMessage("assistant", "{\"key\": \"value\"}");
+        try mem.save();
+    }
+
+    // Load and verify round-trip
+    {
+        var mem = Memory.init(allocator, path, 100);
+        defer mem.deinit();
+
+        try mem.load();
+        try std.testing.expectEqual(@as(usize, 1), mem.count());
+        try std.testing.expect(std.mem.eql(u8, mem.messages.items[0].content, "{\"key\": \"value\"}"));
+        try std.testing.expect(std.mem.eql(u8, mem.messages.items[0].role, "assistant"));
     }
 
     std.fs.cwd().deleteFile(path) catch {};

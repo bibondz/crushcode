@@ -235,7 +235,8 @@ pub fn handleParallel(_: args_mod.Args) !void {
     var submitted: usize = 0;
     for (configured.items, 0..) |prov, i| {
         const prompt = prompts[i % prompts.len];
-        const task_id = executor.submit(prompt, prov.name, prov.model, prov.api_key, .general) catch |err| {
+        const base_url = if (reg.getProvider(prov.name)) |p| p.config.base_url else "";
+        const task_id = executor.submit(prompt, prov.name, prov.model, prov.api_key, base_url, .general) catch |err| {
             stdout_print("  Failed to submit to {s}/{s}: {}\n", .{ prov.name, prov.model, err });
             continue;
         };
@@ -362,7 +363,8 @@ pub fn handleAgents(args: args_mod.Args) !void {
             .research => "Research patterns and documentation",
         };
 
-        const task_id = executor.submit(task_desc, provider_name, model_name, api_key, cat) catch |err| {
+        const base_url = if (reg.getProvider(provider_name)) |p| p.config.base_url else "";
+        const task_id = executor.submit(task_desc, provider_name, model_name, api_key, base_url, cat) catch |err| {
             stdout_print("  Failed to spawn {s} agent: {}\n", .{ @tagName(cat), err });
             continue;
         };
