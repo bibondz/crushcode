@@ -1,8 +1,8 @@
-# State: Crushcode v0.30.0
+# State: Crushcode v0.31.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-19
-**Commit:** 81ff11b
+**Commit:** fbf7ef5
 **Stats:** ~250 `.zig` files, ~105K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
@@ -22,24 +22,39 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.30.0 — Refactoring Start |
+| Milestone | v0.31.0 — Codebase Reorganization |
 | Phase | Complete |
 | Status | ✅ Done |
-| Code Version | 0.30.0 |
+| Code Version | 0.31.0 |
 
 ---
 
-## v0.30.0 Plan — Refactoring & Unification
+## v0.31.0 Plan — Codebase Reorganization
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| D | Unify slash command names into single source of truth (slash_commands.zig) | ✅ Done |
-| E | Split experimental_handlers.zig into domain files | ⏳ Deferred (file too large for agent) |
-| F | Merge orchestration→agent, cognition→agent, guardian→permission | ⏳ Deferred (high risk) |
-| G | Consolidate knowledge/ + permission/ lists | ⏳ Deferred |
-| — | Version bump to 0.30.0 | ✅ Done |
-| — | Git remote setup + push to GitHub | ✅ Done |
-| — | Master fast-forward to v0.30.0 | ✅ Done |
+| E | Split experimental_handlers.zig (3208 lines) into 5 domain files + re-export shim | ✅ Done |
+| F | Relocate: orchestration→agent, cognition→agent, guardian→permission | ✅ Done |
+| G | Consolidate: permission blocklist+safelist+sensitive_paths→lists.zig, knowledge ingest+query→ops.zig | ✅ Done |
+| — | Version bump to 0.31.0 | ✅ Done |
+
+### Phase E Details
+- `experimental_handlers.zig` (3208 lines) → 5 domain files + 35-line re-export shim
+  - `agent_loop_handler.zig` (827 lines): handleGraph, handleAutopilot, handleAgentLoop + AI helpers
+  - `workflow_handler.zig` (617 lines): handleWorkflow, handlePhaseRun, handleCompact, handleScaffold
+  - `knowledge_handler.zig` (536 lines): handleKnowledge, handleWorker, handleHooks
+  - `team_handler.zig` (685 lines): handleSkillsResolve, handleSkillsScan, handleTeam, handleBackground
+  - `memory_handler.zig` (563 lines): handleMemory, handlePipeline, handleThink, handleSkillSync, handleTemplate, handlePreview, handleDetect
+
+### Phase F Details
+- `src/orchestration/` removed → `src/agent/orchestrator.zig`
+- `src/cognition/` removed → `src/agent/context_builder.zig`
+- `src/guardian/` removed → `src/permission/guardian.zig`
+
+### Phase G Details
+- `permission/blocklist.zig` + `safelist.zig` + `sensitive_paths.zig` → `permission/lists.zig` (502 lines)
+- `knowledge/ingest.zig` + `query.zig` → `knowledge/ops.zig` (632 lines)
+- `knowledge/vault.zig` kept separate (circular dep with persistence)
 
 ---
 
@@ -69,7 +84,9 @@
 | v0.26.0 | A–D (agent loop, hybrid bridge, e2e test, version bump) | ✅ Done |
 | v0.27.0 | A–D (memory, parallel, skills HTTP, plugin runtime) | ✅ Done |
 | v0.28.0 | A–F (backlog commit: ~90 files, agent/knowledge/command/skill/permission/TUI) | ✅ Done |
-| **v0.30.0** | **D: unified slash commands + git remote + master push** | **✅ Done** |
+| v0.29.0 | B–C (slash commands wired into TUI, MCP tool execution fixed) | ✅ Done |
+| v0.30.0 | D: unified slash commands + git remote + master push | ✅ Done |
+| **v0.31.0** | **E–G: split handlers, relocate modules, consolidate lists** | **✅ Done** |
 
 ---
 
@@ -79,18 +96,16 @@
 src/main.zig → cli/args.zig → commands/handlers.zig
 src/tui/chat_tui_app.zig — main TUI app (Model/Msg/Update)
 src/ai/client.zig — AI HTTP client (19 providers, streaming)
-src/agent/ — agent loop, compaction, memory, parallel
+src/agent/ — agent loop, compaction, memory, parallel, orchestrator, context_builder
+src/commands/handlers/ — ai.zig, system.zig, tools.zig, experimental.zig (shim → 5 domain handlers)
 src/chat/tool_executors.zig — shared tool implementations
-src/mcp/ — MCP client, bridge, discovery
+src/mcp/ — MCP client, bridge, discovery, server
 src/hybrid_bridge.zig — unified tool dispatch (builtin → MCP → runtime plugins)
 src/skills/import.zig — skill import via HTTP (clawhub, skills.sh, GitHub, URL)
 src/plugin/runtime.zig — external plugin manager (JSON-RPC)
-src/diff/ — diff algorithm + visualizer
-src/graph/ — knowledge graph
-src/capability/ — capability catalog
-src/orchestration/ — orchestration layer
+src/permission/ — evaluate, audit, governance, guardian, lists, security
+src/knowledge/ — schema, vault, persistence, ops, lint
 src/tools/ — tool definitions
-src/plugins/ — plugin implementations
 ```
 
 ---
@@ -108,5 +123,5 @@ src/plugins/ — plugin implementations
 ## Session Continuity
 
 **Last Updated:** 2026-04-19
-**Current Work:** v0.30.0 complete — slash commands unified, pushed to GitHub
-**Next Step:** v0.31.0 — split experimental_handlers.zig, merge directories (manual session needed)
+**Current Work:** v0.31.0 complete — codebase reorganized, all phases done
+**Next Step:** TBD — further refactoring or new feature development
