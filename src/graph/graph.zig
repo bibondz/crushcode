@@ -18,6 +18,7 @@ pub const KnowledgeGraph = struct {
     communities: array_list_compat.ArrayList(*types.Community),
     file_count: u32,
     total_source_tokens: u64,
+    pagerank_cache: ?algorithms.PageRankResult,
 
     pub fn init(allocator: Allocator) KnowledgeGraph {
         return KnowledgeGraph{
@@ -27,17 +28,20 @@ pub const KnowledgeGraph = struct {
             .communities = array_list_compat.ArrayList(*types.Community).init(allocator),
             .file_count = 0,
             .total_source_tokens = 0,
+            .pagerank_cache = null,
         };
     }
 
     /// Add a node to the graph
     pub fn addNode(self: *KnowledgeGraph, node: *types.GraphNode) !void {
         try self.nodes.put(node.id, node);
+        self.invalidatePageRankCache();
     }
 
     /// Add an edge between two nodes
     pub fn addEdge(self: *KnowledgeGraph, edge: *types.GraphEdge) !void {
         try self.edges.append(edge);
+        self.invalidatePageRankCache();
     }
 
     /// Get a node by ID
@@ -344,6 +348,47 @@ pub const KnowledgeGraph = struct {
         return algorithms.clusterByTags(.{ .nodes = &self.nodes, .edges = &self.edges }, allocator);
     }
 
+    /// Invalidate cached PageRank results (call when graph structure changes)
+    fn invalidatePageRankCache(self: *KnowledgeGraph) void {
+        if (self.pagerank_cache) |*cache| {
+            cache.deinit();
+            self.pagerank_cache = null;
+        }
+    }
+
+    /// Compute or return cached PageRank results
+    fn ensurePageRankCache(self: *KnowledgeGraph, allocator: Allocator) !*const algorithms.PageRankResult {
+        if (self.pagerank_cache == null) {
+            self.pagerank_cache = try self.computePageRank(allocator);
+        }
+        return &self.pagerank_cache.?;
+    }
+
+    /// Determine file-type weight multiplier based on file extension
+    /// Source files (.zig) are baseline 1.0x, config/docs are reduced
+    fn fileTypeWeight(file_path: []const u8) f32 {
+        // Find the last dot in the filename to extract extension
+        const last_slash = std.mem.lastIndexOfScalar(u8, file_path, '/') orelse 0;
+        const filename = if (last_slash > 0) file_path[last_slash + 1 ..] else file_path;
+        const last_dot = std.mem.lastIndexOfScalar(u8, filename, '.') orelse return 0.5;
+        const ext = filename[last_dot..];
+
+        if (std.mem.eql(u8, ext, ".zig")) return 1.0;
+        if (std.mem.eql(u8, ext, ".md") or std.mem.eql(u8, ext, ".toml") or std.mem.eql(u8, ext, ".yaml") or std.mem.eql(u8, ext, ".yml")) return 0.7;
+        if (std.mem.eql(u8, ext, ".zon") or std.mem.eql(u8, ext, ".json")) return 0.8;
+        return 0.5;
+    }
+
+    /// Check if a node belongs to any community
+    fn nodeInCommunity(self: *KnowledgeGraph, node_id: []const u8) bool {
+        for (self.communities.items) |community| {
+            for (community.node_ids.items) |cid| {
+                if (std.mem.eql(u8, cid, node_id)) return true;
+            }
+        }
+        return false;
+    }
+
     /// Convert text to lowercase (manual impl for Zig 0.15 compat)
     fn toLower(allocator: Allocator, text: []const u8) ![]const u8 {
         const result = try allocator.alloc(u8, text.len);
@@ -355,11 +400,25 @@ pub const KnowledgeGraph = struct {
 
     /// Score nodes by relevance to a query string
     /// Returns top max_results scored nodes sorted by descending relevance
+    /// This is a thin wrapper around scoreRelevanceAdvanced with null PageRank
     pub fn scoreRelevance(
         self: *KnowledgeGraph,
         allocator: Allocator,
         query: []const u8,
         max_results: u32,
+    ) ![]types.RelevanceScore {
+        return self.scoreRelevanceAdvanced(allocator, query, max_results, null);
+    }
+
+    /// Advanced relevance scoring with PageRank centrality, file-type weighting,
+    /// community bonus, and recency bias layered on top of keyword matching.
+    /// Accepts optional pre-computed PageRank results to avoid recomputation.
+    pub fn scoreRelevanceAdvanced(
+        self: *KnowledgeGraph,
+        allocator: Allocator,
+        query: []const u8,
+        max_results: u32,
+        pagerank: ?algorithms.PageRankResult,
     ) ![]types.RelevanceScore {
         const query_lower = try toLower(allocator, query);
         defer allocator.free(query_lower);
@@ -371,6 +430,18 @@ pub const KnowledgeGraph = struct {
         while (word_iter.next()) |word| {
             if (word.len > 2) {
                 try query_words.append(word);
+            }
+        }
+
+        // Resolve PageRank data: use provided, or compute and cache
+        var pr_result: ?algorithms.PageRankResult = pagerank;
+        if (pr_result == null) {
+            const cached = self.ensurePageRankCache(allocator) catch null;
+            if (cached) |c| {
+                pr_result = .{
+                    .ranks = c.ranks,
+                    .allocator = c.allocator,
+                };
             }
         }
 
@@ -387,6 +458,7 @@ pub const KnowledgeGraph = struct {
             const path_lower = try toLower(allocator, node.file_path);
             defer allocator.free(path_lower);
 
+            // === Phase 1: Keyword matching (existing logic) ===
             for (query_words.items) |qword| {
                 // Name match (highest weight)
                 if (std.mem.indexOf(u8, name_lower, qword)) |_| {
@@ -415,6 +487,28 @@ pub const KnowledgeGraph = struct {
             }
 
             if (total_score > 0.0) {
+                // === Phase 2: PageRank centrality bonus ===
+                // Multiply by (1.0 + pagerank * 0.5) to boost well-connected nodes
+                if (pr_result) |pr| {
+                    if (pr.ranks.get(node.id)) |rank| {
+                        const pr_f32: f32 = @floatCast(rank);
+                        total_score *= (1.0 + pr_f32 * 0.5);
+                    }
+                }
+
+                // === Phase 3: File-type weighting ===
+                total_score *= fileTypeWeight(node.file_path);
+
+                // === Phase 4: Community membership bonus ===
+                if (self.nodeInCommunity(node.id)) {
+                    total_score += 0.5;
+                }
+
+                // === Phase 5: Recency bias for module nodes ===
+                if (node.node_type == .module) {
+                    total_score += 0.3;
+                }
+
                 try scores.append(.{
                     .node_id = node.id,
                     .score = total_score,
@@ -446,7 +540,7 @@ pub const KnowledgeGraph = struct {
         query: []const u8,
         token_budget: u64,
     ) ![]const u8 {
-        const scores = try self.scoreRelevance(allocator, query, 50);
+        const scores = try self.scoreRelevanceAdvanced(allocator, query, 50, null);
         defer allocator.free(scores);
 
         var buf = array_list_compat.ArrayList(u8).init(allocator);
@@ -493,6 +587,9 @@ pub const KnowledgeGraph = struct {
     }
 
     pub fn deinit(self: *KnowledgeGraph) void {
+        // Invalidate PageRank cache
+        self.invalidatePageRankCache();
+
         // Collect all node pointers first, then clean up
         // (we can't iterate and free keys simultaneously since StringHashMap
         // stores key pointers that are the same as node.id)
@@ -784,4 +881,189 @@ test "KnowledgeGraph scoreRelevance finds relevant nodes" {
     const top = scores[0];
     try testing.expect(std.mem.indexOf(u8, top.node_id, "GraphNode") != null);
     try testing.expect(top.score > 0.0);
+}
+
+test "fileTypeWeight returns correct multipliers" {
+    // .zig source files = 1.0x baseline
+    try testing.expectEqual(@as(f32, 1.0), KnowledgeGraph.fileTypeWeight("src/graph/graph.zig"));
+    try testing.expectEqual(@as(f32, 1.0), KnowledgeGraph.fileTypeWeight("main.zig"));
+
+    // .md/.toml/.yaml config/docs = 0.7x
+    try testing.expectEqual(@as(f32, 0.7), KnowledgeGraph.fileTypeWeight("README.md"));
+    try testing.expectEqual(@as(f32, 0.7), KnowledgeGraph.fileTypeWeight("build.toml"));
+    try testing.expectEqual(@as(f32, 0.7), KnowledgeGraph.fileTypeWeight("config.yaml"));
+    try testing.expectEqual(@as(f32, 0.7), KnowledgeGraph.fileTypeWeight("config.yml"));
+
+    // .zon/.json build manifests = 0.8x
+    try testing.expectEqual(@as(f32, 0.8), KnowledgeGraph.fileTypeWeight("build.zon"));
+    try testing.expectEqual(@as(f32, 0.8), KnowledgeGraph.fileTypeWeight("package.json"));
+
+    // Unknown/other = 0.5x
+    try testing.expectEqual(@as(f32, 0.5), KnowledgeGraph.fileTypeWeight("Makefile"));
+    try testing.expectEqual(@as(f32, 0.5), KnowledgeGraph.fileTypeWeight("Dockerfile"));
+    try testing.expectEqual(@as(f32, 0.5), KnowledgeGraph.fileTypeWeight("script.sh"));
+}
+
+test "scoreRelevanceAdvanced boosts high-PageRank nodes" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Create a hub node (well-connected) and a leaf node (isolated)
+    const hub = try testing.allocator.create(types.GraphNode);
+    hub.* = try types.GraphNode.init(testing.allocator, "mod.hub", "hub", .function, "src/hub.zig", 1);
+    try graph.addNode(hub);
+
+    const leaf = try testing.allocator.create(types.GraphNode);
+    leaf.* = try types.GraphNode.init(testing.allocator, "mod.leaf", "leaf", .function, "src/leaf.zig", 1);
+    try graph.addNode(leaf);
+
+    const spoke1 = try testing.allocator.create(types.GraphNode);
+    spoke1.* = try types.GraphNode.init(testing.allocator, "mod.spoke1", "spoke1", .function, "src/spoke1.zig", 1);
+    try graph.addNode(spoke1);
+
+    const spoke2 = try testing.allocator.create(types.GraphNode);
+    spoke2.* = try types.GraphNode.init(testing.allocator, "mod.spoke2", "spoke2", .function, "src/spoke2.zig", 1);
+    try graph.addNode(spoke2);
+
+    // Hub has many edges → higher PageRank
+    const e1 = try testing.allocator.create(types.GraphEdge);
+    e1.* = try types.GraphEdge.init(testing.allocator, "mod.hub", "mod.spoke1", .calls, .extracted);
+    try graph.addEdge(e1);
+
+    const e2 = try testing.allocator.create(types.GraphEdge);
+    e2.* = try types.GraphEdge.init(testing.allocator, "mod.hub", "mod.spoke2", .calls, .extracted);
+    try graph.addEdge(e2);
+
+    const e3 = try testing.allocator.create(types.GraphEdge);
+    e3.* = try types.GraphEdge.init(testing.allocator, "mod.spoke1", "mod.spoke2", .calls, .extracted);
+    try graph.addEdge(e3);
+
+    // Query matching both hub and leaf by file path ("src")
+    const scores = try graph.scoreRelevanceAdvanced(testing.allocator, "src", 10, null);
+    defer testing.allocator.free(scores);
+
+    // Both should appear
+    var hub_score: f32 = 0.0;
+    var leaf_score: f32 = 0.0;
+    for (scores) |s| {
+        if (std.mem.indexOf(u8, s.node_id, "hub") != null) hub_score = s.score;
+        if (std.mem.indexOf(u8, s.node_id, "leaf") != null) leaf_score = s.score;
+    }
+
+    // Hub should score higher than leaf due to PageRank centrality bonus
+    try testing.expect(hub_score > leaf_score);
+}
+
+test "scoreRelevance backward compatible via wrapper" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    try graph.indexFile("src/graph/types.zig");
+
+    // Both methods should return results
+    const scores_basic = try graph.scoreRelevance(testing.allocator, "GraphNode", 5);
+    defer testing.allocator.free(scores_basic);
+
+    const scores_adv = try graph.scoreRelevanceAdvanced(testing.allocator, "GraphNode", 5, null);
+    defer testing.allocator.free(scores_adv);
+
+    // Both should find the same top node
+    try testing.expect(scores_basic.len > 0);
+    try testing.expect(scores_adv.len > 0);
+    try testing.expect(std.mem.indexOf(u8, scores_basic[0].node_id, "GraphNode") != null);
+    try testing.expect(std.mem.indexOf(u8, scores_adv[0].node_id, "GraphNode") != null);
+}
+
+test "scoreRelevanceAdvanced community bonus applies" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Create two nodes in the same file (will form a community)
+    const node_a = try testing.allocator.create(types.GraphNode);
+    node_a.* = try types.GraphNode.init(testing.allocator, "mod.fnA", "fnA", .function, "src/module.zig", 1);
+    try graph.addNode(node_a);
+
+    const node_b = try testing.allocator.create(types.GraphNode);
+    node_b.* = try types.GraphNode.init(testing.allocator, "mod.fnB", "fnB", .function, "src/module.zig", 10);
+    try graph.addNode(node_b);
+
+    // Create a module node to ensure community detection sees 3+ nodes
+    const node_mod = try testing.allocator.create(types.GraphNode);
+    node_mod.* = try types.GraphNode.init(testing.allocator, "mod", "mod", .module, "src/module.zig", 1);
+    try graph.addNode(node_mod);
+
+    // Create a standalone node in a different file (no community)
+    const node_c = try testing.allocator.create(types.GraphNode);
+    node_c.* = try types.GraphNode.init(testing.allocator, "mod2.fnC", "fnC", .function, "src/other.zig", 1);
+    try graph.addNode(node_c);
+
+    // Add edge so PageRank doesn't make the comparison ambiguous
+    const edge = try testing.allocator.create(types.GraphEdge);
+    edge.* = try types.GraphEdge.init(testing.allocator, "mod.fnA", "mod.fnB", .calls, .extracted);
+    try graph.addEdge(edge);
+
+    // Detect communities
+    try graph.detectCommunities();
+
+    // Score without community vs with community
+    // Query "fn" matches both fnA/fnB and fnC
+    const scores = try graph.scoreRelevanceAdvanced(testing.allocator, "fn", 10, null);
+    defer testing.allocator.free(scores);
+
+    var community_score: f32 = 0.0;
+    var isolated_score: f32 = 0.0;
+    for (scores) |s| {
+        if (std.mem.eql(u8, s.node_id, "mod.fnA")) community_score = s.score;
+        if (std.mem.eql(u8, s.node_id, "mod2.fnC")) isolated_score = s.score;
+    }
+
+    // Community node should score higher (community bonus + same keyword weight)
+    try testing.expect(community_score > isolated_score);
+}
+
+test "scoreRelevanceAdvanced module recency bias" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    // Module node and function node with same name match
+    const mod = try testing.allocator.create(types.GraphNode);
+    mod.* = try types.GraphNode.init(testing.allocator, "mod.testmod", "testmod", .module, "src/testmod.zig", 1);
+    try graph.addNode(mod);
+
+    const func = try testing.allocator.create(types.GraphNode);
+    func.* = try types.GraphNode.init(testing.allocator, "mod.testmod_fn", "testmod_fn", .function, "src/testmod.zig", 5);
+    try graph.addNode(func);
+
+    // Query "testmod" matches both
+    const scores = try graph.scoreRelevanceAdvanced(testing.allocator, "testmod", 10, null);
+    defer testing.allocator.free(scores);
+
+    var module_score: f32 = 0.0;
+    var function_score: f32 = 0.0;
+    for (scores) |s| {
+        if (std.mem.eql(u8, s.node_id, "mod.testmod")) module_score = s.score;
+        if (std.mem.eql(u8, s.node_id, "mod.testmod_fn")) function_score = s.score;
+    }
+
+    // Module gets +0.3 recency bias, so it should score higher than function
+    // (function only gets name match 3.0, module gets 3.0 + 0.3 = 3.3)
+    try testing.expect(module_score > function_score);
+}
+
+test "scoreRelevanceAdvanced accepts precomputed PageRank" {
+    var graph = KnowledgeGraph.init(testing.allocator);
+    defer graph.deinit();
+
+    try graph.indexFile("src/graph/types.zig");
+
+    // Precompute PageRank
+    var pr = try graph.computePageRank(testing.allocator);
+    defer pr.deinit();
+
+    // Pass precomputed result — should work without recomputation
+    const scores = try graph.scoreRelevanceAdvanced(testing.allocator, "GraphNode", 5, pr);
+    defer testing.allocator.free(scores);
+
+    try testing.expect(scores.len > 0);
+    try testing.expect(std.mem.indexOf(u8, scores[0].node_id, "GraphNode") != null);
 }

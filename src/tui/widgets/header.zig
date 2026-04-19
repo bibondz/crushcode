@@ -9,6 +9,8 @@ pub const HeaderWidget = struct {
     theme: *const theme_mod.Theme,
     context_pct: u8 = 0,
     file_count: u32 = 0,
+    scored_count: u32 = 0,
+    total_count: u32 = 0,
 
     pub fn widget(self: *const HeaderWidget) vxfw.Widget {
         return .{
@@ -47,8 +49,11 @@ pub const HeaderWidget = struct {
         @memset(surface.buffer, .{ .style = bg_style });
 
         // Build context info string for right-aligned display
-        var context_buf: [64]u8 = undefined;
-        const context_text = std.fmt.bufPrint(&context_buf, "ctx:{d}% | {d} files", .{ self.context_pct, self.file_count }) catch &.{};
+        var context_buf: [80]u8 = undefined;
+        const context_text = if (self.scored_count > 0)
+            std.fmt.bufPrint(&context_buf, "ctx:{d}% | {d}/{d} scored", .{ self.context_pct, self.scored_count, self.total_count }) catch &.{}
+        else
+            std.fmt.bufPrint(&context_buf, "ctx:{d}% | {d} files", .{ self.context_pct, self.file_count }) catch &.{};
         const context_len = context_text.len;
         const context_col = if (context_len < width) width - context_len else 0;
 

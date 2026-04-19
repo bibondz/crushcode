@@ -275,6 +275,8 @@ pub const Model = struct {
     guardian: ?guardian_mod.Guardian = null,
     pipeline: ?cognition_mod.KnowledgePipeline = null,
     pipeline_initialized: bool = false,
+    context_total_files: u32 = 0,
+    context_scored_files: u32 = 0,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -987,13 +989,33 @@ pub const Model = struct {
     }
 
     fn buildCodebaseContext(self: *Model) !void {
-        // Clean up any previous knowledge graph
+        // Clean up any previous knowledge graph (owned fallback)
         if (self.knowledge_graph) |kg| {
             kg.deinit();
             self.allocator.destroy(kg);
             self.knowledge_graph = null;
         }
 
+        // Prefer pipeline-based context if available
+        if (self.pipeline_initialized) {
+            if (self.pipeline) |*p| {
+                p.scanProject("src", 50) catch {};
+                p.indexGraphToVault() catch {};
+
+                // Build initial context (no query = overview)
+                const ctx = p.buildSmartContext("overview", .normal) catch null;
+                if (ctx) |c| {
+                    if (self.codebase_context) |old| self.allocator.free(old);
+                    self.codebase_context = c;
+                }
+                self.context_file_count = p.pipeline_stats.files_indexed;
+                self.context_total_files = p.pipeline_stats.files_indexed;
+                // Pipeline's kg is embedded — no separate knowledge_graph to set
+                return;
+            }
+        }
+
+        // Fallback: raw KnowledgeGraph (original approach)
         const kg_ptr = try self.allocator.create(graph_mod.KnowledgeGraph);
         kg_ptr.* = graph_mod.KnowledgeGraph.init(self.allocator);
         errdefer {
@@ -1031,31 +1053,50 @@ pub const Model = struct {
     }
 
     /// Refresh codebase context filtered by query relevance.
-    /// Uses the stored KnowledgeGraph to pick only relevant nodes.
+    /// Uses the KnowledgePipeline scoring chain when available,
+    /// falls back to the raw KnowledgeGraph otherwise.
     fn refreshContextForQuery(self: *Model, query: []const u8) void {
-        const kg = self.knowledge_graph orelse return;
         if (query.len == 0) return;
-
-        // Skip very short queries (likely slash commands or single chars)
         if (query.len < 3) return;
 
-        // Allocate a fresh relevant context, limited to 4000 tokens
+        // Prefer pipeline-based scoring
+        if (self.pipeline_initialized) {
+            if (self.pipeline) |*p| {
+                const scored_opt = p.buildSmartContext(query, .normal) catch return;
+                const scored_ctx = scored_opt orelse return;
+                errdefer self.allocator.free(scored_ctx);
+
+                if (scored_ctx.len == 0) {
+                    self.allocator.free(scored_ctx);
+                    return;
+                }
+
+                if (self.codebase_context) |old| self.allocator.free(old);
+                self.codebase_context = scored_ctx;
+
+                // Count scored files from graph relevance
+                const scores = p.kg.scoreRelevance(self.allocator, query, 50) catch return;
+                defer {
+                    for (scores) |*s| self.allocator.free(s.node_id);
+                    self.allocator.free(scores);
+                }
+                self.context_scored_files = @intCast(scores.len);
+
+                self.refreshEffectiveSystemPrompt() catch {};
+                return;
+            }
+        }
+
+        // Fallback: use raw knowledge graph
+        const kg = self.knowledge_graph orelse return;
         const relevant = kg.toRelevantContext(self.allocator, query, 4000) catch return;
         errdefer self.allocator.free(relevant);
-
-        // Only replace if we got something useful
         if (relevant.len == 0) {
             self.allocator.free(relevant);
             return;
         }
-
-        // Swap the context
-        if (self.codebase_context) |old| {
-            self.allocator.free(old);
-        }
+        if (self.codebase_context) |old| self.allocator.free(old);
         self.codebase_context = relevant;
-
-        // Rebuild system prompt with the new filtered context
         self.refreshEffectiveSystemPrompt() catch {};
     }
 
@@ -1735,19 +1776,24 @@ pub const Model = struct {
         // receive a zero-height constraint and assert in ctx.max.size()
         const safe_body_height: u16 = if (body_height > 0) body_height else 1;
 
+        const ctx_label = if (self.context_scored_files > 0)
+            try std.fmt.allocPrint(ctx.arena, "ctx: {d}/{d} files (scored)", .{ self.context_scored_files, self.context_total_files })
+        else
+            try std.fmt.allocPrint(ctx.arena, "ctx: {d} files indexed", .{self.context_file_count});
+
         const full_title = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | setup", .{app_version})
         else
-            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | ctx: {d} files indexed | usage:{d}%", .{
+            try std.fmt.allocPrint(ctx.arena, "Crushcode v{s} | {s}/{s} | thinking:{s} | {s} | usage:{d}%", .{
                 app_version,
                 self.provider_name,
                 self.model_name,
                 if (self.thinking) "on" else "off",
-                self.context_file_count,
+                ctx_label,
                 self.contextPercent(),
             });
 
-        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme, .context_pct = self.contextPercent(), .file_count = self.context_file_count };
+        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme, .context_pct = self.contextPercent(), .file_count = self.context_file_count, .scored_count = self.context_scored_files, .total_count = self.context_total_files };
         const header_surface = try header.draw(ctx.withConstraints(
             .{ .width = main_width, .height = header_height },
             .{ .width = main_width, .height = header_height },
