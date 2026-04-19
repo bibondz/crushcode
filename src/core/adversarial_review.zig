@@ -86,7 +86,7 @@ pub const ReviewResult = struct {
     summary: []const u8,
     reviewed_at: i64,
 
-    pub fn init(allocator: Allocator, reviewer_model: []const u8) ReviewResult {
+    pub fn init(allocator: Allocator, reviewer_model: []const u8) !ReviewResult {
         return ReviewResult{
             .allocator = allocator,
             .reviewer_model = try allocator.dupe(u8, reviewer_model),
@@ -203,7 +203,7 @@ pub const AdversarialReviewer = struct {
     /// Create a new review result for tracking findings
     pub fn startReview(self: *AdversarialReviewer) !*ReviewResult {
         const result = try self.allocator.create(ReviewResult);
-        result.* = ReviewResult.init(self.allocator, self.config.reviewer_model);
+        result.* = try ReviewResult.init(self.allocator, self.config.reviewer_model);
         try self.reviews.append(result);
         return result;
     }

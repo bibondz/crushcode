@@ -80,16 +80,18 @@ pub const PermissionRule = struct {
         const obj = value.object;
 
         const pattern_val = obj.get("pattern") orelse return error.MissingPattern;
-        const pattern = pattern_val.string orelse return error.InvalidPattern;
+        if (pattern_val != .string) return error.InvalidPattern;
+        const pattern = pattern_val.string;
 
         const action_val = obj.get("action") orelse return error.MissingAction;
-        const action_str = action_val.string orelse return error.InvalidAction;
+        if (action_val != .string) return error.InvalidAction;
+        const action_str = action_val.string;
         const action = PermissionAction.fromString(action_str) orelse return error.InvalidAction;
 
         var description: ?[]const u8 = null;
         if (obj.get("description")) |desc_val| {
-            if (desc_val.string) |desc_str| {
-                description = try allocator.dupe(u8, desc_str);
+            if (desc_val == .string) {
+                description = try allocator.dupe(u8, desc_val.string);
             }
         }
 
@@ -199,7 +201,7 @@ pub const PermissionResult = struct {
         defer obj.deinit();
 
         try obj.put("action", .{ .string = @tagName(self.action) });
-        try obj.put("auto_approved", .{ .boolean = self.auto_approved });
+        try obj.put("auto_approved", .{ .bool = self.auto_approved });
 
         if (self.error_message) |msg| {
             try obj.put("error_message", .{ .string = msg });
@@ -303,7 +305,7 @@ pub const PermissionConfig = struct {
         defer operations_obj.deinit();
         var iter = self.auto_approved_operations.iterator();
         while (iter.next()) |entry| {
-            try operations_obj.put(entry.key_ptr.*, .{ .boolean = entry.value_ptr.* });
+            try operations_obj.put(entry.key_ptr.*, .{ .bool = entry.value_ptr.* });
         }
         try obj.put("auto_approved_operations", .{ .object = operations_obj });
 
@@ -318,22 +320,22 @@ pub const PermissionConfig = struct {
 
         // Parse default action
         if (obj.get("default_action")) |action_val| {
-            if (action_val.string) |action_str| {
-                config.default_action = PermissionAction.fromString(action_str) orelse .ask;
+            if (action_val == .string) {
+                config.default_action = PermissionAction.fromString(action_val.string) orelse .ask;
             }
         }
 
         // Parse mode
         if (obj.get("mode")) |mode_val| {
-            if (mode_val.string) |mode_str| {
-                config.mode = PermissionMode.fromString(mode_str) orelse .default;
+            if (mode_val == .string) {
+                config.mode = PermissionMode.fromString(mode_val.string) orelse .default;
             }
         }
 
         // Parse rules
         if (obj.get("rules")) |rules_val| {
-            if (rules_val.array) |rules_array| {
-                for (rules_array.items) |rule_val| {
+            if (rules_val == .array) {
+                for (rules_val.array.items) |rule_val| {
                     const rule = try PermissionRule.fromJson(allocator, rule_val);
                     try config.rules.append(rule);
                 }
@@ -342,10 +344,10 @@ pub const PermissionConfig = struct {
 
         // Parse auto-approved sessions
         if (obj.get("auto_approved_sessions")) |sessions_val| {
-            if (sessions_val.array) |sessions_array| {
-                for (sessions_array.items) |session_val| {
-                    if (session_val.string) |session_str| {
-                        const session_copy = try allocator.dupe(u8, session_str);
+            if (sessions_val == .array) {
+                for (sessions_val.array.items) |session_val| {
+                    if (session_val == .string) {
+                        const session_copy = try allocator.dupe(u8, session_val.string);
                         try config.auto_approved_sessions.append(session_copy);
                     }
                 }
@@ -354,16 +356,68 @@ pub const PermissionConfig = struct {
 
         // Parse auto-approved operations
         if (obj.get("auto_approved_operations")) |ops_val| {
-            if (ops_val.object) |ops_obj| {
-                var iter = ops_obj.iterator();
+            if (ops_val == .object) {
+                var iter = ops_val.object.iterator();
                 while (iter.next()) |entry| {
                     const op_copy = try allocator.dupe(u8, entry.key_ptr.*);
-                    const approved = entry.value_ptr.*.boolean orelse false;
+                    const approved = if (entry.value_ptr.* == .bool) entry.value_ptr.*.bool else false;
                     try config.auto_approved_operations.put(op_copy, approved);
                 }
             }
         }
 
         return config;
+    }
+
+    /// Returns the full file path for the permissions config file.
+    /// Caller must free the returned string.
+    pub fn getPermissionFilePath(allocator: Allocator, dir_path: []const u8) ![]const u8 {
+        return std.fmt.allocPrint(allocator, "{s}/permissions.json", .{dir_path});
+    }
+
+    /// Save the permission configuration to a JSON file on disk.
+    /// Creates the directory if it doesn't exist. The file is pretty-printed.
+    pub fn saveToFile(self: PermissionConfig, allocator: Allocator, dir_path: []const u8) !void {
+        // Ensure directory exists
+        std.fs.cwd().makePath(dir_path) catch |err| {
+            if (err != error.PathAlreadyExists) return err;
+        };
+
+        const file_path = try getPermissionFilePath(allocator, dir_path);
+        defer allocator.free(file_path);
+
+        var json_value = try self.toJson(allocator);
+        defer {
+            if (json_value == .object) {
+                json_value.object.deinit();
+            }
+        }
+
+        const file = try std.fs.cwd().createFile(file_path, .{ .truncate = true });
+        defer file.close();
+
+        var write_buffer: [4096]u8 = undefined;
+        var writer = file.writer(&write_buffer);
+        try std.json.Stringify.value(json_value, .{ .whitespace = .indent_2 }, &writer.interface);
+        try writer.interface.flush();
+    }
+
+    /// Load a permission configuration from a JSON file on disk.
+    /// Returns error.FileNotFound if the file doesn't exist.
+    /// Caller owns the returned PermissionConfig and must call deinit().
+    pub fn loadFromFile(allocator: Allocator, dir_path: []const u8) !PermissionConfig {
+        const file_path = try getPermissionFilePath(allocator, dir_path);
+        defer allocator.free(file_path);
+
+        const file = try std.fs.cwd().openFile(file_path, .{});
+        defer file.close();
+
+        const contents = try file.readToEndAlloc(allocator, 1024 * 1024);
+        defer allocator.free(contents);
+
+        const parsed = try json.parseFromSlice(json.Value, allocator, contents, .{});
+        defer parsed.deinit();
+
+        return PermissionConfig.fromJson(allocator, parsed.value);
     }
 };

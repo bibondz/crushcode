@@ -1,6 +1,7 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+const skills_resolver = @import("skills_resolver");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -249,6 +250,54 @@ pub const SkillLoader = struct {
         for (self.skills.items) |skill| {
             out("  - {s}: {s}\n", .{ skill.name, skill.description });
         }
+    }
+
+    /// Load a skill from a resolver resolution (resolved SKILL.md path)
+    pub fn loadFromResolver(self: *SkillLoader, resolution: skills_resolver.SkillResolution) !*Skill {
+        if (resolution.skill_path.len == 0) return error.SkillPathEmpty;
+
+        const skill = try self.parseSkillFile(resolution.skill_path);
+        try self.skills.append(skill);
+        return &self.skills.items[self.skills.items.len - 1];
+    }
+
+    /// Resolve and load skills matching a file path and/or query context.
+    /// Uses the resolver to find relevant skills, then loads matched SKILL.md files.
+    pub fn resolveAndLoad(self: *SkillLoader, resolver: *skills_resolver.SkillResolver, file_path: []const u8, query: []const u8) ![]*Skill {
+        const resolutions = try resolver.resolveForContext(file_path, query);
+        defer {
+            for (resolutions) |*r| r.deinit(self.allocator);
+            self.allocator.free(resolutions);
+        }
+
+        var loaded = array_list_compat.ArrayList(*Skill).init(self.allocator);
+        errdefer loaded.deinit();
+
+        for (resolutions) |res| {
+            if (res.skill_path.len == 0) continue;
+
+            // Check if already loaded (dedup by path)
+            var already_loaded = false;
+            for (self.skills.items) |existing| {
+                if (std.mem.eql(u8, existing.file_path, res.skill_path)) {
+                    already_loaded = true;
+                    try loaded.append(&self.skills.items[
+                        std.mem.indexOfScalar(Skill, self.skills.items, existing) orelse 0
+                    ]);
+                    break;
+                }
+            }
+            if (already_loaded) continue;
+
+            const skill = self.parseSkillFile(res.skill_path) catch |err| {
+                out("Warning: Failed to load resolved skill {s}: {}\n", .{ res.skill_path, err });
+                continue;
+            };
+            try self.skills.append(skill);
+            try loaded.append(&self.skills.items[self.skills.items.len - 1]);
+        }
+
+        return loaded.toOwnedSlice();
     }
 };
 

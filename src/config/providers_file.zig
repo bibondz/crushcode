@@ -212,6 +212,14 @@ const default_providers_content =
     \\api_format = "openai"
     \\is_local = true
     \\models = ["glm-5.1", "glm-5", "kimi-k2.5", "mimo-v2-pro", "minimax-m2.5"]
+    \\
+    \\# ── Direct API Providers ────────────────────────────────────────────
+    \\
+    \\[providers.minimax]
+    \\base_url = "https://api.minimaxi.com/v1"
+    \\description = "MiniMax M2.7 — fast inference, tool calling, 204K context (platform.minimaxi.com)"
+    \\api_format = "openai"
+    \\models = ["MiniMax-M2.7", "MiniMax-M2.7-highspeed", "MiniMax-M2.5", "MiniMax-M2.5-highspeed", "MiniMax-M2.1", "MiniMax-M2"]
 ;
 
 /// Load provider definitions from ~/.crushcode/providers.toml

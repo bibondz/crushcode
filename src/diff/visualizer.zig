@@ -1,11 +1,12 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+const myers = @import("myers");
 
 const Allocator = std.mem.Allocator;
 
-/// Simple diff visualization
-/// Shows git-style diffs with colored output
+/// Diff visualization using the Myers O(ND) diff algorithm.
+/// Shows git-style unified diffs with colored output.
 pub const DiffVisualizer = struct {
     allocator: Allocator,
 
@@ -15,38 +16,33 @@ pub const DiffVisualizer = struct {
         };
     }
 
-    /// Show a simple inline diff
+    /// Show an inline diff with colored output using Myers algorithm.
     pub fn showInlineDiff(self: *DiffVisualizer, old_text: []const u8, new_text: []const u8) !void {
-        _ = self;
         const stdout = file_compat.File.stdout().writer();
 
-        // Simple word-based diff visualization
-        stdout.print("Changes detected:\n", .{}) catch {};
+        const edit_lines = myers.diffToEditScript(self.allocator, old_text, new_text) catch {
+            stdout.print("Error computing diff\n", .{}) catch {};
+            return;
+        };
+        defer self.allocator.free(edit_lines);
 
-        var old_iter = std.mem.splitScalar(u8, old_text, '\n');
-        var new_iter = std.mem.splitScalar(u8, new_text, '\n');
-
-        var line_num: usize = 1;
         var diff_count: usize = 0;
 
-        while (true) {
-            const old_line_opt = old_iter.next();
-            const new_line_opt = new_iter.next();
+        stdout.print("Changes detected:\n", .{}) catch {};
 
-            if (old_line_opt == null and new_line_opt == null) break;
-
-            const old_line = old_line_opt orelse "";
-            const new_line = new_line_opt orelse "";
-
-            if (!std.mem.eql(u8, old_line, new_line)) {
-                diff_count += 1;
-
-                stdout.print("  Line {d}:\n", .{line_num}) catch {};
-                stdout.print("    - {s}\n", .{old_line}) catch {};
-                stdout.print("    + {s}\n", .{new_line}) catch {};
-                line_num += 1;
-            } else {
-                line_num += 1;
+        for (edit_lines) |line| {
+            switch (line.kind) {
+                .equal => {},
+                .delete => {
+                    diff_count += 1;
+                    if (line.old_line_num) |n| {
+                        stdout.print("  Line {d}:\n", .{n}) catch {};
+                    }
+                    stdout.print("    - {s}\n", .{line.content}) catch {};
+                },
+                .insert => {
+                    stdout.print("    + {s}\n", .{line.content}) catch {};
+                },
             }
         }
 
@@ -57,50 +53,31 @@ pub const DiffVisualizer = struct {
         }
     }
 
-    /// Show unified diff format
+    /// Show unified diff format using Myers algorithm.
     pub fn showUnifiedDiff(self: *DiffVisualizer, old_path: []const u8, old_text: []const u8, new_text: []const u8) !void {
-        _ = self;
         const stdout = file_compat.File.stdout().writer();
 
-        stdout.print("--- {s}\n", .{old_path}) catch {};
+        var result = myers.MyersDiff.diff(self.allocator, old_text, new_text) catch {
+            stdout.print("Error computing diff\n", .{}) catch {};
+            return;
+        };
+        defer result.deinit();
 
-        var old_iter = std.mem.splitScalar(u8, old_text, '\n');
-        var new_iter = std.mem.splitScalar(u8, new_text, '\n');
-
-        var line_num: usize = 1;
-        var diff_count: usize = 0;
-
-        while (true) {
-            const old_line_opt = old_iter.next();
-            const new_line_opt = new_iter.next();
-
-            if (old_line_opt == null and new_line_opt == null) break;
-
-            const old_line = old_line_opt orelse "";
-            const new_line = new_line_opt orelse "";
-
-            if (std.mem.eql(u8, old_line, new_line)) {
-                stdout.print("    {s}\n", .{old_line}) catch {};
-            } else {
-                if (old_line_opt != null) {
-                    stdout.print("-   {s}\n", .{old_line}) catch {};
-                }
-                if (new_line_opt != null) {
-                    stdout.print("+   {s}\n", .{new_line}) catch {};
-                }
-                diff_count += 1;
-            }
-            line_num += 1;
+        if (result.hunks.len == 0) {
+            stdout.print("--- {s}\nNo changes\n", .{old_path}) catch {};
+            return;
         }
 
-        if (diff_count > 0) {
-            stdout.print("\n{d} change(s)\n", .{diff_count}) catch {};
-        } else {
-            stdout.print("No changes\n", .{}) catch {};
-        }
+        const formatted = myers.formatUnifiedDiff(self.allocator, &result, old_path, old_path) catch {
+            stdout.print("Error formatting diff\n", .{}) catch {};
+            return;
+        };
+        defer self.allocator.free(formatted);
+
+        stdout.print("{s}", .{formatted}) catch {};
     }
 
-    /// Compare two files and show diff
+    /// Compare two files and show diff.
     pub fn compareFiles(self: *DiffVisualizer, old_path: []const u8, new_path: []const u8) !void {
         const stdout = file_compat.File.stdout().writer();
         const old_content = std.fs.cwd().readFileAlloc(self.allocator, old_path, 10 * 1024 * 1024) catch {

@@ -98,6 +98,10 @@ pub const PricingTable = struct {
         // Zhipu AI
         try self.addPricing("zai", "glm-4", 1.00, 1.00, 0, 0);
 
+        // MiniMax
+        try self.addPricing("minimax", "MiniMax-M2.7", 0.10, 0.30, 0, 0);
+        try self.addPricing("minimax", "MiniMax-M2.5", 0.08, 0.20, 0, 0);
+
         // Local providers (free)
         try self.addPricing("ollama", "default", 0, 0, 0, 0);
         try self.addPricing("lm_studio", "default", 0, 0, 0, 0);

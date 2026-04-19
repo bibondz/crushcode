@@ -1,6 +1,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const env = @import("env");
+const project_mod = @import("project");
 const QuantizationConfig = @import("quantization_config.zig").QuantizationConfig;
 pub const ConfigBackup = @import("backup").ConfigBackup;
 pub const ConfigMigrator = @import("backup").ConfigMigrator;
@@ -314,6 +315,107 @@ pub const Config = struct {
         if (self.system_prompt.len > 0) return self.system_prompt;
         return null;
     }
+
+    /// Merge an override config (project-local) into this config (user-level).
+    /// Override values take precedence per field-specific rules.
+    /// Strings: override wins if non-empty.
+    /// Numbers: override wins if different from the default.
+    /// HashMaps: merge — override keys replace matching user keys.
+    /// mcp_servers: override replaces entirely.
+    pub fn mergeOverride(self: *Config, override: *Config) !void {
+        // Strings: override wins if non-empty
+        if (override.default_provider.len > 0) {
+            if (self.default_provider.len > 0) self.allocator.free(self.default_provider);
+            self.default_provider = try self.allocator.dupe(u8, override.default_provider);
+        }
+        if (override.default_model.len > 0) {
+            if (self.default_model.len > 0) self.allocator.free(self.default_model);
+            self.default_model = try self.allocator.dupe(u8, override.default_model);
+        }
+        if (override.system_prompt.len > 0) {
+            if (self.system_prompt.len > 0) self.allocator.free(self.system_prompt);
+            self.system_prompt = try self.allocator.dupe(u8, override.system_prompt);
+        }
+
+        // Numbers: override wins if != default
+        if (override.max_tokens != 4096) {
+            self.max_tokens = override.max_tokens;
+        }
+        if (override.temperature != 0.7) {
+            self.temperature = override.temperature;
+        }
+
+        // api_keys HashMap: merge — override keys replace, user-only keys preserved
+        var override_key_iter = override.api_keys.iterator();
+        while (override_key_iter.next()) |entry| {
+            const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+            const val_copy = try self.allocator.dupe(u8, entry.value_ptr.*);
+            // If key already exists, free old value (and old key if re-inserted)
+            if (self.api_keys.get(entry.key_ptr.*)) |old_val| {
+                self.allocator.free(old_val);
+                // We can reuse the existing key allocation
+                self.allocator.free(key_copy);
+                try self.api_keys.put(entry.key_ptr.*, val_copy);
+            } else {
+                try self.api_keys.put(key_copy, val_copy);
+            }
+        }
+
+        // mcp_servers: override replaces entirely
+        // Free old servers first
+        for (self.mcp_servers) |*server| {
+            server.deinit(self.allocator);
+        }
+        self.allocator.free(self.mcp_servers);
+        // Dupe override servers into self's allocator
+        var new_servers = array_list_compat.ArrayList(MCPServerDef).init(self.allocator);
+        for (override.mcp_servers) |*server| {
+            var duped_server: MCPServerDef = .{
+                .name = try self.allocator.dupe(u8, server.name),
+                .url = null,
+                .transport = null,
+                .command = null,
+                .args = null,
+            };
+            if (server.url) |u| duped_server.url = try self.allocator.dupe(u8, u);
+            if (server.transport) |t| duped_server.transport = try self.allocator.dupe(u8, t);
+            if (server.command) |c| duped_server.command = try self.allocator.dupe(u8, c);
+            if (server.args) |args| {
+                const duped_args = try self.allocator.alloc([]const u8, args.len);
+                for (args, 0..) |arg, i| {
+                    duped_args[i] = try self.allocator.dupe(u8, arg);
+                }
+                duped_server.args = duped_args;
+            }
+            try new_servers.append(duped_server);
+        }
+        self.mcp_servers = try new_servers.toOwnedSlice();
+
+        // provider_overrides HashMap: merge — same as api_keys
+        var override_po_iter = override.provider_overrides.iterator();
+        while (override_po_iter.next()) |entry| {
+            const key_copy = try self.allocator.dupe(u8, entry.key_ptr.*);
+            var duped_po: ProviderOverride = .{ .base_url = null };
+            if (entry.value_ptr.*.base_url) |u| {
+                duped_po.base_url = try self.allocator.dupe(u8, u);
+            }
+            // If key already exists, free old entry
+            if (self.provider_overrides.get(entry.key_ptr.*)) |old_po| {
+                self.allocator.free(old_po.base_url orelse "");
+                // Find and free the old key
+                var old_key_to_free: ?[]const u8 = null;
+                var self_iter = self.provider_overrides.iterator();
+                while (self_iter.next()) |self_entry| {
+                    if (std.mem.eql(u8, self_entry.key_ptr.*, entry.key_ptr.*)) {
+                        old_key_to_free = self_entry.key_ptr.*;
+                        break;
+                    }
+                }
+                if (old_key_to_free) |ok| self.allocator.free(ok);
+            }
+            try self.provider_overrides.put(key_copy, duped_po);
+        }
+    }
 };
 
 pub fn getConfigPath(allocator: std.mem.Allocator) ![]const u8 {
@@ -413,6 +515,19 @@ pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
             return err;
         }
     };
+
+    // Hierarchical config: project-local .crushcode/config.toml overrides user-level
+    if (project_mod.getProjectConfigPath(allocator)) |project_config_path| {
+        defer allocator.free(project_config_path);
+        var project_config = Config.init(allocator);
+        project_config.load(project_config_path) catch |err| {
+            std.log.warn("Failed to load project config: {} — using user config only", .{err});
+            project_config.deinit();
+            return config;
+        };
+        try config.mergeOverride(&project_config);
+        project_config.deinit();
+    }
 
     // Ensure providers.toml exists (idempotent — skips if already present)
     @import("providers_file").createDefaultProvidersFile() catch {};
