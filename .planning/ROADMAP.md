@@ -372,3 +372,151 @@ v0.7.0 Phase 21 → Phase 22 → Phase 23 → Phase 24 → Phase 25
 - Package managers (deb/rpm/brew) — install command พอ
 - IDE bridge (VS Code / JetBrains)
 - Real AST parsing (tree-sitter) — pattern search พอสำหรับ v0.7.0
+
+---
+
+## v0.33.0 — Self-Improving Agent
+
+**วัตถุประสงค์**: ทำให้ crushcode เรียนรู้จากการใช้งาน จำข้าม session และเสนอแผนก่อนแก้โค้ด
+
+**แรงบันดาลใจจากงานวิจัย**: Hermes Agent (learning loop, skill gen, user model), Claude Code (plan mode, context scoring), SWE-Pruner (relevance scoring), Codex (plan items)
+
+### Phase 26: Context Relevance Scoring
+**ปัญหา**: ตอนนี้ graph.zig ทิ้งไฟล์ทั้งหมดให้ AI — เปลือง token และ noise สูง
+**ทำ**:
+- Implement relevance scoring ใน `src/graph/graph.zig`: ให้คะแนนไฟล์ตามความเกี่ยวข้องกับ query
+- Use keyword matching + file type weighting + recency bias
+- Replace "dump all files" → "top-N most relevant files" ใน context builder
+- Show relevance scores in header: `ctx: 8/14 files (scored)`
+- ไฟล์: modify `src/graph/graph.zig`, `src/agent/context_builder.zig`, `src/tui/chat_tui_app.zig`
+
+**Plans:**
+- [ ] 26-01-PLAN.md — Implement file relevance scoring in graph.zig
+- [ ] 26-02-PLAN.md — Wire scored context into TUI context builder
+
+### Phase 27: User Model (USER.md)
+**ปัญหา**: Agent ไม่จำความชอบของ user ข้าม session — ต้องสั่งซ้ำทุกครั้ง
+**ทำ**:
+- Create `src/agent/user_model.zig`: persistent user preferences storage
+- Track: preferred coding style, common tools, language preferences, naming conventions
+- Load USER.md on startup, update after each session
+- Inject user preferences into system prompt
+- ไฟล์: new `src/agent/user_model.zig`, modify `src/tui/chat_tui_app.zig`, `src/agent/memory.zig`
+
+**Plans:**
+- [ ] 27-01-PLAN.md — Create user model with preference tracking
+- [ ] 27-02-PLAN.md — Wire user model into system prompt and session lifecycle
+
+### Phase 28: Auto Skill Generation
+**ปัญหา**: Skills ต้องเขียนเองทุกอัน — agent ไม่เรียนรู้จาก pattern ที่ทำซ้ำ
+**ทำ**:
+- Create `src/skills/auto_gen.zig`: detect repeated task patterns across sessions
+- Pattern detection: if same type of task executed 2+ times → propose skill
+- Auto-generate SKILL.md from successful task execution traces
+- Show notification: "💡 Detected pattern: 'refactor error handling' → Save as skill? [y/n]"
+- Security: scan generated skills for injection before saving
+- ไฟล์: new `src/skills/auto_gen.zig`, modify `src/skills/loader.zig`, `src/tui/chat_tui_app.zig`
+
+**Plans:**
+- [ ] 28-01-PLAN.md — Implement pattern detection and skill proposal
+- [ ] 28-02-PLAN.md — Wire auto-gen into agent loop with user confirmation
+
+### Phase 29: Plan Mode
+**ปัญหา**: Agent แก้โค้ดเลยโดยไม่ถาม — เหมือน dev ไฟลนก้น (ตามรีวิว Reddit)
+**ทำ**:
+- Add `/plan` slash command: enter plan mode where agent proposes changes without executing
+- Structured plan format: list of steps with files affected + risk level
+- User can approve/reject/edit plan before execution
+- `/plan execute` to run approved plan
+- `/plan cancel` to discard
+- ไฟล์: new `src/commands/handlers/plan_handler.zig`, modify `src/tui/chat_tui_app.zig`, `src/cli/args.zig`
+
+**Plans:**
+- [ ] 29-01-PLAN.md — Implement plan mode with structured plan format
+- [ ] 29-02-PLAN.md — Wire plan approval flow into TUI
+
+### Phase 30: Feedback Loop
+**ปัญหา**: Agent ไม่รู้ว่างานที่ทำไปดีหรือไม่ — ไม่มี mechanism ปรับปรุง
+**ทำ**:
+- Add task outcome tracking: success/failure/partial for each tool call sequence
+- Rate task quality after completion (auto + manual)
+- Store outcomes in memory with confidence scores
+- Use past outcomes to adjust future suggestions (prefer patterns that worked)
+- ไฟล์: new `src/agent/feedback.zig`, modify `src/agent/memory.zig`, `src/tui/chat_tui_app.zig`
+
+**Plans:**
+- [ ] 30-01-PLAN.md — Implement task outcome tracking and quality rating
+- [ ] 30-02-PLAN.md — Wire feedback into future suggestion ranking
+
+---
+
+## v0.33.0 ลำดับการทำ
+```
+v0.33.0 Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30
+         (scoring)  (user)   (auto-skill) (plan)  (feedback)
+```
+
+## v0.33.0+ Backlog (researched but deferred)
+- Sub-agent delegation (Hermes delegate_tool.py)
+- Graduated permission system (Parallax)
+- Mixture-of-Agents reasoning (Hermes MoA)
+- Skill hub integration (Hermes skills_hub.py)
+- Expand builtin tools to 15+ (Claude Code has 29)
+- Streaming diff preview (diffpane, tuicr)
+- Sandboxed execution (gVisor/LXC)
+- Multi-platform gateway (Telegram/Discord/Slack)
+
+---
+
+## v0.34.0 — Tool Expansion + Permissions + Delegation
+
+**วัตถุประสงค์**: เพิ่ม builtin tools, ปรับ permission UX, เพิ่ม sub-agent delegation
+
+**ลำดับตาม priority**: Tools → Permissions → Delegation (tools ต้องมีก่อน permission จะมีความหมาย)
+
+### Phase 31: Expand Builtin Tools to 15+
+**ปัญหา**: มีแค่ 6 tools — AI ทำอะไรไม่ได้มาก
+**ทำ**:
+- Add 9+ new tools: `list_directory`, `create_file`, `move_file`, `copy_file`, `undo_edit`, `git_status`, `git_diff`, `git_log`, `search_files`
+- Register all tools in system prompt and MCP schema
+- Each tool follows existing pattern in tool_executors.zig
+- ไฟล์: modify `src/chat/tool_executors.zig`, `src/tui/chat_tui_app.zig`
+
+**Plans:**
+- [ ] 31-01-PLAN.md — Implement file operation tools (list_directory, create_file, move_file, copy_file)
+- [ ] 31-02-PLAN.md — Implement git tools (git_status, git_diff, git_log) and search_files + undo_edit
+
+### Phase 32: Graduated Permission System
+**ปัญธา**: Permission ตอนนี้เป็น binary allow/deny — น่ารำคาญ
+**ทำ**:
+- 3 tiers: auto-allow (reads), ask (writes/edits), deny (destructive like rm -rf)
+- Permission levels: permissive (ask only destructive), normal (ask writes), strict (ask all)
+- Remember per-session: "always allow edit for src/"
+- Show tool category in permission dialog
+- ไฟล์: modify `src/permission/evaluate.zig`, `src/tui/widgets/permission.zig`, `src/chat/tool_executors.zig`
+
+**Plans:**
+- [ ] 32-01-PLAN.md — Implement graduated permission tiers with tool categorization
+- [ ] 32-02-PLAN.md — Wire into TUI permission dialog with "always allow" session memory
+
+### Phase 33: Sub-Agent Delegation
+**ปัญหา**: งานซับซ้อนต้องทำทีละอย่าง — ไม่มี parallel sub-task
+**ทำ**:
+- Create `src/agent/delegate.zig`: spawn sub-agent with scoped context
+- Sub-agent gets subset of tools + focused prompt
+- Parent collects results and synthesizes
+- Show in TUI: `● Agent 1: analyzing src/ai/... ✓`
+- Max 3 concurrent sub-agents
+- ไฟล์: new `src/agent/delegate.zig`, modify `src/agent/parallel.zig`, `src/tui/chat_tui_app.zig`
+
+**Plans:**
+- [ ] 33-01-PLAN.md — Implement sub-agent delegation with scoped context
+- [ ] 33-02-PLAN.md — Wire sub-agents into TUI with status display
+
+---
+
+## v0.34.0 ลำดับการทำ
+```
+v0.34.0 Phase 31 → Phase 32 → Phase 33
+          (tools)  (perms)   (delegate)
+```

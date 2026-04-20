@@ -2,90 +2,111 @@
 
 ## What This Is
 
-A Zig-based AI coding CLI tool that combines capabilities from OpenCode (AI agent orchestration) and Crush (Shell/CLI in Go). Built in Zig for native performance, zero dependencies, and cross-platform binary output.
+A Zig-based AI coding CLI/TUI tool that combines AI agent orchestration with a rich terminal interface. Built in Zig for native performance, zero dependencies, and cross-platform binary output. Currently at v0.32.0 with ~250 `.zig` files and ~105K lines.
 
 ## Core Value
 
-Ship a working AI coding assistant in Zig that can execute shell commands, manage files, and interact with AI providers (Ollama, OpenRouter).
+Ship a self-improving AI coding assistant in Zig that learns from usage, remembers across sessions, and produces production-quality code.
+
+## Current Milestone
+
+**v0.33.0 — Self-Improving Agent** (planned)
+
+Goals:
+1. Auto skill generation from repeated usage patterns
+2. User model (preferences, communication style, code conventions)
+3. Context relevance scoring (stop dumping entire codebase)
+4. Plan mode (propose plan → user approves → execute)
 
 ## Requirements
 
-### Validated
+### Validated (v0.3.1–v0.32.0)
 
-(None yet — ship to validate)
+- [x] AI chat with streaming responses (22 providers)
+- [x] TUI with Model/Msg/Update pattern (3924 lines)
+- [x] Shell command execution with PTY
+- [x] File read/write/edit/glob/grep tools
+- [x] MCP client/server integration
+- [x] Plugin system with JSON-RPC 2.0
+- [x] Skills system with hierarchical resolution
+- [x] Multi-agent parallel execution
+- [x] Knowledge graph with vault operations
+- [x] Auto-context compaction
+- [x] 4-layer memory architecture
+- [x] 21 TUI slash commands
+- [x] Git worktree support
 
-### Active
+### Active (v0.33.0)
 
-- [ ] Implement all remaining commands from reference repos
-- [ ] Add proper shell execution (PTY, interactive commands)
-- [ ] Complete MCP client/server integration
-- [ ] Add terminal UI (like Crush's bubble UI)
-- [ ] Implement skill system (like OpenCode's skills)
-- [ ] Add LSP integration
-- [ ] Build install script (like OpenCode's curl | bash)
+- [ ] **SELF-01**: Auto-detect repeated task patterns and generate SKILL.md files
+- [ ] **SELF-02**: Persistent user model (USER.md) learning preferences across sessions
+- [ ] **SELF-03**: Context relevance scoring — rank files by query similarity, not dump all
+- [ ] **SELF-04**: Plan mode — generate structured plan before code changes, user approves
+- [ ] **SELF-05**: Feedback loop — rate task outcomes, improve future suggestions
+
+### Backlog
+
+- [ ] Sub-agent delegation (isolated child agents)
+- [ ] Graduated permission system (risk-based auto/manual approval)
+- [ ] Mixture-of-Agents reasoning (multiple models collaborate)
+- [ ] Skill hub (share/install skills from community)
+- [ ] Expand builtin tools (web_fetch, code_search, git_ops)
+- [ ] Streaming diff preview with accept/reject
+- [ ] Sandboxed execution for untrusted shell commands
 
 ### Out of Scope
 
-- Desktop GUI app — CLI only for v1
+- Desktop GUI app — CLI/TUI only
 - Web-based UI — terminal-first
 - Mobile support
+- Model weight training/fine-tuning
 
 ## Context
 
 ### Reference Projects Analyzed
 
-**OpenCode** (https://github.com/anomalyco/opencode):
-- AI coding agent with TUI
-- Skills system with skill definitions
-- MCP client/server
-- LSP integration
-- Install script (curl | bash)
-- Multiple AI providers
+| Project | Key Takeaway |
+|---------|-------------|
+| **Hermes Agent** (NousResearch) | Self-improving loop, auto skill gen, MoA reasoning, multi-platform gateway |
+| **Claude Code** (Anthropic) | Plan mode, micro-compaction, 29 tools, progressive disclosure |
+| **Codex** (OpenAI) | Structured plan items, sandbox execution, error code system |
+| **OpenCode** (anomalyco) | TUI architecture, session context breakdown, skill system |
+| **Goose** (block) | Permission inspector chain, retry manager, session extension |
+| **Awesome Design MD** (VoltAgent) | DESIGN.md format for UI consistency |
 
-**Crush** (https://github.com/charmbracelet/crush):
-- Shell in Go with bubble UI
-- Rich terminal UI components (list, table, spinner)
-- Job control, pipes, redirections
-- Permission system
+### Architecture
 
-### Current Crushcode State
-
-**Existing (from codebase map)**:
-- HTTP AI client (Ollama, OpenRouter, OpenCode Zen/Go)
-- CLI args parsing
-- Config management
-- Plugin system (PTYs, shell, notifier, table formatter)
-- MCP client and discovery
-- File operations module
-- Chat command, read command
-
-**Gaps vs References**:
-- Skills system (OpenCode has skill definitions)
-- Full terminal UI (Crush has rich bubble UI)
-- Complete shell execution (need PTY + job control)
-- Install script
-- LSP integration
-- Permission handling
-
-### Current Branch
-
-- Branch: `001-http-client-ai`
-- Last work: OpenRouter model support
+```
+src/main.zig → cli/args.zig → commands/handlers.zig
+src/tui/chat_tui_app.zig — main TUI app (Model/Msg/Update)
+src/ai/client.zig — AI HTTP client (22 providers, streaming)
+src/agent/ — agent loop, compaction, memory, parallel, orchestrator
+src/hybrid_bridge.zig — unified tool dispatch (builtin → MCP → plugins)
+src/skills/ — loader, resolver, pipeline, import, agents_parser
+src/knowledge/ — schema, vault, persistence, ops, lint
+src/plugin/ — mod.zig barrel (types, registry, manager, runtime, protocol)
+src/permission/ — evaluate, audit, governance, guardian, lists
+src/mcp/ — client, bridge, discovery, server, transport
+```
 
 ## Constraints
 
 - **Language**: Zig — must use Zig stdlib only (no external deps)
 - **Target**: Cross-platform CLI binary
 - **Build**: `zig build` producing `crushcode` executable
+- **Build cache**: `--cache-dir /tmp/zig-build-cache`
+- **Platform**: Linux primary, WSL secondary
 
 ## Key Decisions
 
 | Decision | Rationale | Outcome |
 |----------|---------|---------|
 | Language: Zig | Native performance, zero deps, cross-platform | ✓ Good |
-| Build System: Zig build | Standard Zig tooling | — Pending |
-| No external deps for AI | Use std.http, std.json | — Pending |
+| No external deps | std.http, std.json, std.process | ✓ Working |
+| Hybrid bridge for tools | Builtin → MCP → Plugin dispatch | ✓ Extensible |
+| 4-layer memory | Session → Working → Insights → Project | ✓ Sophisticated |
+| JSON-RPC 2.0 plugins | Industry standard, simple protocol | ✓ Interoperable |
 
 ---
 
-*Last updated: 2026-04-11 after cloning reference repos*
+*Last updated: 2026-04-19 for v0.33.0 milestone planning*

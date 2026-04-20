@@ -1,9 +1,9 @@
-# State: Crushcode v0.33.0
+# State: Crushcode v0.36.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-20
-**Commit:** 6ff16d4
-**Stats:** ~256 `.zig` files, ~110K lines
+**Commit:** 2d980d8
+**Stats:** ~260 `.zig` files, ~113K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.33.0 — Self-Improving Agent |
-| Phase | All phases complete |
-| Status | ✅ Done |
-| Code Version | 0.33.0 |
+| Milestone | v0.34.0 — Tool Expansion + Permissions + Delegation |
+| Phase | COMPLETE |
+| Status | ✅ All phases shipped |
+| Code Version | 0.34.0 |
 
 ---
 
