@@ -156,14 +156,8 @@ pub fn build(b: *std.Build) !void {
     const skills_loader_mod = createMod(b, "src/skills/loader.zig", target, optimize, &.{
         imp("skills_resolver", skills_resolver_mod),
     });
-    const skill_pipeline_mod = createMod(b, "src/skills/pipeline.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
-    const skill_sync_mod = createMod(b, "src/skills/sync.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
+    const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
+    const skill_sync_mod = simpleMod(b, "src/skills/sync.zig", target, optimize);
     const tools_mod = simpleMod(b, "src/tools/registry.zig", target, optimize);
 
     const streaming_types_mod = simpleMod(b, "src/streaming/types.zig", target, optimize);
@@ -174,13 +168,13 @@ pub fn build(b: *std.Build) !void {
     const intensity_mod = simpleMod(b, "src/core/intensity.zig", target, optimize);
     const tiered_loader_mod = simpleMod(b, "src/core/tiered_loader.zig", target, optimize);
     const convergence_mod = simpleMod(b, "src/core/convergence.zig", target, optimize);
-    const color_mod = createMod(b, "src/core/color.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
+    const color_mod = simpleMod(b, "src/core/color.zig", target, optimize);
     addImports(git_mod, &.{imp("color", color_mod)});
-    const source_tracker_mod = createMod(b, "src/core/source_tracker.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
-    const knowledge_lint_mod = createMod(b, "src/core/knowledge_lint.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
-    const slash_commands_mod = createMod(b, "src/core/slash_commands.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
+    const source_tracker_mod = simpleMod(b, "src/core/source_tracker.zig", target, optimize);
+    const knowledge_lint_mod = simpleMod(b, "src/core/knowledge_lint.zig", target, optimize);
+    const slash_commands_mod = simpleMod(b, "src/core/slash_commands.zig", target, optimize);
     const revision_loop_mod = createMod(b, "src/core/revision_loop.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod), imp("convergence", convergence_mod),
+        imp("convergence", convergence_mod),
     });
     const file_tracker_mod = simpleMod(b, "src/core/file_tracker.zig", target, optimize);
 
@@ -203,7 +197,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const session_summarizer_mod = simpleMod(b, "src/core/session_summarizer.zig", target, optimize);
-    const model_hotswap_mod = createMod(b, "src/core/model_hotswap.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
+    const model_hotswap_mod = simpleMod(b, "src/core/model_hotswap.zig", target, optimize);
     addImports(chat_mod, &.{ imp("session_summarizer", session_summarizer_mod), imp("model_hotswap", model_hotswap_mod) });
     addImports(chat_helpers_mod, &.{
         imp("core_api", core_api_mod),
@@ -212,13 +206,13 @@ pub fn build(b: *std.Build) !void {
         imp("session_summarizer", session_summarizer_mod),
     });
 
-    const adversarial_review_mod = createMod(b, "src/core/adversarial_review.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
+    const adversarial_review_mod = simpleMod(b, "src/core/adversarial_review.zig", target, optimize);
     const structured_log_mod = createMod(b, "src/core/structured_log.zig", target, optimize, &.{imp("env", env_mod)});
     addImports(chat_mod, &.{ imp("adversarial_review", adversarial_review_mod), imp("structured_log", structured_log_mod) });
 
-    const spinner_mod = createMod(b, "src/core/spinner.zig", target, optimize, &.{ imp("file_compat", compat_file_mod), imp("color", color_mod) });
-    const markdown_renderer_mod = createMod(b, "src/core/markdown_renderer.zig", target, optimize, &.{ imp("file_compat", compat_file_mod), imp("color", color_mod) });
-    const error_display_mod = createMod(b, "src/core/error_display.zig", target, optimize, &.{ imp("file_compat", compat_file_mod), imp("color", color_mod) });
+    const spinner_mod = createMod(b, "src/core/spinner.zig", target, optimize, &.{imp("color", color_mod)});
+    const markdown_renderer_mod = createMod(b, "src/core/markdown_renderer.zig", target, optimize, &.{imp("color", color_mod)});
+    const error_display_mod = createMod(b, "src/core/error_display.zig", target, optimize, &.{imp("color", color_mod)});
     addImports(chat_mod, &.{
         imp("spinner", spinner_mod), imp("markdown_renderer", markdown_renderer_mod), imp("error_display", error_display_mod), imp("structured_log", structured_log_mod),
     });
@@ -314,10 +308,7 @@ pub fn build(b: *std.Build) !void {
         imp("vaxis", vaxis_dep.module("vaxis")),
         imp("theme", theme_mod),
     });
-    const code_preview_mod = createMod(b, "src/tui/code_preview.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
+    const code_preview_mod = simpleMod(b, "src/tui/code_preview.zig", target, optimize);
     const widget_data_table_mod = simpleMod(b, "src/tui/widgets/data_table.zig", target, optimize);
     const widget_scroll_panel_mod = simpleMod(b, "src/tui/widgets/scroll_panel.zig", target, optimize);
     addImports(tui_mod, &.{
@@ -357,7 +348,6 @@ pub fn build(b: *std.Build) !void {
     const usage_tracker_mod = createMod(b, "src/usage/tracker.zig", target, optimize, &.{imp("streaming_types", streaming_types_mod)});
     const usage_budget_mod = simpleMod(b, "src/usage/budget.zig", target, optimize);
     const usage_report_mod = createMod(b, "src/usage/report.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod), imp("file_compat", compat_file_mod),
         imp("usage_tracker", usage_tracker_mod),         imp("usage_budget", usage_budget_mod),
     });
 
@@ -440,7 +430,6 @@ pub fn build(b: *std.Build) !void {
     addImports(config_mod, &.{imp("migrate", migrate_mod)});
 
     const project_mod = simpleMod(b, "src/config/project.zig", target, optimize);
-    addImports(project_mod, &.{ imp("array_list_compat", compat_array_list_mod), imp("file_compat", compat_file_mod) });
     addImports(tui_mod, &.{imp("project", project_mod)});
     addImports(config_mod, &.{imp("project", project_mod)});
 
@@ -465,13 +454,9 @@ pub fn build(b: *std.Build) !void {
     const worktree_mod = createMod(b, "src/agent/worktree.zig", target, optimize, &.{imp("shell", shell_mod)});
     const lifecycle_hooks_mod = simpleMod(b, "src/hooks/lifecycle.zig", target, optimize);
     const hooks_executor_mod = createMod(b, "src/hooks/executor.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("lifecycle_hooks", lifecycle_hooks_mod),
     });
     const guardian_mod = createMod(b, "src/permission/guardian.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("hooks_executor", hooks_executor_mod),
         imp("lifecycle_hooks", lifecycle_hooks_mod),
         imp("governance", governance_mod),
@@ -524,50 +509,22 @@ pub fn build(b: *std.Build) !void {
         imp("worker", worker_mod),
     });
     const coordinator_mod = createMod(b, "src/agent/coordinator.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("worker", worker_mod),
     });
-    const background_agent_mod = createMod(b, "src/agent/background.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
-    const adversarial_mod = createMod(b, "src/agent/adversarial.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
-    const user_model_mod = createMod(b, "src/agent/user_model.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
-    const feedback_mod = createMod(b, "src/agent/feedback.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-    });
-    const delegate_mod = createMod(b, "src/agent/delegate.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-    });
-    const moa_mod = createMod(b, "src/agent/moa.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-    });
-    const auto_gen_mod = createMod(b, "src/skills/auto_gen.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
+    const background_agent_mod = simpleMod(b, "src/agent/background.zig", target, optimize);
+    const adversarial_mod = simpleMod(b, "src/agent/adversarial.zig", target, optimize);
+    const user_model_mod = simpleMod(b, "src/agent/user_model.zig", target, optimize);
+    const feedback_mod = simpleMod(b, "src/agent/feedback.zig", target, optimize);
+    const delegate_mod = simpleMod(b, "src/agent/delegate.zig", target, optimize);
+    const moa_mod = simpleMod(b, "src/agent/moa.zig", target, optimize);
+    const auto_gen_mod = simpleMod(b, "src/skills/auto_gen.zig", target, optimize);
     const phase_runner_mod = createMod(b, "src/execution/phase_runner.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("workflow", workflow_mod),
         imp("skill_pipeline", skill_pipeline_mod),
         imp("adversarial", adversarial_mod),
     });
-    const template_mod = createMod(b, "src/marketplace/template.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
-    const file_type_mod = createMod(b, "src/detection/file_type.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
+    const template_mod = simpleMod(b, "src/marketplace/template.zig", target, optimize);
+    const file_type_mod = simpleMod(b, "src/detection/file_type.zig", target, optimize);
     const cognition_mod = createMod(b, "src/agent/context_builder.zig", target, optimize, &.{
         imp("file_type", file_type_mod),
         imp("graph", graph_mod),
@@ -576,10 +533,7 @@ pub fn build(b: *std.Build) !void {
         imp("knowledge_query_mod", knowledge_ops_mod),
         imp("source_tracker", source_tracker_mod),
     });
-    const layered_memory_mod = createMod(b, "src/agent/layered_memory.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
-    });
+    const layered_memory_mod = simpleMod(b, "src/agent/layered_memory.zig", target, optimize);
     addImports(cognition_mod, &.{imp("layered_memory", layered_memory_mod), imp("user_model", user_model_mod)});
     addImports(cognition_mod, &.{
         imp("tiered_loader", tiered_loader_mod),
@@ -587,8 +541,6 @@ pub fn build(b: *std.Build) !void {
         imp("context_optimizer", context_optimizer_mod),
     });
     const autopilot_mod = createMod(b, "src/execution/autopilot.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("background_agent", background_agent_mod),
         imp("cognition", cognition_mod),
         imp("guardian", guardian_mod),
@@ -596,8 +548,6 @@ pub fn build(b: *std.Build) !void {
     const router_mod = simpleMod(b, "src/agent/router.zig", target, optimize);
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
     const orchestration_mod = createMod(b, "src/agent/orchestrator.zig", target, optimize, &.{
-        imp("array_list_compat", compat_array_list_mod),
-        imp("file_compat", compat_file_mod),
         imp("worker", worker_mod),
         imp("coordinator", coordinator_mod),
         imp("router", router_mod),
