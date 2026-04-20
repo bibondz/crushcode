@@ -546,6 +546,9 @@ pub fn build(b: *std.Build) !void {
     const delegate_mod = createMod(b, "src/agent/delegate.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
     });
+    const moa_mod = createMod(b, "src/agent/moa.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+    });
     const auto_gen_mod = createMod(b, "src/skills/auto_gen.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
         imp("file_compat", compat_file_mod),
@@ -744,6 +747,7 @@ pub fn build(b: *std.Build) !void {
         feedback_mod,
         plan_handler_mod,
         delegate_mod,
+        moa_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -821,6 +825,7 @@ pub fn build(b: *std.Build) !void {
         feedback_mod,
         plan_handler_mod,
         delegate_mod,
+        moa_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
