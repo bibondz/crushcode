@@ -41,6 +41,9 @@ pub const Theme = struct {
     md_table_border_fg: vaxis.Color,
     md_task_done_fg: vaxis.Color,
     md_task_undone_fg: vaxis.Color,
+    md_type_fg: vaxis.Color,
+    md_function_fg: vaxis.Color,
+    md_operator_fg: vaxis.Color,
     // Diff colors
     diff_file_header_fg: vaxis.Color,
     diff_hunk_header_fg: vaxis.Color,
@@ -112,6 +115,9 @@ pub const themes = [_]Theme{
         .md_table_border_fg = .{ .index = 240 },
         .md_task_done_fg = .{ .index = 10 },
         .md_task_undone_fg = .{ .index = 243 },
+        .md_type_fg = .{ .index = 14 },
+        .md_function_fg = .{ .index = 10 },
+        .md_operator_fg = .{ .index = 13 },
         // Diff colors
         .diff_file_header_fg = .{ .index = 14 },
         .diff_hunk_header_fg = .{ .index = 11 },
@@ -181,6 +187,9 @@ pub const themes = [_]Theme{
         .md_table_border_fg = .{ .index = 7 },
         .md_task_done_fg = .{ .index = 2 },
         .md_task_undone_fg = .{ .index = 243 },
+        .md_type_fg = .{ .index = 6 },
+        .md_function_fg = .{ .index = 2 },
+        .md_operator_fg = .{ .index = 5 },
         // Diff colors
         .diff_file_header_fg = .{ .index = 6 },
         .diff_hunk_header_fg = .{ .index = 3 },
@@ -250,6 +259,9 @@ pub const themes = [_]Theme{
         .md_table_border_fg = .default,
         .md_task_done_fg = .default,
         .md_task_undone_fg = .default,
+        .md_type_fg = .default,
+        .md_function_fg = .default,
+        .md_operator_fg = .default,
         // Diff colors
         .diff_file_header_fg = .default,
         .diff_hunk_header_fg = .default,

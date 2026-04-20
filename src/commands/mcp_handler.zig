@@ -23,6 +23,8 @@ pub fn handleMCP(args: args_mod.Args) !void {
         stdout_print("  crushcode mcp tools <server>          List tools on a server\n", .{});
         stdout_print("  crushcode mcp execute <server> <tool> [json]  Execute a tool\n", .{});
         stdout_print("  crushcode mcp connect <name> <command> [--args ...]  Connect via stdio\n", .{});
+        stdout_print("  crushcode mcp connect <name> --transport sse --url <url>  Connect via SSE\n", .{});
+        stdout_print("  crushcode mcp connect <name> --transport http --url <url>  Connect via HTTP\n", .{});
         stdout_print("  crushcode mcp discover [search]       Search for MCP servers\n", .{});
         stdout_print("  crushcode mcp serve [--transport stdio|http] [--port 8080]  Start MCP server\n", .{});
         stdout_print("\nOptions:\n", .{});
@@ -163,25 +165,74 @@ pub fn handleMCP(args: args_mod.Args) !void {
     } else if (std.mem.eql(u8, subcommand, "connect")) {
         if (args.remaining.len < 3) {
             stdout_print("Usage: crushcode mcp connect <name> <command> [--args ...]\n", .{});
+            stdout_print("       crushcode mcp connect <name> --transport sse --url <url>\n", .{});
+            stdout_print("       crushcode mcp connect <name> --transport http --url <url>\n", .{});
             stdout_print("Example: crushcode mcp connect filesystem mcp-server-filesystem /tmp\n", .{});
+            stdout_print("         crushcode mcp connect my-server --transport sse --url http://localhost:8080/sse\n", .{});
             return;
         }
         const name = args.remaining[1];
-        const command = args.remaining[2];
+
+        // Parse --transport and --url flags, everything else is command + args for stdio
+        var transport_type: mcp_client_mod.TransportType = .stdio;
+        var url: ?[]const u8 = null;
+        var command: ?[]const u8 = null;
+
+        var i: usize = 2;
+        while (i < args.remaining.len) : (i += 1) {
+            if (std.mem.eql(u8, args.remaining[i], "--transport")) {
+                i += 1;
+                if (i < args.remaining.len) {
+                    if (std.mem.eql(u8, args.remaining[i], "sse")) {
+                        transport_type = .sse;
+                    } else if (std.mem.eql(u8, args.remaining[i], "http")) {
+                        transport_type = .http;
+                    }
+                }
+            } else if (std.mem.eql(u8, args.remaining[i], "--url")) {
+                i += 1;
+                if (i < args.remaining.len) {
+                    url = args.remaining[i];
+                }
+            } else if (command == null) {
+                command = args.remaining[i];
+            }
+        }
+
+        // For non-stdio transports, url is required
+        if (transport_type != .stdio) {
+            if (url == null) {
+                stdout_print("Error: --url is required for {s} transport\n", .{@tagName(transport_type)});
+                return;
+            }
+            command = null; // not needed for SSE/HTTP
+        }
 
         var server_args = array_list_compat.ArrayList([]const u8).init(allocator);
         defer server_args.deinit();
-        for (args.remaining[3..]) |arg| {
-            try server_args.append(arg);
+
+        // For stdio, collect positional args after the command as server arguments
+        if (transport_type == .stdio and command != null) {
+            var found_cmd = false;
+            for (args.remaining[2..]) |arg| {
+                if (std.mem.eql(u8, arg, "--transport") or std.mem.eql(u8, arg, "--url")) break;
+                if (found_cmd) {
+                    try server_args.append(arg);
+                }
+                if (std.mem.eql(u8, arg, command.?)) {
+                    found_cmd = true;
+                }
+            }
         }
 
         const config = mcp_client_mod.MCPServerConfig{
-            .transport = .stdio,
+            .transport = transport_type,
             .command = command,
+            .url = url,
             .args = if (server_args.items.len > 0) server_args.items else null,
         };
 
-        stdout_print("Connecting to MCP server '{s}' via stdio...\n", .{name});
+        stdout_print("Connecting to MCP server '{s}' via {s}...\n", .{ name, @tagName(transport_type) });
         const conn = client.connectToServer(name, config) catch |err| {
             stdout_print("Error connecting to '{s}': {}\n", .{ name, err });
             return;

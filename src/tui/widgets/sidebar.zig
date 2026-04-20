@@ -88,7 +88,7 @@ pub const SidebarWidget = struct {
         const w = width - 2;
 
         var child_idx: usize = 0;
-        var children = try ctx.arena.alloc(vxfw.SubSurface, 20);
+        var children = try ctx.arena.alloc(vxfw.SubSurface, 25);
         var row: u16 = 1;
 
         children[child_idx] = .{
@@ -163,6 +163,47 @@ pub const SidebarWidget = struct {
         children[child_idx] = .{
             .origin = .{ .row = row, .col = 1 },
             .surface = try self.buildText(ctx, time_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        // Context section
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "📊 Context", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const tokens_breakdown = try std.fmt.allocPrint(ctx.arena, "🔢 in:{d} out:{d}", .{ self.context.total_input_tokens, self.context.total_output_tokens });
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, tokens_breakdown, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const files_count_txt = try std.fmt.allocPrint(ctx.arena, "📄 {d} files", .{self.context.recent_files.len});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, files_count_txt, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const cost_display = try std.fmt.allocPrint(ctx.arena, "💰 ${d:.4}", .{self.context.estimated_cost_usd});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, cost_display, self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const turns_display = try std.fmt.allocPrint(ctx.arena, "🔄 {d} turns", .{self.context.request_count});
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, turns_display, self.width - 2, .{ .fg = theme.dimmed }),
         };
         child_idx += 1;
         row += 1;

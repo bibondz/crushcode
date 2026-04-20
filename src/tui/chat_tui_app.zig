@@ -3175,6 +3175,83 @@ pub const Model = struct {
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
                 try self.addMessageUnlocked("assistant", text);
             }
+        } else if (std.mem.eql(u8, name, "/refs") or std.mem.startsWith(u8, name, "/refs ")) {
+            // LSP find-references
+            if (!self.lsp_manager.enabled) {
+                try self.addMessageUnlocked("assistant", "LSP is disabled.");
+            } else if (self.lsp_manager.file_diagnostics.items.len == 0 and self.recent_files.items.len == 0) {
+                try self.addMessageUnlocked("assistant", "No files tracked. Open a file first, then use /refs <symbol> or /refs <file>:<line>:<col>.");
+            } else {
+                const arg = std.mem.trim(u8, name["/refs".len..], " \t\r\n");
+                var target_file: ?[]const u8 = null;
+                var target_line: u32 = 0;
+                var target_char: u32 = 0;
+
+                if (arg.len > 0) {
+                    // Parse arg as file:line:col or bare symbol name
+                    if (std.mem.indexOfScalar(u8, arg, ':')) |colon1| {
+                        target_file = arg[0..colon1];
+                        const rest = arg[colon1 + 1 ..];
+                        if (std.mem.indexOfScalar(u8, rest, ':')) |colon2| {
+                            target_line = std.fmt.parseInt(u32, rest[0..colon2], 10) catch 0;
+                            target_char = std.fmt.parseInt(u32, rest[colon2 + 1 ..], 10) catch 0;
+                        } else {
+                            target_line = std.fmt.parseInt(u32, rest, 10) catch 0;
+                        }
+                    } else {
+                        // Bare symbol — resolve from first tracked file
+                        if (self.recent_files.items.len > 0) {
+                            target_file = self.recent_files.items[0];
+                        } else if (self.lsp_manager.file_diagnostics.items.len > 0) {
+                            target_file = self.lsp_manager.file_diagnostics.items[0].file_path;
+                        }
+                        if (target_file) |fp| {
+                            const content = std.fs.cwd().readFileAlloc(self.allocator, fp, 10 * 1024 * 1024) catch "";
+                            defer if (content.len > 0) self.allocator.free(content);
+                            if (findSymbolPosition(content, arg)) |pos| {
+                                target_line = pos.line;
+                                target_char = pos.character;
+                            }
+                        }
+                    }
+                } else {
+                    if (self.recent_files.items.len > 0) {
+                        target_file = self.recent_files.items[0];
+                    } else if (self.lsp_manager.file_diagnostics.items.len > 0) {
+                        target_file = self.lsp_manager.file_diagnostics.items[0].file_path;
+                    }
+                }
+
+                if (target_file) |fp| {
+                    const locations = self.lsp_manager.findReferences(fp, target_line, target_char);
+                    if (locations) |locs| {
+                        if (locs.len == 0) {
+                            try self.addMessageUnlocked("assistant", "No references found.");
+                        } else {
+                            var buf: [4096]u8 = undefined;
+                            var ref_offset: usize = 0;
+                            if (std.fmt.bufPrint(&buf, "LSP References ({d}):\n", .{locs.len})) |written| {
+                                ref_offset = written.len;
+                            } else |_| {}
+                            for (locs) |loc| {
+                                const display_path = stripFileUriPrefix(loc.uri);
+                                const line_result = std.fmt.bufPrint(buf[ref_offset..], "  {s}:{d}:{d}\n", .{ display_path, loc.range.start.line + 1, loc.range.start.character + 1 });
+                                if (line_result) |written| {
+                                    ref_offset += written.len;
+                                } else |_| {}
+                            }
+                            for (locs) |loc| self.allocator.free(loc.uri);
+                            self.allocator.free(locs);
+                            const ref_text = try self.allocator.dupe(u8, buf[0..ref_offset]);
+                            try self.addMessageUnlocked("assistant", ref_text);
+                        }
+                    } else {
+                        try self.addMessageUnlocked("assistant", "LSP references unavailable — no language server for this file or LSP not started.");
+                    }
+                } else {
+                    try self.addMessageUnlocked("assistant", "No file to search. Usage: /refs [file:line:col] or /refs <symbol>");
+                }
+            }
         } else if (std.mem.startsWith(u8, name, "/kill ")) {
             const id_str = name[6..];
             const id = std.fmt.parseInt(u32, id_str, 10) catch {
@@ -4384,6 +4461,42 @@ pub fn run(allocator: std.mem.Allocator, provider_name: []const u8, model_name: 
         .model_name = model_name,
         .api_key = api_key,
     });
+}
+
+/// Find the first occurrence of `symbol` in file content as a whole word, returning 0-based line/character.
+fn findSymbolPosition(content: []const u8, symbol: []const u8) ?struct { line: u32, character: u32 } {
+    if (symbol.len == 0 or content.len == 0) return null;
+    var line: u32 = 0;
+    var col: u32 = 0;
+    var i: usize = 0;
+    while (i < content.len) : (i += 1) {
+        if (content[i] == '\n') {
+            line += 1;
+            col = 0;
+            continue;
+        }
+        if (i + symbol.len <= content.len and std.mem.eql(u8, content[i .. i + symbol.len], symbol)) {
+            const before_ok = i == 0 or !std.ascii.isAlphanumeric(content[i - 1]) and content[i - 1] != '_';
+            const after_idx = i + symbol.len;
+            const after_ok = after_idx >= content.len or !std.ascii.isAlphanumeric(content[after_idx]) and content[after_idx] != '_';
+            if (before_ok and after_ok) {
+                return .{ .line = line, .character = col };
+            }
+        }
+        col += 1;
+    }
+    return null;
+}
+
+/// Strip "file://" or "file:///" prefix from a URI for display.
+fn stripFileUriPrefix(uri: []const u8) []const u8 {
+    if (std.mem.startsWith(u8, uri, "file:///")) {
+        return uri["file:///".len..];
+    }
+    if (std.mem.startsWith(u8, uri, "file://")) {
+        return uri["file://".len..];
+    }
+    return uri;
 }
 
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {

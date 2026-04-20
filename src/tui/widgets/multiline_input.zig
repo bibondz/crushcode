@@ -147,7 +147,10 @@ show_suggestions: bool = false,
 suggestion_list: []const []const u8 = &.{},
 suggestion_selected: usize = 0,
 suggestion_count: usize = 0,
-suggestion_filtered: [64]usize = [_]usize{0} ** 64,
+    suggestion_filtered: [64]usize = [_]usize{0} ** 64,
+
+    /// Ctrl+X Ctrl+E chord state for external editor
+    ctrl_x_pending: bool = false,
 
 pub fn init(allocator: Allocator) MultiLineInputState {
     return .{
@@ -210,6 +213,20 @@ pub fn handleEvent(self: *MultiLineInputState, ctx: *vxfw.EventContext, event: v
                     }
                     return ctx.consumeAndRedraw();
                 }
+            }
+            // --- Ctrl+X Ctrl+E: open external editor ---
+            if (key.matches('x', .{ .ctrl = true })) {
+                self.ctrl_x_pending = true;
+                return ctx.consumeAndRedraw();
+            }
+            if (self.ctrl_x_pending) {
+                if (key.matches('e', .{ .ctrl = true })) {
+                    self.ctrl_x_pending = false;
+                    self.openExternalEditor();
+                    return self.checkChanged(ctx);
+                }
+                // Any other key cancels the chord, fall through to normal handling
+                self.ctrl_x_pending = false;
             }
             // Shift+Enter = insert newline
             if (key.matches(Key.enter, .{ .shift = true })) {
@@ -659,6 +676,59 @@ fn acceptSuggestion(self: *MultiLineInputState) void {
 fn dismissSuggestions(self: *MultiLineInputState) void {
     self.show_suggestions = false;
     self.suggestion_count = 0;
+}
+
+// --- External editor (Ctrl+X Ctrl+E) ---
+
+/// Open an external editor ($EDITOR or vi) with the current input content,
+/// then read the result back into the gap buffer.
+fn openExternalEditor(self: *MultiLineInputState) void {
+    const allocator = self.buf.allocator;
+
+    // Get current content from gap buffer
+    const content = self.buf.dupe() catch return;
+    defer allocator.free(content);
+
+    // Build temp file path: /tmp/crushcode-input-{timestamp}.md
+    const timestamp = std.time.timestamp();
+    const filepath = std.fmt.allocPrint(allocator, "/tmp/crushcode-input-{d}.md", .{timestamp}) catch return;
+    defer allocator.free(filepath);
+
+    // Write current content to temp file
+    {
+        const tmp_file = std.fs.createFileAbsolute(filepath, .{}) catch return;
+        defer tmp_file.close();
+        tmp_file.writeAll(content) catch return;
+    }
+
+    // Resolve editor from $EDITOR, fallback to vi
+    const editor: []const u8 = if (std.posix.getenv("EDITOR")) |raw| std.mem.sliceTo(raw, 0) else "vi";
+
+    // Spawn editor with inherited stdio so it can interact with the terminal
+    var child = std.process.Child.init(&.{ editor, filepath }, allocator);
+    child.stdin_behavior = .Inherit;
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+    child.spawn() catch return;
+    _ = child.wait() catch return;
+
+    // Read the file back
+    const new_content = blk: {
+        const read_file = std.fs.openFileAbsolute(filepath, .{}) catch return;
+        defer read_file.close();
+        break :blk read_file.readToEndAlloc(allocator, 1024 * 1024) catch return;
+    };
+    defer allocator.free(new_content);
+
+    // Clear gap buffer and insert new content
+    self.buf.clearAndFree();
+    self.buf.insertSliceAtCursor(new_content) catch {};
+
+    // Best-effort cleanup of temp file
+    if (std.fs.openDirAbsolute("/tmp", .{})) |tmp_dir| {
+        const filename_start = std.mem.lastIndexOfScalar(u8, filepath, '/') orelse return;
+        tmp_dir.deleteFile(filepath[filename_start + 1 ..]) catch {};
+    } else |_| {}
 }
 
 /// Get the name of the Nth filtered suggestion.

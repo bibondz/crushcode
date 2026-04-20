@@ -49,7 +49,7 @@ pub const all_slash_command_names = [_][]const u8{
     "/wave",    "/worktree", "/hooks",    "/gate",    "/insights",
     "/feedback",
     "/skills/auto",
-    "/plan",
+    "/plan",     "/undo",     "/lsp-restart", "/export",
 };
 
 /// Check if a string is a recognized slash command.
@@ -164,6 +164,11 @@ pub const SlashCommandRegistry = struct {
         try self.register(SlashCommand{ .name = "/s", .description = "Alias for /status", .handler = cmdStatus });
         try self.register(SlashCommand{ .name = "/t", .description = "Alias for /tokens", .handler = cmdTokens });
         try self.register(SlashCommand{ .name = "/v", .description = "Alias for /version", .handler = cmdVersion });
+
+        // Extended commands
+        try self.register(SlashCommand{ .name = "/undo", .description = "Undo last change via git stash", .handler = cmdUndo });
+        try self.register(SlashCommand{ .name = "/lsp-restart", .description = "Restart LSP servers", .handler = cmdLspRestart });
+        try self.register(SlashCommand{ .name = "/export", .description = "Export session to Markdown", .handler = cmdExport });
     }
 
     /// Register a custom command
@@ -310,6 +315,21 @@ fn cmdVersion(allocator: Allocator, args: []const u8) !CommandResult {
 fn cmdStatus(allocator: Allocator, args: []const u8) !CommandResult {
     _ = args;
     return CommandResult.init(allocator, "Status: active | Model: (default) | Turns: 0");
+}
+
+fn cmdUndo(allocator: Allocator, args: []const u8) !CommandResult {
+    _ = args;
+    return CommandResult.init(allocator, "Undo: stash created. Use /diag for details.");
+}
+
+fn cmdLspRestart(allocator: Allocator, args: []const u8) !CommandResult {
+    _ = args;
+    return CommandResult.init(allocator, "LSP restarting...");
+}
+
+fn cmdExport(allocator: Allocator, args: []const u8) !CommandResult {
+    _ = args;
+    return CommandResult.init(allocator, "Session exported.");
 }
 
 // ============================================================

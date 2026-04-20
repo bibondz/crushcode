@@ -16,6 +16,9 @@ pub const MarkdownTheme = struct {
     table_border_fg: vaxis.Color,
     task_done_fg: vaxis.Color,
     task_undone_fg: vaxis.Color,
+    type_fg: vaxis.Color,
+    function_fg: vaxis.Color,
+    operator_fg: vaxis.Color,
 };
 
 pub fn markdownThemeFromAppTheme(theme: *const @import("theme").Theme) MarkdownTheme {
@@ -34,20 +37,51 @@ pub fn markdownThemeFromAppTheme(theme: *const @import("theme").Theme) MarkdownT
         .table_border_fg = theme.md_table_border_fg,
         .task_done_fg = theme.md_task_done_fg,
         .task_undone_fg = theme.md_task_undone_fg,
+        .type_fg = theme.md_type_fg,
+        .function_fg = theme.md_function_fg,
+        .operator_fg = theme.md_operator_fg,
     };
 }
 
-const zig_keywords = [_][]const u8{ "pub", "fn", "const", "var", "try", "return", "if", "else", "switch", "while", "for", "struct", "enum", "error", "defer", "break", "continue" };
-const python_keywords = [_][]const u8{ "def", "class", "import", "from", "return", "if", "else", "elif", "for", "while", "try", "except", "with", "async", "await" };
-const javascript_keywords = [_][]const u8{ "function", "const", "let", "var", "return", "if", "else", "for", "while", "try", "catch", "async", "await", "import", "export", "class" };
-const shell_keywords = [_][]const u8{ "if", "then", "else", "fi", "for", "do", "done", "while", "case", "esac", "function" };
+const zig_keywords = [_][]const u8{ "pub", "fn", "const", "var", "try", "return", "if", "else", "switch", "while", "for", "struct", "enum", "error", "defer", "break", "continue", "union", "orelse", "catch", "async", "await", "suspend", "resume", "nosuspend", "anyframe", "comptime", "inline", "noalias", "callconv", "usingnamespace", "test" };
+const python_keywords = [_][]const u8{ "def", "class", "import", "from", "return", "if", "else", "elif", "for", "while", "try", "except", "with", "async", "await", "lambda", "yield", "pass", "raise", "assert", "global", "nonlocal", "del", "in", "not", "and", "or", "is", "None", "True", "False" };
+const javascript_keywords = [_][]const u8{ "function", "const", "let", "var", "return", "if", "else", "for", "while", "try", "catch", "async", "await", "import", "export", "class", "new", "this", "typeof", "instanceof", "throw", "finally", "switch", "case", "break", "continue", "default", "yield", "from", "of", "extends", "super", "static", "interface", "type", "enum", "implements", "private", "protected", "public", "abstract", "readonly", "as", "keyof", "namespace", "declare", "module" };
+const shell_keywords = [_][]const u8{ "if", "then", "else", "fi", "for", "do", "done", "while", "case", "esac", "function", "in", "select", "until", "echo", "exit", "return", "local", "export", "readonly", "source", "alias", "unset", "set", "shift", "trap", "read" };
+const rust_keywords = [_][]const u8{ "fn", "let", "mut", "const", "if", "else", "for", "while", "loop", "match", "return", "struct", "enum", "impl", "trait", "pub", "use", "mod", "self", "Self", "super", "crate", "async", "await", "unsafe", "extern", "type", "where", "as", "in", "ref", "move", "dyn", "static", "true", "false" };
+const go_keywords = [_][]const u8{ "func", "package", "import", "return", "if", "else", "for", "range", "switch", "case", "default", "var", "const", "type", "struct", "interface", "map", "chan", "go", "select", "defer", "fallthrough", "goto", "break", "continue", "true", "false", "nil", "append", "make", "len", "cap" };
+const c_keywords = [_][]const u8{ "if", "else", "for", "while", "do", "switch", "case", "default", "return", "break", "continue", "struct", "enum", "union", "typedef", "void", "int", "char", "float", "double", "long", "short", "unsigned", "signed", "const", "static", "extern", "register", "volatile", "inline", "sizeof", "goto", "auto", "NULL", "include", "define", "ifdef", "ifndef", "endif", "pragma" };
+const html_keywords = [_][]const u8{ "html", "head", "body", "div", "span", "p", "a", "img", "ul", "ol", "li", "h1", "h2", "h3", "h4", "h5", "h6", "table", "tr", "td", "th", "form", "input", "button", "select", "option", "textarea", "script", "style", "link", "meta", "title", "class", "id", "src", "href", "type", "value", "name", "placeholder" };
+const css_keywords = [_][]const u8{ "color", "background", "margin", "padding", "border", "display", "position", "width", "height", "font", "text", "flex", "grid", "align", "justify", "overflow", "opacity", "transition", "transform", "animation", "none", "auto", "inherit", "initial", "important", "hover", "focus", "active", "before", "after", "root", "media" };
+const sql_keywords = [_][]const u8{ "SELECT", "FROM", "WHERE", "INSERT", "INTO", "VALUES", "UPDATE", "SET", "DELETE", "CREATE", "TABLE", "ALTER", "DROP", "INDEX", "JOIN", "INNER", "LEFT", "RIGHT", "OUTER", "ON", "AND", "OR", "NOT", "NULL", "IS", "IN", "BETWEEN", "LIKE", "ORDER", "BY", "GROUP", "HAVING", "LIMIT", "OFFSET", "AS", "DISTINCT", "COUNT", "SUM", "AVG", "MAX", "MIN", "UNION", "EXISTS", "CASE", "WHEN", "THEN", "ELSE", "END", "PRIMARY", "KEY", "FOREIGN", "REFERENCES" };
+const toml_keywords = [_][]const u8{ "true", "false" };
+const json_keywords = [_][]const u8{ "true", "false", "null" };
+const yaml_keywords = [_][]const u8{ "true", "false", "null", "yes", "no", "on", "off" };
+const ruby_keywords = [_][]const u8{ "def", "end", "class", "module", "if", "else", "elsif", "unless", "while", "for", "do", "begin", "rescue", "ensure", "raise", "return", "yield", "require", "include", "attr_reader", "attr_writer", "attr_accessor", "self", "nil", "true", "false", "and", "or", "not", "lambda", "proc", "puts", "print" };
+const java_keywords = [_][]const u8{ "public", "private", "protected", "class", "interface", "extends", "implements", "static", "final", "abstract", "void", "int", "long", "double", "float", "boolean", "char", "byte", "short", "new", "return", "if", "else", "for", "while", "do", "switch", "case", "break", "continue", "default", "try", "catch", "finally", "throw", "throws", "import", "package", "this", "super", "null", "true", "false", "instanceof", "synchronized", "volatile", "transient", "native", "enum", "assert" };
+const nix_keywords = [_][]const u8{ "let", "in", "if", "then", "else", "with", "import", "inherit", "rec", "true", "false", "null", "or", "assert", "throw", "abort", "builtins", "map", "builtins" };
+const swift_keywords = [_][]const u8{ "func", "let", "var", "if", "else", "for", "while", "switch", "case", "return", "import", "class", "struct", "enum", "protocol", "extension", "typealias", "guard", "do", "try", "catch", "throw", "throws", "async", "await", "public", "private", "internal", "open", "fileprivate", "static", "override", "init", "deinit", "self", "Self", "super", "nil", "true", "false", "where", "as", "is", "in", "inout", "mutating", "associatedtype", "some", "any", "subscript", "optional" };
 
 const CodeLanguage = enum {
     plain,
     zig,
     python,
     javascript,
+    typescript,
     shell,
+    rust,
+    go,
+    c,
+    cpp,
+    html,
+    css,
+    sql,
+    toml,
+    json_lang,
+    yaml,
+    ruby,
+    java,
+    nix,
+    swift,
 };
 
 const TableRow = struct {
@@ -93,6 +127,9 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8, md_theme: M
     const code_string_style: vaxis.Style = .{ .fg = md_theme.string_fg, .bg = md_theme.code_bg };
     const code_comment_style: vaxis.Style = .{ .fg = md_theme.comment_fg, .bg = md_theme.code_bg, .dim = true };
     const code_number_style: vaxis.Style = .{ .fg = md_theme.number_fg, .bg = md_theme.code_bg };
+    const code_type_style: vaxis.Style = .{ .fg = md_theme.type_fg, .bg = md_theme.code_bg };
+    const code_function_style: vaxis.Style = .{ .fg = md_theme.function_fg, .bg = md_theme.code_bg };
+    const code_operator_style: vaxis.Style = .{ .fg = md_theme.operator_fg, .bg = md_theme.code_bg };
     const blockquote_style: vaxis.Style = .{ .fg = md_theme.blockquote_fg, .dim = true };
     const link_style: vaxis.Style = .{ .fg = md_theme.link_fg };
     const table_border_style: vaxis.Style = .{ .fg = md_theme.table_border_fg, .dim = true };
@@ -131,7 +168,7 @@ pub fn parseMarkdown(allocator: std.mem.Allocator, text: []const u8, md_theme: M
                 if (code_language_kind == .plain) {
                     try appendSegment(&segments, allocator, line, code_block_style);
                 } else {
-                    try appendHighlightedCodeLine(&segments, allocator, line, code_language_kind, code_block_style, code_keyword_style, code_string_style, code_comment_style, code_number_style);
+                    try appendHighlightedCodeLine(&segments, allocator, line, code_language_kind, code_block_style, code_keyword_style, code_string_style, code_comment_style, code_number_style, code_type_style, code_function_style, code_operator_style);
                 }
                 try appendNewline(&segments, allocator, has_newline, code_block_style);
             }
@@ -248,12 +285,12 @@ fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allo
     try appendPlainRange(segments, allocator, text, plain_start, text.len, base_style);
 }
 
-fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage, code_block_sty: vaxis.Style, code_keyword_sty: vaxis.Style, code_string_sty: vaxis.Style, code_comment_sty: vaxis.Style, code_number_sty: vaxis.Style) !void {
+fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage, code_block_sty: vaxis.Style, code_keyword_sty: vaxis.Style, code_string_sty: vaxis.Style, code_comment_sty: vaxis.Style, code_number_sty: vaxis.Style, code_type_sty: vaxis.Style, code_function_sty: vaxis.Style, code_operator_sty: vaxis.Style) !void {
     var cursor: usize = 0;
     var plain_start: usize = 0;
 
     while (cursor < line.len) {
-        if (isCommentStart(line, cursor)) {
+        if (isCommentStart(line, cursor, language)) {
             try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
             try appendSegment(segments, allocator, line[cursor..], code_comment_sty);
             return;
@@ -288,8 +325,76 @@ fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator:
                 continue;
             }
 
+            // PascalCase type detection: starts with uppercase, has at least one lowercase letter
+            if (token.len >= 2 and std.ascii.isUpper(token[0])) {
+                var has_lower = false;
+                for (token[1..]) |ch| {
+                    if (std.ascii.isLower(ch)) {
+                        has_lower = true;
+                        break;
+                    }
+                }
+                if (has_lower) {
+                    try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+                    try appendSegment(segments, allocator, token, code_type_sty);
+                    cursor = end;
+                    plain_start = cursor;
+                    continue;
+                }
+            }
+
+            // Function call detection: identifier immediately followed by '('
+            if (end < line.len and line[end] == '(') {
+                try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+                try appendSegment(segments, allocator, token, code_function_sty);
+                cursor = end;
+                plain_start = cursor;
+                continue;
+            }
+
             cursor = end;
             continue;
+        }
+
+        // Multi-char operator detection
+        if (cursor + 1 < line.len) {
+            const two = line[cursor .. cursor + 2];
+            const matched_two = std.mem.eql(u8, two, "==") or
+                std.mem.eql(u8, two, "!=") or
+                std.mem.eql(u8, two, "<=") or
+                std.mem.eql(u8, two, ">=") or
+                std.mem.eql(u8, two, "+=") or
+                std.mem.eql(u8, two, "-=") or
+                std.mem.eql(u8, two, "*=") or
+                std.mem.eql(u8, two, "/=") or
+                std.mem.eql(u8, two, "&&") or
+                std.mem.eql(u8, two, "||") or
+                std.mem.eql(u8, two, "::") or
+                std.mem.eql(u8, two, "->") or
+                std.mem.eql(u8, two, "=>") or
+                std.mem.eql(u8, two, "??") or
+                std.mem.eql(u8, two, "?.") or
+                std.mem.eql(u8, two, "..");
+
+            // Three-char operators
+            if (cursor + 2 < line.len) {
+                const three = line[cursor .. cursor + 3];
+                if (std.mem.eql(u8, three, "...") or std.mem.eql(u8, three, "<=>")) {
+                    try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+                    try appendSegment(segments, allocator, three, code_operator_sty);
+                    cursor += 3;
+                    plain_start = cursor;
+                    continue;
+                }
+            }
+
+            if (matched_two) {
+                try appendPlainRange(segments, allocator, line, plain_start, cursor, code_block_sty);
+                try appendSegment(segments, allocator, two, code_operator_sty);
+                cursor += 2;
+                plain_start = cursor;
+                continue;
+            }
         }
 
         cursor += 1;
@@ -541,8 +646,23 @@ fn parseCodeLanguage(tag: []const u8) CodeLanguage {
     if (tag.len == 0) return .plain;
     if (std.ascii.eqlIgnoreCase(tag, "zig")) return .zig;
     if (std.ascii.eqlIgnoreCase(tag, "python") or std.ascii.eqlIgnoreCase(tag, "py")) return .python;
-    if (std.ascii.eqlIgnoreCase(tag, "javascript") or std.ascii.eqlIgnoreCase(tag, "js") or std.ascii.eqlIgnoreCase(tag, "typescript") or std.ascii.eqlIgnoreCase(tag, "ts") or std.ascii.eqlIgnoreCase(tag, "jsx") or std.ascii.eqlIgnoreCase(tag, "tsx")) return .javascript;
+    if (std.ascii.eqlIgnoreCase(tag, "javascript") or std.ascii.eqlIgnoreCase(tag, "js") or std.ascii.eqlIgnoreCase(tag, "jsx")) return .javascript;
+    if (std.ascii.eqlIgnoreCase(tag, "typescript") or std.ascii.eqlIgnoreCase(tag, "ts") or std.ascii.eqlIgnoreCase(tag, "tsx")) return .typescript;
     if (std.ascii.eqlIgnoreCase(tag, "shell") or std.ascii.eqlIgnoreCase(tag, "bash") or std.ascii.eqlIgnoreCase(tag, "sh") or std.ascii.eqlIgnoreCase(tag, "zsh")) return .shell;
+    if (std.ascii.eqlIgnoreCase(tag, "rust") or std.ascii.eqlIgnoreCase(tag, "rs")) return .rust;
+    if (std.ascii.eqlIgnoreCase(tag, "go") or std.ascii.eqlIgnoreCase(tag, "golang")) return .go;
+    if (std.ascii.eqlIgnoreCase(tag, "c")) return .c;
+    if (std.ascii.eqlIgnoreCase(tag, "cpp") or std.ascii.eqlIgnoreCase(tag, "c++") or std.ascii.eqlIgnoreCase(tag, "cc") or std.ascii.eqlIgnoreCase(tag, "cxx")) return .cpp;
+    if (std.ascii.eqlIgnoreCase(tag, "html")) return .html;
+    if (std.ascii.eqlIgnoreCase(tag, "css")) return .css;
+    if (std.ascii.eqlIgnoreCase(tag, "sql")) return .sql;
+    if (std.ascii.eqlIgnoreCase(tag, "toml")) return .toml;
+    if (std.ascii.eqlIgnoreCase(tag, "json")) return .json_lang;
+    if (std.ascii.eqlIgnoreCase(tag, "yaml") or std.ascii.eqlIgnoreCase(tag, "yml")) return .yaml;
+    if (std.ascii.eqlIgnoreCase(tag, "ruby") or std.ascii.eqlIgnoreCase(tag, "rb")) return .ruby;
+    if (std.ascii.eqlIgnoreCase(tag, "java")) return .java;
+    if (std.ascii.eqlIgnoreCase(tag, "nix")) return .nix;
+    if (std.ascii.eqlIgnoreCase(tag, "swift")) return .swift;
     return .plain;
 }
 
@@ -551,7 +671,22 @@ fn isKeyword(language: CodeLanguage, token: []const u8) bool {
         .zig => zig_keywords[0..],
         .python => python_keywords[0..],
         .javascript => javascript_keywords[0..],
+        .typescript => javascript_keywords[0..],
         .shell => shell_keywords[0..],
+        .rust => rust_keywords[0..],
+        .go => go_keywords[0..],
+        .c => c_keywords[0..],
+        .cpp => c_keywords[0..],
+        .html => html_keywords[0..],
+        .css => css_keywords[0..],
+        .sql => sql_keywords[0..],
+        .toml => toml_keywords[0..],
+        .json_lang => json_keywords[0..],
+        .yaml => yaml_keywords[0..],
+        .ruby => ruby_keywords[0..],
+        .java => java_keywords[0..],
+        .nix => nix_keywords[0..],
+        .swift => swift_keywords[0..],
         .plain => return false,
     };
 
@@ -561,9 +696,43 @@ fn isKeyword(language: CodeLanguage, token: []const u8) bool {
     return false;
 }
 
-fn isCommentStart(line: []const u8, index: usize) bool {
-    if (line[index] == '#') return true;
-    return index + 1 < line.len and line[index] == '/' and line[index + 1] == '/';
+fn isCommentStart(line: []const u8, index: usize, language: CodeLanguage) bool {
+    // `//` style comments: JS, TS, Rust, Go, C, C++, Java, Swift
+    if (index + 1 < line.len and line[index] == '/' and line[index + 1] == '/') {
+        switch (language) {
+            .javascript, .typescript, .rust, .go, .c, .cpp, .java, .swift, .zig => return true,
+            else => return false,
+        }
+    }
+    // `#` style comments: Python, Shell, Ruby, TOML, YAML, Nix
+    if (line[index] == '#') {
+        switch (language) {
+            .python, .shell, .ruby, .toml, .yaml, .nix => return true,
+            else => return false,
+        }
+    }
+    // `--` style comments: SQL
+    if (index + 1 < line.len and line[index] == '-' and line[index + 1] == '-') {
+        switch (language) {
+            .sql => return true,
+            else => return false,
+        }
+    }
+    // `/*` style comments: CSS, C, C++, Java, JS, TS, Rust, Go, Swift
+    if (index + 1 < line.len and line[index] == '/' and line[index + 1] == '*') {
+        switch (language) {
+            .css, .c, .cpp, .java, .javascript, .typescript, .rust, .go, .swift, .zig => return true,
+            else => return false,
+        }
+    }
+    // `<!--` style comments: HTML
+    if (index + 3 < line.len and line[index] == '<' and line[index + 1] == '!' and line[index + 2] == '-' and line[index + 3] == '-') {
+        switch (language) {
+            .html => return true,
+            else => return false,
+        }
+    }
+    return false;
 }
 
 fn isQuote(char: u8) bool {

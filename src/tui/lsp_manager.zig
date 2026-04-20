@@ -248,6 +248,26 @@ pub const LSPManager = struct {
         return self.file_diagnostics.items;
     }
 
+    /// Find all references to the symbol at the given position in the file.
+    /// Returns an owned slice of Location — caller must free each `.uri` and the slice.
+    /// Errors are logged but never propagated (returns null on failure).
+    pub fn findReferences(self: *LSPManager, file_path: []const u8, line: u32, character: u32) ?[]lsp.LSPClient.Location {
+        if (!self.enabled) return null;
+
+        const language = detectLanguage(file_path) orelse return null;
+        const server_index = self.findServerIndex(language) orelse return null;
+        const server = &self.servers.items[server_index];
+        if (!server.started) return null;
+
+        const uri = pathToFileUri(self.allocator, file_path) catch return null;
+        defer self.allocator.free(uri);
+
+        return server.client.findReferences(uri, line, character) catch |err| {
+            std.log.warn("LSP: findReferences failed for {s}: {}", .{ file_path, err });
+            return null;
+        };
+    }
+
     // --- Private methods ---
 
     fn findOrCreateServer(self: *LSPManager, language: []const u8) !usize {
