@@ -24,6 +24,8 @@ pub const SidebarContext = struct {
     theme_name: []const u8,
     current_theme: *const theme_mod.Theme,
     mcp_servers: []const MCPServerStatus = &.{},
+    diag_error_count: u32 = 0,
+    diag_warning_count: u32 = 0,
 };
 
 pub const FilesWidget = struct {
@@ -217,6 +219,46 @@ pub const SidebarWidget = struct {
             }
             if (self.context.workers.len > 3) {
                 const overflow_txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{self.context.workers.len - 3});
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+        }
+
+        // Diagnostics section
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildSectionTitle(ctx, "Diagnostics", w, theme),
+        };
+        child_idx += 1;
+        row += 1;
+
+        const diagnostics_count = self.context.diag_error_count + self.context.diag_warning_count;
+
+        if (diagnostics_count == 0) {
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, "(no LSP active)", self.width - 2, .{ .fg = theme.dimmed }),
+            };
+            child_idx += 1;
+            row += 1;
+        } else {
+            // Summary line: "⚠ 3 errors, 5 warnings"
+            const summary_text = try std.fmt.allocPrint(ctx.arena, "⚠ {d} err, {d} warn", .{ self.context.diag_error_count, self.context.diag_warning_count });
+            const summary_style: vaxis.Style = if (self.context.diag_error_count > 0) .{ .fg = theme.tool_error } else if (self.context.diag_warning_count > 0) .{ .fg = theme.tool_pending } else .{ .fg = theme.tool_success };
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildText(ctx, summary_text, self.width - 2, summary_style),
+            };
+            child_idx += 1;
+            row += 1;
+
+            if (diagnostics_count > 3) {
+                const overflow_txt = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{ diagnostics_count - 3 });
                 children[child_idx] = .{
                     .origin = .{ .row = row, .col = 1 },
                     .surface = try self.buildText(ctx, overflow_txt, self.width - 2, .{ .fg = theme.dimmed }),

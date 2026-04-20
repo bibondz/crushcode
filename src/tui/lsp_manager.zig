@@ -88,6 +88,11 @@ pub const LSPManager = struct {
         self.workspace_uri = absolutePathToFileUri(self.allocator, workspace_path) catch "file:///tmp";
     }
 
+    /// Get all file diagnostics for sidebar display
+    pub fn getDiagnostics(self: *const LSPManager) []const FileDiagnostics {
+        return self.file_diagnostics.items;
+    }
+
     /// Called when a file is opened/edited. Auto-detects language, starts LSP server if needed,
     /// opens the document, and fetches diagnostics.
     /// Errors are logged but never propagated — the TUI must continue working.

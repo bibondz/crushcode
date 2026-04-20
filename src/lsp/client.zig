@@ -337,7 +337,7 @@ pub const LSPClient = struct {
         return body;
     }
 
-    fn drainNotifications(self: *LSPClient, timeout_ms: i32) !void {
+    pub fn drainNotifications(self: *LSPClient, timeout_ms: i32) !void {
         var current_timeout = timeout_ms;
         while (try self.stdoutReady(current_timeout)) {
             const message = try self.readMessage();

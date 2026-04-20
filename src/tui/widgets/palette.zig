@@ -31,6 +31,7 @@ pub const palette_command_data = [_]Command{
     .{ .name = "/theme light", .description = "Switch to light theme", .shortcut = "tl" },
     .{ .name = "/theme mono", .description = "Switch to monochrome theme", .shortcut = "tm" },
     .{ .name = "/workers", .description = "List active workers", .shortcut = "w" },
+    .{ .name = "/diag", .description = "Show LSP diagnostics", .shortcut = "d" },
     .{ .name = "/kill", .description = "Kill a worker: /kill <id>", .shortcut = "k" },
     .{ .name = "/help", .description = "Show available commands", .shortcut = "h" },
     .{ .name = "/plan on", .description = "Enable plan mode (propose before executing)", .shortcut = "p" },

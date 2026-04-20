@@ -51,6 +51,7 @@ const auto_gen_mod = @import("auto_gen");
 const plan_mod = @import("plan_handler");
 const feedback_mod = @import("feedback");
 const delegate_mod = @import("delegate");
+const lsp_manager_mod = @import("lsp_manager");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -288,6 +289,7 @@ pub const Model = struct {
         delegate_mode: bool = false,
         context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
+    lsp_manager: lsp_manager_mod.LSPManager,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -401,6 +403,7 @@ pub const Model = struct {
             .plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, ""),
             .plan_mode = plan_mod.PlanMode.init(allocator),
             .delegator = delegate_mod.SubAgentDelegator.init(allocator, delegate_mod.DelegationConfig.init(allocator)),
+            .lsp_manager = lsp_manager_mod.LSPManager.init(allocator),
         };
         errdefer model.destroy();
 
@@ -616,6 +619,8 @@ pub const Model = struct {
         self.plan_mode.deinit();
         // Clean up sub-agent delegator
         self.delegator.deinit();
+        // Clean up LSP manager
+        self.lsp_manager.deinit();
         // Clean up memory
         self.memory.deinit();
         // Execute session_end lifecycle hook
@@ -2032,7 +2037,16 @@ pub const Model = struct {
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height + input_height), .col = 0 }, .surface = status_surface });
 
         if (self.sidebar_visible) {
+            // Refresh LSP diagnostics before displaying (non-blocking drain)
+            self.lsp_manager.refreshDiagnostics();
             const mcp_status = self.getMCPServerStatus(ctx.arena);
+            const diag = self.lsp_manager.getDiagnostics();
+            var diag_errors: u32 = 0;
+            var diag_warnings: u32 = 0;
+            for (diag) |d| {
+                diag_errors += d.errors;
+                diag_warnings += d.warnings;
+            }
             const sidebar_context = SidebarContext{
                 .recent_files = self.recent_files.items,
                 .request_count = self.request_count,
@@ -2045,6 +2059,8 @@ pub const Model = struct {
                 .theme_name = self.current_theme.name,
                 .current_theme = self.current_theme,
                 .mcp_servers = mcp_status,
+                .diag_error_count = diag_errors,
+                .diag_warning_count = diag_warnings,
             };
             const sidebar = SidebarWidget{ .context = &sidebar_context, .width = sidebar_width };
             const sidebar_height: u16 = header_height + safe_body_height;
@@ -3124,6 +3140,41 @@ pub const Model = struct {
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
                 try self.addMessageUnlocked("assistant", text);
             }
+        } else if (std.mem.eql(u8, name, "/diag")) {
+            // Show LSP diagnostics
+            const diagnostics = self.lsp_manager.getDiagnostics();
+            if (diagnostics.len == 0) {
+                try self.addMessageUnlocked("assistant", "No LSP diagnostics. Open a file to see diagnostics.");
+            } else {
+                var buf: [2048]u8 = undefined;
+                var offset: usize = 0;
+                const head_result = std.fmt.bufPrint(&buf, "LSP Diagnostics:\n", .{});
+                if (head_result) |written| {
+                    offset = written.len;
+                } else |_| {}
+                for (diagnostics) |fd| {
+                    const line_result = std.fmt.bufPrint(buf[offset..], "\n{s}:\n  {d} errors, {d} warnings\n", .{ fd.file_path, fd.errors, fd.warnings });
+                    if (line_result) |written| {
+                        offset += written.len;
+                    } else |_| {}
+                    for (fd.top_messages) |msg| {
+                        if (msg) |m| {
+                            const sym = switch (m.severity) {
+                                .@"error" => "❌",
+                                .warning => "⚠",
+                                .information => "ℹ",
+                                .hint => "○",
+                            };
+                            const msg_line = std.fmt.bufPrint(buf[offset..], "  {s} {d}: {s}\n", .{ sym, m.line, m.message });
+                            if (msg_line) |written| {
+                                offset += written.len;
+                            } else |_| {}
+                        }
+                    }
+                }
+                const text = try self.allocator.dupe(u8, buf[0..offset]);
+                try self.addMessageUnlocked("assistant", text);
+            }
         } else if (std.mem.startsWith(u8, name, "/kill ")) {
             const id_str = name[6..];
             const id = std.fmt.parseInt(u32, id_str, 10) catch {
@@ -3614,6 +3665,15 @@ pub const Model = struct {
                 const fb_err: []const u8 = if (fb_success) "" else result_text;
                 var fb_tools = [_][]const u8{tool_call.name};
                 fb.record("tool_execution", &fb_tools, fb_outcome, 0.8, fb_err) catch {};
+            }
+
+            // Update LSP diagnostics after file edits (non-fatal)
+            if (std.mem.eql(u8, tool_call.name, "write_file") or std.mem.eql(u8, tool_call.name, "edit")) {
+                // Extract file path from tool arguments
+                const file_path = extractToolFilePath(tool_call.arguments);
+                if (file_path) |fp| {
+                    self.lsp_manager.onFileOpened(fp);
+                }
             }
 
             self.lock.lock();
