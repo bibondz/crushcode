@@ -2,7 +2,7 @@
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-21
-**Commit:** 14abafc
+**Commit:** b5b9fcf
 **Stats:** ~268 `.zig` files, ~117K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
@@ -22,11 +22,11 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.42+ Intelligent Context & Tool Expansion — COMPLETE |
-| Phase | All 5 phases (43–47) complete |
-| Status | ✅ Milestone finished — 26 builtin tools |
-| Code Version | 0.46.0 |
-| Binary Size | 124MB (includes SQLite amalgamation) |
+| Milestone | v0.47+ Agent Unification & Safety Net — COMPLETE |
+| Phase | All 5 phases (48–52) complete |
+| Status | ✅ Milestone finished — 26 builtin tools, 5 new infra features |
+| Code Version | 0.47.0 |
+| Binary Size | 125MB (includes SQLite amalgamation) |
 
 ---
 
@@ -46,6 +46,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 45 | Multi-File Edit — atomic batch edits with transaction rollback | ✅ Done | 6ae6d3c |
 | Phase 46 | Cost Analytics — /cost dashboard with per-session/day/provider/model breakdown | ✅ Done | 14abafc |
 | Phase 47 | Session Forking — /fork command to branch conversations | ✅ Done | 14abafc |
+| Phase 48 | Live Agent Teams — wire orchestrator to real AI execution, /team command | ✅ Done | fb00497 |
+| Phase 49 | Session Tree Navigator — visual TUI session hierarchy, /tree command | ✅ Done | fb00497 |
+| Phase 50 | Checkpoints & Rewind — auto-snapshot before AI edits, /rewind command | ✅ Done | fb00497 |
+| Phase 51 | Side Chains — /btw context switching, compact summary injection | ✅ Done | b5b9fcf |
+| Phase 52 | Semantic Context Compression — AST-aware 4-level compression, /compress command | ✅ Done | b5b9fcf |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -112,7 +117,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 
 ---
 
-## Competitive Position (Updated — v0.42+ Complete)
+## Competitive Position (Updated — v0.47+ Complete)
 
 | Feature Area | Crushcode | Claude Code | OpenCode | Codex | Goose |
 |---|---|---|---|---|---|
@@ -134,6 +139,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Multi-File Edit | **Atomic batch** ✅ | ❌ | ❌ | ❌ | ❌ |
 | Cost Analytics | **/cost dashboard** ✅ | ❌ | ❌ | ❌ | ❌ |
 | Session Forking | **/fork command** ✅ | ❌ | ❌ | ❌ | ❌ |
+| Agent Teams | **/team parallel** ✅ | ✅ | ✅ | ❌ | ❌ |
+| Session Tree | **visual hierarchy** ✅ | ✅ | ✅ | ❌ | ❌ |
+| Checkpoints & Rewind | **/rewind auto-snapshot** ✅ | ✅ | ❌ | ❌ | ❌ |
+| Side Chains | **/btw context switch** ✅ | ✅ | ❌ | ❌ | ❌ |
+| Semantic Compression | **4-level AST-aware** ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -220,6 +230,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.40.0** | **Phase 41: Web Search + Fetch Tools** | **✅ Done** |
 | **v0.41.0** | **Phase 42: Image in Terminal (Kitty/Sixel)** | **✅ Done** |
 | **v0.42.0** | **Phases 43-47: Smart Context, LSP Tools, Multi-File Edit, Cost Analytics, Session Forking** | **✅ Done** |
+| **v0.47.0** | **Phases 48-52: Agent Teams, Session Tree, Checkpoints, Side Chains, Semantic Compression** | **✅ Done** |
 
 ---
 
@@ -278,6 +289,6 @@ vendor/sqlite3/ — SQLite 3.47.0 amalgamation (vendored C)
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-21
-**Current Work:** v0.37+ Competitive Dominance milestone COMPLETE. All 5 phases (38–42) shipped.
-**Next Step:** Commit Phase 42 changes, then define next milestone
+**Last Updated:** 2026-04-22
+**Current Work:** v0.47+ Agent Unification & Safety Net milestone COMPLETE. All 5 phases (48–52) shipped.
+**Next Step:** Define next milestone or push to remote
