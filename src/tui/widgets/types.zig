@@ -283,4 +283,53 @@ pub const builtin_tool_schemas = [_]core.ToolSchema{
         \\{"type":"object","properties":{"file_path":{"type":"string","description":"Path to the image file to display"}},"required":["file_path"]}
         ,
     },
+    .{
+        .name = "edit_batch",
+        .description = "Apply multiple file edits atomically. All succeed or all are rolled back.",
+        .parameters =
+        \\{"type":"object","properties":{"edits":{"type":"array","items":{"type":"object","properties":{"file_path":{"type":"string"},"operation":{"type":"string","enum":["create","replace","append","delete_content"]},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["file_path","operation"]}}},"required":["edits"]}
+        ,
+    },
+    .{
+        .name = "lsp_definition",
+        .description = "Find the definition of a symbol at a specific position.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["file_path","line","character"]}
+        ,
+    },
+    .{
+        .name = "lsp_references",
+        .description = "Find all references to a symbol at a position.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["file_path","line","character"]}
+        ,
+    },
+    .{
+        .name = "lsp_diagnostics",
+        .description = "Check for issues in a file.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}
+        ,
+    },
+    .{
+        .name = "lsp_hover",
+        .description = "Get type info and docs for a symbol at a position.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"}},"required":["file_path","line","character"]}
+        ,
+    },
+    .{
+        .name = "lsp_symbols",
+        .description = "List all symbols defined in a file.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"}},"required":["file_path"]}
+        ,
+    },
+    .{
+        .name = "lsp_rename",
+        .description = "Preview renaming a symbol across the workspace.",
+        .parameters =
+        \\{"type":"object","properties":{"file_path":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"},"new_name":{"type":"string"}},"required":["file_path","line","character","new_name"]}
+        ,
+    },
 };

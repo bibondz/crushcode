@@ -14,6 +14,8 @@ const file_tracker_mod = @import("file_tracker");
 const web_fetch_mod = @import("web_fetch");
 const web_search_mod = @import("web_search");
 const image_display_mod = @import("image_display");
+const edit_batch_mod = @import("edit_batch");
+const lsp_tools_mod = @import("lsp_tools");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -354,6 +356,35 @@ fn imageDisplayExecutor(allocator: std.mem.Allocator, call_id: []const u8, argum
     return adaptToolExecution(allocator, call_id, "image_display", arguments, executeImageDisplayTool);
 }
 
+fn editBatchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "edit_batch", arguments, executeEditBatchTool);
+}
+
+// LSP tool executors
+fn lspDefinitionExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_definition", arguments, executeLspDefinitionTool);
+}
+
+fn lspReferencesExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_references", arguments, executeLspReferencesTool);
+}
+
+fn lspDiagnosticsExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_diagnostics", arguments, executeLspDiagnosticsTool);
+}
+
+fn lspHoverExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_hover", arguments, executeLspHoverTool);
+}
+
+fn lspSymbolsExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_symbols", arguments, executeLspSymbolsTool);
+}
+
+fn lspRenameExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "lsp_rename", arguments, executeLspRenameTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -374,6 +405,13 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "web_fetch", .executor = webFetchExecutor },
     .{ .name = "web_search", .executor = webSearchExecutor },
     .{ .name = "image_display", .executor = imageDisplayExecutor },
+    .{ .name = "edit_batch", .executor = editBatchExecutor },
+    .{ .name = "lsp_definition", .executor = lspDefinitionExecutor },
+    .{ .name = "lsp_references", .executor = lspReferencesExecutor },
+    .{ .name = "lsp_diagnostics", .executor = lspDiagnosticsExecutor },
+    .{ .name = "lsp_hover", .executor = lspHoverExecutor },
+    .{ .name = "lsp_symbols", .executor = lspSymbolsExecutor },
+    .{ .name = "lsp_rename", .executor = lspRenameExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -1509,6 +1547,35 @@ fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const u8 
     return rest[value_start..i];
 }
 
+fn executeEditBatchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const preview = edit_batch_mod.previewBatchEdit(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 edit_batch → validation error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Validation failed: {s}", .{@errorName(err)}),
+        };
+
+    const result = edit_batch_mod.applyBatchEdit(allocator, tool_call.arguments) catch |err| {
+        allocator.free(preview);
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 edit_batch → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    };
+
+    if (result.success) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 edit_batch → {d} edits applied\n", .{result.applied_edits}),
+            .result = preview,
+        };
+    } else {
+        allocator.free(preview);
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 edit_batch → failed at edit {d} (rolled back)\n", .{result.failed_edit_index orelse 0}),
+            .result = result.error_message orelse "Unknown error",
+        };
+    }
+}
+
 fn executeWebFetchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     const args = tool_call.arguments;
 
@@ -1591,6 +1658,78 @@ fn executeImageDisplayTool(allocator: std.mem.Allocator, tool_call: core.ParsedT
     };
 }
 
+fn executeLspDefinitionTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeDefinition(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_definition → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_definition → found\n", .{}),
+        .result = result,
+    };
+}
+
+fn executeLspReferencesTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeReferences(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_references → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_references → found\n", .{}),
+        .result = result,
+    };
+}
+
+fn executeLspDiagnosticsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeDiagnostics(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_diagnostics → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_diagnostics → done\n", .{}),
+        .result = result,
+    };
+}
+
+fn executeLspHoverTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeHover(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_hover → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_hover → found\n", .{}),
+        .result = result,
+    };
+}
+
+fn executeLspSymbolsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeSymbols(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_symbols → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_symbols → listed\n", .{}),
+        .result = result,
+    };
+}
+
+fn executeLspRenameTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = lsp_tools_mod.executeRename(allocator, tool_call.arguments) catch |err|
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_rename → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
+        };
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_rename → preview\n", .{}),
+        .result = result,
+    };
+}
+
 pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     // Guard: empty arguments would cause a confusing JSON parse error downstream;
     // return a descriptive validation error instead.
@@ -1653,6 +1792,27 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "image_display")) {
         return executeImageDisplayTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "edit_batch")) {
+        return executeEditBatchTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_definition")) {
+        return executeLspDefinitionTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_references")) {
+        return executeLspReferencesTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_diagnostics")) {
+        return executeLspDiagnosticsTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_hover")) {
+        return executeLspHoverTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_symbols")) {
+        return executeLspSymbolsTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "lsp_rename")) {
+        return executeLspRenameTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }

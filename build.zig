@@ -168,6 +168,8 @@ pub fn build(b: *std.Build) !void {
         imp("web_fetch", web_fetch_mod),
     });
     const image_display_mod = simpleMod(b, "src/tools/image_display.zig", target, optimize);
+    const edit_batch_mod = simpleMod(b, "src/tools/edit_batch.zig", target, optimize);
+    const lsp_tools_mod = simpleMod(b, "src/tools/lsp_tools.zig", target, optimize);
 
     const streaming_types_mod = simpleMod(b, "src/streaming/types.zig", target, optimize);
     const streaming_buffer_mod = createMod(b, "src/streaming/buffer.zig", target, optimize, &.{imp("types", streaming_types_mod)});
@@ -523,6 +525,7 @@ pub fn build(b: *std.Build) !void {
     const context_budget_mod = simpleMod(b, "src/agent/context_budget.zig", target, optimize);
     const context_optimizer_mod = simpleMod(b, "src/ai/context_optimizer.zig", target, optimize);
     const project_memory_mod = simpleMod(b, "src/agent/project_memory.zig", target, optimize);
+    const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
     const worker_mod = simpleMod(b, "src/agent/worker.zig", target, optimize);
     const worker_runner_mod = createMod(b, "src/agent/worker_runner.zig", target, optimize, &.{
         imp("worker", worker_mod),
@@ -679,7 +682,7 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
-    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod), imp("edit_batch", edit_batch_mod), imp("lsp_tools", lsp_tools_mod)});
     addImports(chat_bridge_mod, &.{
         imp("ai_types", ai_types_mod),
         imp("core_api", core_api_mod),
@@ -703,7 +706,7 @@ pub fn build(b: *std.Build) !void {
         usage_pricing_mod,        usage_budget_mod,             usage_report_mod,        hashline_mod,          hash_index_mod,             conflict_mod,         validated_edit_mod,        pattern_search_mod,  lsp_handler_mod,
         mcp_handler_mod,          ai_handlers_mod,              tool_handlers_mod,       system_handlers_mod,   experimental_handlers_mod,  handlers_mod,         main_mod,                  fallback_mod,        parallel_mod,
         skill_import_mod,         worktree_mod,                 lifecycle_hooks_mod,     intent_gate_mod,       graph_types_mod,            graph_parser_mod,     graph_algorithms_mod,      graph_mod,           agent_loop_mod,
-        workflow_mod,             compaction_mod,               context_budget_mod,      project_memory_mod,    capability_catalog_mod,     intensity_mod,        tiered_loader_mod,         revision_loop_mod,   session_summarizer_mod,
+        workflow_mod,             compaction_mod,               context_budget_mod,              project_memory_mod,    smart_context_mod,         capability_catalog_mod,     intensity_mod,        tiered_loader_mod,         revision_loop_mod,   session_summarizer_mod,
         model_hotswap_mod,        adversarial_review_mod,       spinner_mod,             markdown_renderer_mod, error_display_mod,          convergence_mod,      color_mod,                 source_tracker_mod,  knowledge_lint_mod,
         slash_commands_mod,       scaffold_mod,                 mcp_transport_mod,       mcp_oauth_mod,         mcp_client_mod,             mcp_discovery_mod,    mcp_bridge_mod,            auth_mod,            profile_mod,
         connect_mod,              json_output_mod,              permission_evaluate_mod, app_theme_mod,         theme_mod,                  checkpoint_mod,       memory_mod,                lsp_mod,             json_extract_mod,
@@ -728,6 +731,8 @@ pub fn build(b: *std.Build) !void {
         web_fetch_mod,
         web_search_mod,
         image_display_mod,
+        edit_batch_mod,
+        lsp_tools_mod,
         image_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
@@ -766,6 +771,7 @@ pub fn build(b: *std.Build) !void {
         compaction_mod,
         context_budget_mod,
         project_memory_mod,
+        smart_context_mod,
         user_model_mod,
         feedback_mod,
         checkpoint_mod,
@@ -828,6 +834,8 @@ pub fn build(b: *std.Build) !void {
         session_db_mod,
         db_migration_mod,
         image_display_mod,
+        edit_batch_mod,
+        lsp_tools_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
