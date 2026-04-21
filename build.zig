@@ -303,6 +303,12 @@ pub fn build(b: *std.Build) !void {
         imp("theme", theme_mod),
         imp("widget_helpers", widget_helpers_mod),
     });
+    const widget_diff_preview_mod = createMod(b, "src/tui/widgets/diff_preview.zig", target, optimize, &.{
+        imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("theme", theme_mod),
+        imp("widget_helpers", widget_helpers_mod),
+        imp("diff", diff_mod),
+    });
     addImports(widget_messages_mod, &.{imp("typewriter", widget_typewriter_mod)});
     const widget_code_view_mod = createMod(b, "src/tui/widgets/code_view.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
@@ -328,6 +334,7 @@ pub fn build(b: *std.Build) !void {
         imp("widget_code_view", widget_code_view_mod),
         imp("widget_data_table", widget_data_table_mod),
         imp("widget_scroll_panel", widget_scroll_panel_mod),
+        imp("widget_diff_preview", widget_diff_preview_mod),
     });
 
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
@@ -422,6 +429,7 @@ pub fn build(b: *std.Build) !void {
     const diff_visualizer_mod = simpleMod(b, "src/diff/visualizer.zig", target, optimize);
     const myers_mod = simpleMod(b, "src/diff/myers.zig", target, optimize);
     addImports(diff_visualizer_mod, &.{imp("myers", myers_mod)});
+    addImports(widget_diff_preview_mod, &.{imp("myers", myers_mod)});
     addImports(system_handlers_mod, &.{imp("diff", diff_visualizer_mod)});
     const custom_commands_mod = simpleMod(b, "src/commands/custom_commands.zig", target, optimize);
 
@@ -545,6 +553,7 @@ pub fn build(b: *std.Build) !void {
         imp("cognition", cognition_mod),
         imp("guardian", guardian_mod),
     });
+    const crush_mode_mod = simpleMod(b, "src/execution/crush_mode.zig", target, optimize);
     const router_mod = simpleMod(b, "src/agent/router.zig", target, optimize);
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
     const orchestration_mod = createMod(b, "src/agent/orchestrator.zig", target, optimize, &.{
@@ -607,6 +616,7 @@ pub fn build(b: *std.Build) !void {
     addImports(agent_loop_handler_mod, &.{
         imp("args", cli_mod), imp("ai_types", ai_types_mod), imp("graph", graph_mod),
         imp("agent_loop", agent_loop_mod), imp("autopilot", autopilot_mod),
+        imp("crush_mode", crush_mode_mod),
         imp("cognition", cognition_mod), imp("guardian", guardian_mod),
         imp("orchestration", orchestration_mod), imp("file_compat", compat_file_mod),
         imp("array_list_compat", compat_array_list_mod),
@@ -650,7 +660,8 @@ pub fn build(b: *std.Build) !void {
         imp("autopilot", autopilot_mod),   imp("phase_runner", phase_runner_mod),
         imp("orchestration", orchestration_mod),
     });
-    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod) });
+    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod) });
+    addImports(tui_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
@@ -689,9 +700,10 @@ pub fn build(b: *std.Build) !void {
         widget_typewriter_mod,    multiline_input_mod,          migrate_mod,             update_mod,            custom_commands_mod,        project_mod,          permission_audit_mod,      shell_state_mod,     shell_history_mod,
         permission_lists_mod, permission_lists_mod,      run_mod,                 batch_mod,             file_tracker_mod,           structured_log_mod,   logs_mod,                  tool_exposition_mod, mcp_server_mod,
         governance_mod,           permission_lists_mod,          context_optimizer_mod,   worker_mod,            router_mod,                 capability_mod,       knowledge_schema_mod,      knowledge_vault_mod, knowledge_ops_mod,
-        knowledge_ops_mod,      knowledge_knowledge_lint_mod, widget_code_view_mod,    widget_data_table_mod, widget_scroll_panel_mod,    worker_runner_mod,    skills_agents_parser_mod,  skills_resolver_mod, knowledge_persistence_mod,
+        knowledge_ops_mod,      knowledge_knowledge_lint_mod, widget_code_view_mod,    widget_data_table_mod, widget_scroll_panel_mod,    widget_diff_preview_mod, worker_runner_mod,    skills_agents_parser_mod,  skills_resolver_mod, knowledge_persistence_mod,
         hooks_executor_mod,       coordinator_mod,              background_agent_mod,    skill_pipeline_mod,    layered_memory_mod,         adversarial_mod,              skill_sync_mod,            template_mod,        code_preview_mod,     file_type_mod,
         cognition_mod,             guardian_mod,              phase_runner_mod,             autopilot_mod,
+        crush_mode_mod,
         orchestration_mod,         hybrid_bridge_mod,         user_model_mod,
         auto_gen_mod,
         feedback_mod,
@@ -768,6 +780,7 @@ pub fn build(b: *std.Build) !void {
         guardian_mod,
         phase_runner_mod,
         autopilot_mod,
+        crush_mode_mod,
         orchestration_mod,
         hybrid_bridge_mod,
         chat_tool_executors_mod,

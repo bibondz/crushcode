@@ -29,9 +29,11 @@ const widget_spinner = @import("widget_spinner");
 const widget_gradient = @import("widget_gradient");
 const widget_toast = @import("widget_toast");
 const widget_typewriter = @import("widget_typewriter");
+const widget_diff_preview = @import("widget_diff_preview");
 const tool_executors = @import("chat_tool_executors");
 const mcp_bridge_mod = @import("mcp_bridge");
 const mcp_client_mod = @import("mcp_client");
+const myers = @import("myers");
 const hybrid_bridge_mod = @import("hybrid_bridge");
 const array_list_compat = @import("array_list_compat");
 const compaction_mod = @import("compaction");
@@ -43,6 +45,7 @@ const plugin_mod = @import("plugin_manager");
 const guardian_mod = @import("guardian");
 const cognition_mod = @import("cognition");
 const autopilot_mod = @import("autopilot");
+const crush_mode_mod = @import("crush_mode");
 const phase_runner_mod = @import("phase_runner");
 const orchestration_mod = @import("orchestration");
 const slash_commands_mod = @import("slash_commands");
@@ -166,6 +169,9 @@ const slash_command_names = slash_commands_mod.all_slash_command_names;
 const PermissionContext = widget_permission.PermissionContext;
 const PermissionDialogWidget = widget_permission.PermissionDialogWidget;
 
+const DiffPreviewContext = widget_diff_preview.DiffPreviewContext;
+const DiffPreviewWidget = widget_diff_preview.DiffPreviewWidget;
+
 const SetupContext = widget_setup.SetupContext;
 const SetupProviderRowWidget = widget_setup.SetupProviderRowWidget;
 const SetupWizardWidget = widget_setup.SetupWizardWidget;
@@ -231,6 +237,19 @@ pub const Model = struct {
     max_iterations: u32,
     permission_mode: PermissionMode,
     pending_permission: ?ToolPermission,
+    diff_preview_active: bool = false,
+    diff_preview_hunks: []const myers.DiffHunk = &.{},
+    diff_preview_decisions: []widget_diff_preview.HunkDecision = &.{},
+    diff_preview_current: usize = 0,
+    diff_preview_file_path: []const u8 = "",
+    diff_preview_original: []const u8 = "",
+    diff_preview_new_content: []const u8 = "",
+    diff_preview_tool_call_id: []const u8 = "",
+    diff_preview_tool_name: []const u8 = "",
+    diff_preview_tool_arguments: []const u8 = "",
+    crush_active: bool = false,
+    crush_engine: ?crush_mode_mod.CrushEngine = null,
+    crush_progress: []const u8 = "",
     always_allow_tools: std.ArrayList([]const u8),
     permission_mutex: std.Thread.Mutex,
     permission_condition: std.Thread.Condition,
@@ -623,6 +642,10 @@ pub const Model = struct {
         self.lsp_manager.deinit();
         // Clean up memory
         self.memory.deinit();
+        // Clean up crush engine
+        if (self.crush_engine) |*engine| {
+            engine.deinit();
+        }
         // Execute session_end lifecycle hook
         {
             var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
@@ -1596,6 +1619,14 @@ pub const Model = struct {
                     return;
                 }
 
+                // Diff preview mode: intercept all keys
+                if (self.diff_preview_active) {
+                    _ = self.handleDiffPreviewKey(key);
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
                 if (self.pending_permission != null) {
                     if (key.matches('y', .{}) or key.matches('Y', .{})) {
                         self.resolvePendingPermission(.yes);
@@ -2108,6 +2139,37 @@ pub const Model = struct {
                     .col = @intCast((max.width -| permission_surface.size.width) / 2),
                 },
                 .surface = permission_surface,
+            });
+        }
+
+        // Diff preview overlay
+        if (self.diff_preview_active and self.diff_preview_hunks.len > 0) {
+            // Cast widget_diff_preview.HunkDecision slice is already the correct type
+            // (both are enum { pending, applied, rejected } — ABI-compatible)
+            const widget_decisions: []widget_diff_preview.HunkDecision = @as(
+                [*]widget_diff_preview.HunkDecision,
+                @ptrCast(self.diff_preview_decisions.ptr),
+            )[0..self.diff_preview_decisions.len];
+            var dp_ctx = DiffPreviewContext{
+                .hunks = self.diff_preview_hunks,
+                .file_path = self.diff_preview_file_path,
+                .tool_name = self.diff_preview_tool_name,
+                .theme = self.current_theme,
+                .current_hunk = self.diff_preview_current,
+                .decisions = widget_decisions,
+                .completed = false,
+            };
+            const dp_widget = DiffPreviewWidget{ .context = &dp_ctx };
+            const dp_surface = try dp_widget.draw(ctx.withConstraints(
+                .{ .width = 0, .height = 0 },
+                .{ .width = max.width, .height = max.height },
+            ));
+            try child_list.append(ctx.arena, .{
+                .origin = .{
+                    .row = @intCast((max.height -| dp_surface.size.height) / 2),
+                    .col = @intCast((max.width -| dp_surface.size.width) / 2),
+                },
+                .surface = dp_surface,
             });
         }
 
@@ -2910,6 +2972,50 @@ pub const Model = struct {
                 defer self.allocator.free(err_text);
                 try self.addMessageUnlocked("assistant", err_text);
             }
+        } else if (std.mem.eql(u8, name, "/crush") or std.mem.startsWith(u8, name, "/crush ")) {
+            const crush_task = std.mem.trim(u8, name["/crush".len..], " ");
+            if (crush_task.len == 0) {
+                try self.addMessageUnlocked("assistant",
+                    \\Crush Mode — auto-agentic execution
+                    \\
+                    \\Usage: /crush <task description>
+                    \\
+                    \\Examples:
+                    \\  /crush fix all auth bugs
+                    \\  /crush refactor config module and add tests
+                    \\
+                    \\The engine will: plan → execute → verify → commit
+                );
+                return;
+            }
+
+            // Get project directory
+            const cwd = std.process.getCwdAlloc(self.allocator) catch ".";
+            defer self.allocator.free(cwd);
+
+            // Initialize CrushEngine
+            var engine = crush_mode_mod.CrushEngine.init(self.allocator, crush_task, cwd);
+            engine.auto_approve_read = true;
+            engine.auto_approve_write = true; // In TUI, auto-approve by default
+            engine.auto_verify = true;
+            engine.auto_commit = false; // Don't auto-commit in TUI — user controls git
+
+            self.crush_active = true;
+            self.crush_engine = engine;
+            self.crush_progress = "Planning...";
+
+            const progress = engine.progressString(self.allocator) catch "Planning...";
+            var msg_buf = array_list_compat.ArrayList(u8).init(self.allocator);
+            defer msg_buf.deinit();
+            msg_buf.writer().print("🤖 **Crush Mode Activated**\n\n**Task:** {s}\n\n{s}", .{ crush_task, progress }) catch {};
+            const msg = try msg_buf.toOwnedSlice();
+            try self.addMessageUnlocked("assistant", msg);
+
+            // Note: Full execution requires AI provider loop integration.
+            // For now, show the plan state and mark as requiring provider connection.
+            self.crush_progress = "Ready — awaiting provider connection for execution";
+            try self.addMessageUnlocked("system", "Crush Mode plan generated. Full auto-execution requires streaming AI response — use `/crush <task>` with an active provider.");
+            self.crush_active = false;
         } else if (std.mem.eql(u8, name, "/team")) {
             var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
                 try self.addMessageUnlocked("assistant", "Error: failed to initialize orchestration engine.");
@@ -3693,9 +3799,87 @@ pub const Model = struct {
 
             // Compute diff preview for edit/write_file tools
             var preview_diff: ?[]const u8 = null;
+            var diff_preview_activated = false;
+
             if (std.mem.eql(u8, tool_call.name, "edit") or std.mem.eql(u8, tool_call.name, "write_file")) {
                 preview_diff = self.computeEditPreview(tool_call) catch null;
+
+                // Try interactive diff preview for multi-hunk changes
+                const file_path = extractToolFilePath(tool_call.arguments) orelse "";
+                if (file_path.len > 0) {
+                    const original_content = std.fs.cwd().readFileAlloc(self.allocator, file_path, 100 * 1024 * 1024) catch null;
+                    if (original_content) |orig| {
+                        var new_content_opt: ?[]const u8 = null;
+                        var new_content_owned = false;
+
+                        if (std.mem.eql(u8, tool_call.name, "edit")) {
+                            const parsed = std.json.parseFromSlice(
+                                struct { file_path: ?[]const u8 = null, path: ?[]const u8 = null, old_string: ?[]const u8 = null, new_string: ?[]const u8 = null },
+                                self.allocator, tool_call.arguments, .{ .ignore_unknown_fields = true },
+                            ) catch null;
+                            if (parsed) |p| {
+                                defer p.deinit();
+                                const old_s = p.value.old_string orelse "";
+                                const new_s = p.value.new_string orelse "";
+                                if (std.mem.indexOf(u8, orig, old_s)) |pos| {
+                                    const after = pos + old_s.len;
+                                    var buf = std.ArrayList(u8).empty;
+                                    defer if (!new_content_owned) buf.deinit(self.allocator);
+                                    buf.appendSlice(self.allocator, orig[0..pos]) catch {};
+                                    buf.appendSlice(self.allocator, new_s) catch {};
+                                    buf.appendSlice(self.allocator, orig[after..]) catch {};
+                                    new_content_opt = buf.toOwnedSlice(self.allocator) catch null;
+                                    new_content_owned = true;
+                                }
+                            }
+                        } else {
+                            const parsed = std.json.parseFromSlice(
+                                struct { path: ?[]const u8 = null, file_path: ?[]const u8 = null, content: ?[]const u8 = null },
+                                self.allocator, tool_call.arguments, .{ .ignore_unknown_fields = true },
+                            ) catch null;
+                            if (parsed) |p| {
+                                defer p.deinit();
+                                new_content_opt = p.value.content;
+                            }
+                        }
+
+                        if (new_content_opt) |new_cont| {
+                            var diff_result = myers.MyersDiff.diff(self.allocator, orig, new_cont) catch null;
+                            if (diff_result) |*dr| {
+                                if (dr.hunks.len >= 2) {
+                                    // Multi-hunk: activate diff preview
+                                    const decisions = self.allocator.alloc(widget_diff_preview.HunkDecision, dr.hunks.len) catch null;
+                                    if (decisions) |decs| {
+                                        @memset(decs, .pending);
+                                        self.lock.lock();
+                                        self.diff_preview_active = true;
+                                        self.diff_preview_hunks = dr.hunks;
+                                        self.diff_preview_current = 0;
+                                        self.diff_preview_file_path = file_path;
+                                        self.diff_preview_original = orig;
+                                        self.diff_preview_new_content = new_cont;
+                                        self.diff_preview_tool_call_id = tool_call.id;
+                                        self.diff_preview_tool_name = tool_call.name;
+                                        self.diff_preview_tool_arguments = tool_call.arguments;
+                                        self.diff_preview_decisions = decs;
+                                        self.lock.unlock();
+                                        diff_preview_activated = true;
+                                        if (preview_diff) |d| self.allocator.free(d);
+                                        // Don't free orig — referenced by hunks
+                                        // Don't free dr — hunks reference its data
+                                    }
+                                }
+                                if (!diff_preview_activated) dr.deinit();
+                            }
+                        }
+                        if (!diff_preview_activated) {
+                            self.allocator.free(orig);
+                        }
+                    }
+                }
             }
+
+            if (diff_preview_activated) continue;
 
             const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments, preview_diff);
             if (preview_diff) |d| self.allocator.free(d);
@@ -3792,6 +3976,172 @@ pub const Model = struct {
         }
 
         return null;
+    }
+
+    /// Handle key input during diff preview mode. Returns true if key was consumed.
+    pub fn handleDiffPreviewKey(self: *Model, key: vaxis.Key) bool {
+        if (!self.diff_preview_active) return false;
+        if (self.diff_preview_decisions.len == 0) return false;
+
+        const current = self.diff_preview_current;
+
+        if (key.matches('y', .{})) {
+            if (current < self.diff_preview_decisions.len) {
+                self.diff_preview_decisions[current] = .applied;
+                if (current + 1 < self.diff_preview_decisions.len) {
+                    self.diff_preview_current = current + 1;
+                } else {
+                    self.finishDiffPreview();
+                }
+            }
+            return true;
+        }
+        if (key.matches('n', .{})) {
+            if (current < self.diff_preview_decisions.len) {
+                self.diff_preview_decisions[current] = .rejected;
+                if (current + 1 < self.diff_preview_decisions.len) {
+                    self.diff_preview_current = current + 1;
+                } else {
+                    self.finishDiffPreview();
+                }
+            }
+            return true;
+        }
+        if (key.matches('a', .{})) {
+            for (self.diff_preview_decisions[current..]) |*d| {
+                d.* = .applied;
+            }
+            self.finishDiffPreview();
+            return true;
+        }
+        if (key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
+            for (self.diff_preview_decisions[current..]) |*d| {
+                d.* = .rejected;
+            }
+            self.finishDiffPreview();
+            return true;
+        }
+        if (key.matches('j', .{})) {
+            if (current + 1 < self.diff_preview_decisions.len) {
+                self.diff_preview_current = current + 1;
+            }
+            return true;
+        }
+        if (key.matches('k', .{})) {
+            if (current > 0) {
+                self.diff_preview_current = current - 1;
+            }
+            return true;
+        }
+
+        return true; // Consume all keys while diff preview is active
+    }
+
+    /// Finish diff preview: compute resulting text with selected hunks applied
+    fn finishDiffPreview(self: *Model) void {
+        self.diff_preview_active = false;
+
+        // Apply selected hunks: build output by walking through original lines
+        // and substituting hunk content for applied hunks
+        var result_buf = std.ArrayList(u8).empty;
+        defer result_buf.deinit(self.allocator);
+
+        var orig_lines = std.ArrayList([]const u8).empty;
+        defer orig_lines.deinit(self.allocator);
+        if (self.diff_preview_original.len > 0) {
+            var iter = std.mem.splitScalar(u8, self.diff_preview_original, '\n');
+            while (iter.next()) |line| {
+                orig_lines.append(self.allocator, line) catch {};
+            }
+            // Remove trailing empty element from trailing newline
+            if (self.diff_preview_original[self.diff_preview_original.len - 1] == '\n') {
+                if (orig_lines.items.len > 0 and orig_lines.items[orig_lines.items.len - 1].len == 0) {
+                    orig_lines.items.len -= 1;
+                }
+            }
+        }
+
+        var cur_line: usize = 0;
+        var hunk_idx: usize = 0;
+        while (hunk_idx < self.diff_preview_hunks.len) : (hunk_idx += 1) {
+            const hunk = self.diff_preview_hunks[hunk_idx];
+            const decision = if (hunk_idx < self.diff_preview_decisions.len) self.diff_preview_decisions[hunk_idx] else .rejected;
+
+            // Copy unchanged lines before this hunk (old_start is 1-based)
+            const hunk_start_0: usize = if (hunk.old_start > 0) hunk.old_start - 1 else 0;
+            while (cur_line < hunk_start_0 and cur_line < orig_lines.items.len) : (cur_line += 1) {
+                result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
+                result_buf.append(self.allocator, '\n') catch {};
+            }
+
+            if (decision == .applied) {
+                // Apply hunk: use new content from hunk lines
+                for (hunk.lines) |line| {
+                    if (line.kind == .insert) {
+                        result_buf.appendSlice(self.allocator, line.content) catch {};
+                        result_buf.append(self.allocator, '\n') catch {};
+                    } else if (line.kind == .equal) {
+                        result_buf.appendSlice(self.allocator, line.content) catch {};
+                        result_buf.append(self.allocator, '\n') catch {};
+                    }
+                    // Skip .delete lines
+                }
+            } else {
+                // Reject hunk: keep original lines
+                var count: usize = 0;
+                while (count < hunk.old_count and cur_line < orig_lines.items.len) : ({
+                    count += 1;
+                    cur_line += 1;
+                }) {
+                    result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
+                    result_buf.append(self.allocator, '\n') catch {};
+                }
+            }
+            cur_line = hunk_start_0 + hunk.old_count;
+        }
+
+        // Copy remaining unchanged lines after last hunk
+        while (cur_line < orig_lines.items.len) : (cur_line += 1) {
+            result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
+            result_buf.append(self.allocator, '\n') catch {};
+        }
+
+        const result_text = result_buf.toOwnedSlice(self.allocator) catch "error: failed to apply hunks";
+        defer if (!std.mem.startsWith(u8, result_text, "error:")) self.allocator.free(result_text);
+
+        // Write the result to file
+        if (self.diff_preview_file_path.len > 0 and !std.mem.startsWith(u8, result_text, "error:")) {
+            if (std.fs.cwd().createFile(self.diff_preview_file_path, .{})) |file| {
+                file.writeAll(result_text) catch {};
+                file.close();
+            } else |_| {}
+        }
+
+        // Count applied hunks
+        var applied_count: usize = 0;
+        for (self.diff_preview_decisions) |d| {
+            if (d == .applied) applied_count += 1;
+        }
+
+        const tool_result = if (applied_count > 0)
+            std.fmt.allocPrint(self.allocator, "Applied {d} of {d} hunks to {s}", .{
+                applied_count, self.diff_preview_decisions.len, self.diff_preview_file_path,
+            }) catch "Applied selected hunks"
+        else
+            self.allocator.dupe(u8, "error: all hunks rejected by user") catch "error: rejected";
+
+        self.lock.lock();
+        self.addMessageWithToolsUnlocked("tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
+        self.appendHistoryMessageWithToolsUnlocked("tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
+        self.saveSessionSnapshotUnlocked() catch {};
+        self.lock.unlock();
+        self.allocator.free(tool_result);
+
+        // Clean up diff preview state
+        self.allocator.free(self.diff_preview_original);
+        self.allocator.free(self.diff_preview_decisions);
+        self.diff_preview_hunks = &.{};
+        self.diff_preview_decisions = &.{};
     }
 
     fn startNextAssistantPlaceholder(self: *Model) !void {

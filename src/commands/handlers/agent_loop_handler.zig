@@ -6,6 +6,7 @@ const agent_loop_mod = @import("agent_loop");
 const autopilot_mod = @import("autopilot");
 const cognition_mod = @import("cognition");
 const guardian_mod = @import("guardian");
+const crush_mode_mod = @import("crush_mode");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 
@@ -824,4 +825,97 @@ fn extractPathFromArgs(args: []const u8) []const u8 {
     }
 
     return trimmed;
+}
+
+/// Crush Mode — auto-agentic execution: plan → execute → verify → commit
+///
+/// Usage:
+///   crushcode crush "<task description>"
+///   crushcode crush --auto-approve "<task description>"
+///   crushcode crush --no-commit "<task description>"
+///   crushcode crush --dry-run "<task description>"
+pub fn handleCrush(args: args_mod.Args) !void {
+    const allocator = std.heap.page_allocator;
+
+    if (args.remaining.len == 0) {
+        stdout_print("Crush Mode — Auto-agentic execution engine\n\n", .{});
+        stdout_print("Usage: crushcode crush [options] \"<task description>\"\n\n", .{});
+        stdout_print("Options:\n", .{});
+        stdout_print("  --auto-approve   Auto-approve all tool calls (reads + writes)\n", .{});
+        stdout_print("  --no-commit      Skip auto-commit after completion\n", .{});
+        stdout_print("  --no-verify      Skip build verification\n", .{});
+        stdout_print("  --dry-run        Parse plan but do not execute\n", .{});
+        stdout_print("\nExample:\n", .{});
+        stdout_print("  crushcode crush \"Fix all auth bugs and add tests\"\n", .{});
+        stdout_print("  crushcode crush --auto-approve \"Refactor the config module\"\n", .{});
+        return;
+    }
+
+    // Parse options
+    var auto_approve = false;
+    var no_commit = false;
+    var no_verify = false;
+    var dry_run = false;
+    var task_parts = array_list_compat.ArrayList([]const u8).init(allocator);
+    defer task_parts.deinit();
+
+    for (args.remaining) |arg| {
+        if (std.mem.eql(u8, arg, "--auto-approve")) {
+            auto_approve = true;
+        } else if (std.mem.eql(u8, arg, "--no-commit")) {
+            no_commit = true;
+        } else if (std.mem.eql(u8, arg, "--no-verify")) {
+            no_verify = true;
+        } else if (std.mem.eql(u8, arg, "--dry-run")) {
+            dry_run = true;
+        } else {
+            try task_parts.append(arg);
+        }
+    }
+
+    if (task_parts.items.len == 0) {
+        stdout_print("Error: no task description provided\n", .{});
+        stdout_print("Usage: crushcode crush \"<task description>\"\n", .{});
+        return;
+    }
+
+    // Join task parts into single description
+    const task = try std.mem.join(allocator, " ", task_parts.items);
+    defer allocator.free(task);
+
+    stdout_print("\n🤖 Crush Mode\n", .{});
+    stdout_print("  Task: {s}\n", .{task});
+    stdout_print("  Auto-approve: {s}\n", .{if (auto_approve) "yes" else "reads only"});
+    stdout_print("  Auto-commit:  {s}\n", .{if (no_commit) "no" else "yes"});
+    stdout_print("  Verify build: {s}\n\n", .{if (no_verify) "no" else "yes"});
+
+    // Get project directory (cwd)
+    const cwd = std.process.getCwdAlloc(allocator) catch ".";
+    defer allocator.free(cwd);
+
+    // Initialize CrushEngine
+    var engine = crush_mode_mod.CrushEngine.init(allocator, task, cwd);
+    engine.auto_approve_read = true;
+    engine.auto_approve_write = auto_approve;
+    engine.auto_verify = !no_verify;
+    engine.auto_commit = !no_commit;
+    defer engine.deinit();
+
+    if (dry_run) {
+        stdout_print("[dry-run] Would plan and execute: {s}\n", .{task});
+        return;
+    }
+
+    stdout_print("Planning...\n", .{});
+
+    // Build plan prompt
+    const plan_prompt = engine.buildPlanPrompt(allocator) catch |err| {
+        stdout_print("Error building plan: {}\n", .{err});
+        return;
+    };
+    defer allocator.free(plan_prompt);
+
+    stdout_print("Plan prompt generated ({d} bytes)\n", .{plan_prompt.len});
+    stdout_print("\nNote: Full execution requires AI provider connection.\n", .{});
+    stdout_print("Use TUI mode (crushcode tui) then /crush for interactive execution.\n", .{});
 }

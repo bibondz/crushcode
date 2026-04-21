@@ -10,6 +10,7 @@ const memory_handler = @import("memory_handler");
 
 pub const handleGraph = agent_loop_handler.handleGraph;
 pub const handleAutopilot = agent_loop_handler.handleAutopilot;
+pub const handleCrush = agent_loop_handler.handleCrush;
 pub const handleAgentLoop = agent_loop_handler.handleAgentLoop;
 
 pub const handleWorkflow = workflow_handler.handleWorkflow;

@@ -1,9 +1,9 @@
-# State: Crushcode v0.36.0
+# State: Crushcode v0.37.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
-**Updated:** 2026-04-20
-**Commit:** 2d980d8
-**Stats:** ~260 `.zig` files, ~113K lines
+**Updated:** 2026-04-21
+**Commit:** 17afbc6
+**Stats:** ~261 `.zig` files, ~114K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.34.0 — Tool Expansion + Permissions + Delegation |
-| Phase | COMPLETE |
-| Status | ✅ All phases shipped |
-| Code Version | 0.34.0 |
+| Milestone | v0.37.0 — Competitive Dominance |
+| Phase | 38 (Streaming Diff Preview) — Planning |
+| Status | 📋 Planning Phase 38 |
+| Code Version | 0.36.0 + competitive UX improvements |
 
 ---
 
@@ -145,12 +145,36 @@ src/tools/ — tool definitions
 |------|----------|-------|
 | Build.zig cleanup (863→~500 lines) | Medium | Create `createStdModule()` helper to eliminate compat injection loop |
 | Vault→persistence merge | Medium | Circular dep risk — vault.zig imports knowledge_persistence |
-| Fresh roadmap for daily driver | Low | All roadmap v0.3.1–v0.7.0 done. Need new goals. |
+
+---
+
+## v0.37.0 — Competitive Dominance (Planned)
+
+Roadmap: `.planning/ROADMAP-v0.37.md`
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 38 | Streaming Diff Preview — per-hunk apply/reject with syntax highlighting | 📋 Planned |
+| Phase 39 | Crush Mode — auto-agentic task→plan→exec→verify→commit | 📋 Planned |
+| Phase 40 | SQLite Session Backend — replace JSON, enable analytics + crash recovery | 📋 Planned |
+| Phase 41 | Web Tools — web_search + web_fetch tools for AI | 📋 Planned |
+| Phase 42 | Image in Terminal — Kitty/Sixel protocol display | 📋 Planned |
+
+### Competitive UX Improvements (committed 17afbc6)
+
+- Expanded syntax highlighting from 4 to 20 languages
+- Rich token types (PascalCase types, function calls, multi-char operators)
+- LSP find-references via /refs command
+- MCP SSE/HTTP transport CLI flags
+- Ctrl+X Ctrl+E external editor chord
+- @-file reference parser (file_reference.zig)
+- 📊 Context Dashboard in sidebar
+- /undo, /lsp-restart, /export slash commands
 
 ---
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-20
-**Current Work:** v0.33.0 complete — all 5 phases shipped (scoring, user model, auto skills, plan mode, feedback)
-**Next Step:** Push to remote, consider v0.33.0+ backlog items
+**Last Updated:** 2026-04-21
+**Current Work:** Planning Phase 38 (Streaming Diff Preview) for v0.37.0 Competitive Dominance
+**Next Step:** Execute Phase 38 — create diff_preview.zig widget, integrate into tool execution flow

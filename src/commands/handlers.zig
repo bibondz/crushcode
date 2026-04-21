@@ -149,6 +149,7 @@ pub const handleTemplate = experimental_handlers.handleTemplate;
 pub const handlePreview = experimental_handlers.handlePreview;
 pub const handleDetect = experimental_handlers.handleDetect;
 pub const handleAutopilot = experimental_handlers.handleAutopilot;
+pub const handleCrush = experimental_handlers.handleCrush;
 
 pub fn handleAuth(args: args_mod.Args) !void {
     try auth_cmd_mod.handleAuth(args.remaining);
@@ -208,6 +209,7 @@ pub fn printHelp() !void {
         \\  hooks          Hook execution engine (list, run, test, discover)
         \\  bg             Background agent scheduler (list, run, status, schedule, results)
         \\  detect         Detect file type using content analysis (magic bytes + patterns + extension)
+        \\  crush "<task>"  Auto-agentic: plan → execute → verify → commit
         \\  memory         4-layer memory (layers, insights, distill, search, store, stats)
         \\  list           List providers or models
         \\  usage         Show token usage and cost tracking

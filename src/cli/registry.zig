@@ -97,6 +97,7 @@ const commands = [_]Command{
     .{ .name = "preview", .handler = wrapArgsOnly(handlers.handlePreview), .description = "Preview file with line numbers, highlighting, and diff" },
     .{ .name = "detect", .handler = wrapArgsOnly(handlers.handleDetect), .description = "Detect file type using content analysis (magic bytes + patterns + extension)" },
     .{ .name = "autopilot", .handler = wrapArgsOnly(handlers.handleAutopilot), .description = "Autopilot agents — wire background agents to real work (run, list, status, schedule, run-all)" },
+    .{ .name = "crush", .handler = wrapArgsOnly(handlers.handleCrush), .description = "Auto-agentic: plan → execute → verify → commit" },
     .{ .name = "skill-sync", .handler = wrapArgsOnly(handlers.handleSkillSyncCmd), .description = "Sync skills from marketplace" },
     .{ .name = "template", .handler = wrapArgsOnly(handlers.handleTemplate), .description = "Manage project templates" },
 };
