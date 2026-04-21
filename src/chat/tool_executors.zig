@@ -11,6 +11,8 @@ const blocklist_mod = @import("permission_blocklist");
 const safelist_mod = @import("permission_safelist");
 const myers = @import("myers");
 const file_tracker_mod = @import("file_tracker");
+const web_fetch_mod = @import("web_fetch");
+const web_search_mod = @import("web_search");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -338,6 +340,15 @@ fn searchFilesExecutor(allocator: std.mem.Allocator, call_id: []const u8, argume
     return adaptToolExecution(allocator, call_id, "search_files", arguments, executeSearchFilesTool);
 }
 
+// Web tool executors
+fn webFetchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "web_fetch", arguments, executeWebFetchTool);
+}
+
+fn webSearchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "web_search", arguments, executeWebSearchTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -355,6 +366,8 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "git_diff", .executor = gitDiffExecutor },
     .{ .name = "git_log", .executor = gitLogExecutor },
     .{ .name = "search_files", .executor = searchFilesExecutor },
+    .{ .name = "web_fetch", .executor = webFetchExecutor },
+    .{ .name = "web_search", .executor = webSearchExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -1458,6 +1471,97 @@ fn countLines(text: []const u8) u32 {
     return count;
 }
 
+/// Extract a string field value from a JSON string (simple inline parser).
+fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const u8 {
+    const full_needle = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{field_name}) catch return null;
+    defer std.heap.page_allocator.free(full_needle);
+
+    const idx = std.mem.indexOf(u8, json, full_needle) orelse return null;
+    const rest = json[idx + full_needle.len ..];
+
+    // Skip whitespace and colon
+    var i: usize = 0;
+    while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t' or rest[i] == '\n' or rest[i] == '\r' or rest[i] == ':')) {
+        i += 1;
+    }
+    if (i >= rest.len) return null;
+
+    // Expect opening quote
+    if (rest[i] != '"') return null;
+    i += 1;
+
+    // Find closing quote (handle escaped quotes)
+    const value_start = i;
+    while (i < rest.len) {
+        if (rest[i] == '"' and (i == 0 or rest[i - 1] != '\\')) {
+            break;
+        }
+        i += 1;
+    }
+    if (i >= rest.len) return null;
+
+    return rest[value_start..i];
+}
+
+fn executeWebFetchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const args = tool_call.arguments;
+
+    // Parse URL from arguments — try "url" field first, then "path"
+    const url = blk: {
+        if (extractJsonStringField(args, "url")) |u| break :blk u;
+        if (extractJsonStringField(args, "path")) |p| break :blk p;
+        return buildValidationError(allocator, "web_fetch", "Missing 'url' parameter. Usage: {\"url\": \"https://...\"}");
+    };
+
+    out("\n\x1b[36m🌐 Fetching:\x1b[0m {s}\n", .{url});
+
+    const result = web_fetch_mod.fetchUrl(allocator, url) catch |err| {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🌐 web_fetch → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Failed to fetch URL: {s}", .{@errorName(err)}),
+        };
+    };
+
+    const truncated = truncateToolOutput(allocator, result.body) catch result.body;
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🌐 web_fetch → {s} ({d} bytes)\n", .{url, result.body.len}),
+        .result = try std.fmt.allocPrint(allocator, "URL: {s}\nStatus: {d}\nContent-Type: {s}\n\n{s}", .{ result.url, result.status_code, result.content_type, truncated }),
+    };
+}
+
+fn executeWebSearchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const args = tool_call.arguments;
+
+    const query = extractJsonStringField(args, "query") orelse
+        return buildValidationError(allocator, "web_search", "Missing 'query' parameter. Usage: {\"query\": \"search terms\", \"max_results\": 5}");
+
+    const max_results: usize = blk: {
+        if (extractJsonStringField(args, "max_results")) |mr| {
+            break :blk std.fmt.parseInt(usize, mr, 10) catch 5;
+        }
+        break :blk 5;
+    };
+
+    out("\n\x1b[36m🔍 Searching:\x1b[0m {s}\n", .{query});
+
+    const response = web_search_mod.searchWeb(allocator, query, max_results) catch |err| {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔍 web_search → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Search failed: {s}", .{@errorName(err)}),
+        };
+    };
+    defer response.deinit(allocator);
+
+    const formatted = web_search_mod.formatResults(allocator, &response) catch "Search completed but formatting failed";
+    const truncated = truncateToolOutput(allocator, formatted) catch formatted;
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔍 web_search → {d} results for: {s}\n", .{response.results.len, query}),
+        .result = truncated,
+    };
+}
+
 pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     // Guard: empty arguments would cause a confusing JSON parse error downstream;
     // return a descriptive validation error instead.
@@ -1511,6 +1615,12 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "search_files")) {
         return executeSearchFilesTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "web_fetch")) {
+        return executeWebFetchTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "web_search")) {
+        return executeWebSearchTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }

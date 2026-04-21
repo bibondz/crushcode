@@ -163,6 +163,10 @@ pub fn build(b: *std.Build) !void {
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
     const skill_sync_mod = simpleMod(b, "src/skills/sync.zig", target, optimize);
     const tools_mod = simpleMod(b, "src/tools/registry.zig", target, optimize);
+    const web_fetch_mod = simpleMod(b, "src/tools/web_fetch.zig", target, optimize);
+    const web_search_mod = createMod(b, "src/tools/web_search.zig", target, optimize, &.{
+        imp("web_fetch", web_fetch_mod),
+    });
 
     const streaming_types_mod = simpleMod(b, "src/streaming/types.zig", target, optimize);
     const streaming_buffer_mod = createMod(b, "src/streaming/buffer.zig", target, optimize, &.{imp("types", streaming_types_mod)});
@@ -672,6 +676,7 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod)});
     addImports(chat_bridge_mod, &.{
         imp("ai_types", ai_types_mod),
         imp("core_api", core_api_mod),
@@ -717,6 +722,8 @@ pub fn build(b: *std.Build) !void {
         sqlite_mod,
         session_db_mod,
         db_migration_mod,
+        web_fetch_mod,
+        web_search_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);

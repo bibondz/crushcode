@@ -262,4 +262,18 @@ pub const builtin_tool_schemas = [_]core.ToolSchema{
         \\{"type":"object","properties":{"pattern":{"type":"string"},"path":{"type":"string"},"max_results":{"type":"integer"}},"required":["pattern"]}
         ,
     },
+    .{
+        .name = "web_fetch",
+        .description = "Fetch content from a URL. Returns text extracted from web pages.",
+        .parameters =
+        \\{"type":"object","properties":{"url":{"type":"string","description":"The URL to fetch"},"path":{"type":"string","description":"Alternative name for url parameter"}},"required":["url"]}
+        ,
+    },
+    .{
+        .name = "web_search",
+        .description = "Search the web using DuckDuckGo. Returns search results with titles, URLs, and snippets.",
+        .parameters =
+        \\{"type":"object","properties":{"query":{"type":"string","description":"Search query"},"max_results":{"type":"integer","description":"Max results to return (1-10, default 5)"}},"required":["query"]}
+        ,
+    },
 };
