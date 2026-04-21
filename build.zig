@@ -167,6 +167,7 @@ pub fn build(b: *std.Build) !void {
     const web_search_mod = createMod(b, "src/tools/web_search.zig", target, optimize, &.{
         imp("web_fetch", web_fetch_mod),
     });
+    const image_display_mod = simpleMod(b, "src/tools/image_display.zig", target, optimize);
 
     const streaming_types_mod = simpleMod(b, "src/streaming/types.zig", target, optimize);
     const streaming_buffer_mod = createMod(b, "src/streaming/buffer.zig", target, optimize, &.{imp("types", streaming_types_mod)});
@@ -323,6 +324,7 @@ pub fn build(b: *std.Build) !void {
         imp("theme", theme_mod),
     });
     const code_preview_mod = simpleMod(b, "src/tui/code_preview.zig", target, optimize);
+    const image_mod = simpleMod(b, "src/tui/image.zig", target, optimize);
     const widget_data_table_mod = simpleMod(b, "src/tui/widgets/data_table.zig", target, optimize);
     const widget_scroll_panel_mod = simpleMod(b, "src/tui/widgets/scroll_panel.zig", target, optimize);
     addImports(tui_mod, &.{
@@ -343,6 +345,7 @@ pub fn build(b: *std.Build) !void {
         imp("widget_data_table", widget_data_table_mod),
         imp("widget_scroll_panel", widget_scroll_panel_mod),
         imp("widget_diff_preview", widget_diff_preview_mod),
+        imp("image", image_mod),
     });
 
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
@@ -676,7 +679,7 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
-    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod)});
     addImports(chat_bridge_mod, &.{
         imp("ai_types", ai_types_mod),
         imp("core_api", core_api_mod),
@@ -724,6 +727,8 @@ pub fn build(b: *std.Build) !void {
         db_migration_mod,
         web_fetch_mod,
         web_search_mod,
+        image_display_mod,
+        image_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -822,6 +827,7 @@ pub fn build(b: *std.Build) !void {
         sqlite_mod,
         session_db_mod,
         db_migration_mod,
+        image_display_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);

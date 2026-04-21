@@ -13,6 +13,7 @@ const myers = @import("myers");
 const file_tracker_mod = @import("file_tracker");
 const web_fetch_mod = @import("web_fetch");
 const web_search_mod = @import("web_search");
+const image_display_mod = @import("image_display");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -349,6 +350,10 @@ fn webSearchExecutor(allocator: std.mem.Allocator, call_id: []const u8, argument
     return adaptToolExecution(allocator, call_id, "web_search", arguments, executeWebSearchTool);
 }
 
+fn imageDisplayExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "image_display", arguments, executeImageDisplayTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -368,6 +373,7 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "search_files", .executor = searchFilesExecutor },
     .{ .name = "web_fetch", .executor = webFetchExecutor },
     .{ .name = "web_search", .executor = webSearchExecutor },
+    .{ .name = "image_display", .executor = imageDisplayExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -1562,6 +1568,29 @@ fn executeWebSearchTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
     };
 }
 
+fn executeImageDisplayTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const args = tool_call.arguments;
+    const file_path = extractJsonStringField(args, "file_path") orelse
+        return buildValidationError(allocator, "image_display", "Missing 'file_path' parameter. Usage: {\"file_path\": \"/path/to/image.png\"}");
+
+    out("\n\x1b[36m🖼 Loading image:\x1b[0m {s}\n", .{file_path});
+
+    const info = image_display_mod.loadImageInfo(allocator, file_path) catch |err| {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🖼 image_display → error: {s}\n", .{@errorName(err)}),
+            .result = try std.fmt.allocPrint(allocator, "Failed to load image: {s}", .{@errorName(err)}),
+        };
+    };
+    defer info.deinit(allocator);
+
+    const formatted = try image_display_mod.formatImageInfo(allocator, &info);
+
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🖼 image_display → {s} ({s} {d}x{d})\n", .{ file_path, info.format, info.width, info.height }),
+        .result = formatted,
+    };
+}
+
 pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     // Guard: empty arguments would cause a confusing JSON parse error downstream;
     // return a descriptive validation error instead.
@@ -1621,6 +1650,9 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "web_search")) {
         return executeWebSearchTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "image_display")) {
+        return executeImageDisplayTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }
