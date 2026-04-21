@@ -119,6 +119,10 @@ pub fn build(b: *std.Build) !void {
     const git_mod = createMod(b, "src/commands/git.zig", target, optimize, &.{imp("shell", shell_mod)});
     const skills_mod = createMod(b, "src/commands/builtins.zig", target, optimize, &.{imp("shell", shell_mod)});
     const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
+    // db modules (declared early — referenced by session_mod and others)
+    const sqlite_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
+    const session_db_mod = createMod(b, "src/db/session_db.zig", target, optimize, &.{imp("sqlite", sqlite_mod)});
+    const db_migration_mod = createMod(b, "src/db/migration.zig", target, optimize, &.{imp("sqlite", sqlite_mod), imp("session_db", session_db_mod)});
     const session_mod = simpleMod(b, "src/session.zig", target, optimize);
     const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const diff_mod = simpleMod(b, "src/tui/diff.zig", target, optimize);
@@ -189,7 +193,7 @@ pub fn build(b: *std.Build) !void {
         imp("streaming_types", streaming_types_mod),     imp("streaming", streaming_session_mod), imp("streaming_buffer", streaming_buffer_mod),
         imp("streaming_display", streaming_display_mod),
     });
-    addImports(session_mod, &.{imp("core_api", core_api_mod)});
+    addImports(session_mod, &.{imp("core_api", core_api_mod), imp("sqlite", sqlite_mod), imp("session_db", session_db_mod), imp("db_migration", db_migration_mod)});
     addImports(chat_mod, &.{
         imp("intensity", intensity_mod),           imp("tiered_loader", tiered_loader_mod),   imp("convergence", convergence_mod),
         imp("color", color_mod),                   imp("source_tracker", source_tracker_mod), imp("knowledge_lint", knowledge_lint_mod),
@@ -710,12 +714,31 @@ pub fn build(b: *std.Build) !void {
         plan_handler_mod,
         delegate_mod,
         moa_mod,
+        sqlite_mod,
+        session_db_mod,
+        db_migration_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
     }
 
+    // --- SQLite3 amalgamation (vendored C) ---
+    const sqlite_c_flags = [_][]const u8{
+        "-std=c99",
+        "-DSQLITE_THREADSAFE=1",
+        "-DSQLITE_OMIT_LOAD_EXTENSION",
+        "-DSQLITE_DEFAULT_WAL_SYNCHRONOUS=1",
+        "-DSQLITE_ENABLE_FTS5",
+        "-DSQLITE_DQS=0",
+    };
+
     const exe = b.addExecutable(.{ .name = "crushcode", .root_module = main_mod });
+    exe.addCSourceFile(.{
+        .file = b.path("vendor/sqlite3/sqlite3.c"),
+        .flags = &sqlite_c_flags,
+    });
+    exe.addIncludePath(b.path("vendor/sqlite3"));
+    exe.linkLibC();
     b.installArtifact(exe);
 
     const test_modules = [_]*std.Build.Module{
@@ -789,6 +812,9 @@ pub fn build(b: *std.Build) !void {
         plan_handler_mod,
         delegate_mod,
         moa_mod,
+        sqlite_mod,
+        session_db_mod,
+        db_migration_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);

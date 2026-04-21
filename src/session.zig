@@ -1,5 +1,44 @@
 const std = @import("std");
 const core = @import("core_api");
+const sqlite_mod = @import("sqlite");
+const session_db_mod = @import("session_db");
+const migration_mod = @import("db_migration");
+
+/// Global SQLite session database. Initialized lazily on first use.
+var g_session_db: ?session_db_mod.SessionDB = null;
+
+/// Get or initialize the SQLite session database.
+fn getSessionDb(allocator: std.mem.Allocator) !*session_db_mod.SessionDB {
+    if (g_session_db != null) return &g_session_db.?;
+
+    const session_dir = try defaultSessionDir(allocator);
+    defer allocator.free(session_dir);
+
+    const db_path = try std.fmt.allocPrint(allocator, "{s}/sessions.db", .{session_dir});
+    defer allocator.free(db_path);
+
+    // Create null-terminated path
+    const db_path_z = try allocator.dupeZ(u8, db_path);
+    defer allocator.free(db_path_z);
+
+    var db = try session_db_mod.SessionDB.init(allocator, db_path_z);
+
+    // Run JSON → SQLite migration if needed
+    const result = migration_mod.migrateFromJson(allocator, session_dir, &db) catch
+        migration_mod.MigrationResult{ .total_found = 0, .imported = 0, .skipped = 0, .failed = 0, .already_migrated = true };
+    _ = result;
+
+    g_session_db = db;
+    return &g_session_db.?;
+}
+
+/// Close the global database connection (call on shutdown).
+pub fn closeSessionDb() void {
+    if (g_session_db) |*db| {
+        db.deinit();
+        g_session_db = null;
+    }
+}
 
 pub const Message = core.ChatMessage;
 
@@ -25,6 +64,40 @@ pub fn defaultSessionDir(allocator: std.mem.Allocator) ![]const u8 {
 pub fn saveSession(allocator: std.mem.Allocator, session_dir: []const u8, session: *const Session) !void {
     try std.fs.cwd().makePath(session_dir);
 
+    const db = getSessionDb(allocator) catch {
+        return saveSessionJson(allocator, session_dir, session);
+    };
+
+    const row = session_db_mod.SessionRow{
+        .id = session.id,
+        .title = session.title,
+        .model = session.model,
+        .provider = session.provider,
+        .total_tokens = session.total_tokens,
+        .total_cost = session.total_cost,
+        .turn_count = session.turn_count,
+        .duration_seconds = session.duration_seconds,
+        .created_at = session.created_at,
+        .updated_at = session.updated_at,
+    };
+
+    var msgs = try allocator.alloc(session_db_mod.MessageRow, session.messages.len);
+    defer allocator.free(msgs);
+    for (session.messages, 0..) |msg, i| {
+        msgs[i] = .{
+            .role = msg.role,
+            .content = msg.content,
+            .tool_call_id = msg.tool_call_id,
+            .tool_calls_json = null,
+        };
+    }
+
+    db.saveSession(&row, msgs) catch {
+        return saveSessionJson(allocator, session_dir, session);
+    };
+}
+
+fn saveSessionJson(allocator: std.mem.Allocator, session_dir: []const u8, session: *const Session) !void {
     var normalized = try normalizedSession(allocator, session);
     defer deinitSession(allocator, &normalized);
 
@@ -42,6 +115,57 @@ pub fn saveSession(allocator: std.mem.Allocator, session_dir: []const u8, sessio
 }
 
 pub fn loadSession(allocator: std.mem.Allocator, path: []const u8) !Session {
+    // Try SQLite first — extract session_id from path
+    if (getSessionDb(allocator)) |db| {
+        // Extract session ID from filename (e.g., "/path/session-123-abc.json" → "session-123-abc")
+        const basename = std.fs.path.basename(path);
+        const id = if (std.mem.endsWith(u8, basename, ".json"))
+            basename[0..basename.len - 5]
+        else
+            basename;
+
+        if (try db.loadSession(allocator, id)) |loaded| {
+            var data = loaded;
+            defer data.deinit(allocator);
+
+            var messages = try allocator.alloc(Message, data.messages.len);
+            errdefer {
+                for (messages) |*m| {
+                    allocator.free(m.role);
+                    if (m.content) |c| allocator.free(c);
+                    if (m.tool_call_id) |tc| allocator.free(tc);
+                }
+                allocator.free(messages);
+            }
+            for (data.messages, 0..) |mr, i| {
+                messages[i] = .{
+                    .role = try allocator.dupe(u8, mr.role),
+                    .content = if (mr.content) |c| try allocator.dupe(u8, c) else null,
+                    .tool_call_id = if (mr.tool_call_id) |tc| try allocator.dupe(u8, tc) else null,
+                    .tool_calls = null,
+                };
+            }
+            return .{
+                .id = try allocator.dupe(u8, data.session.id),
+                .created_at = data.session.created_at,
+                .updated_at = data.session.updated_at,
+                .title = try allocator.dupe(u8, data.session.title),
+                .messages = messages,
+                .model = try allocator.dupe(u8, data.session.model),
+                .provider = try allocator.dupe(u8, data.session.provider),
+                .total_tokens = data.session.total_tokens,
+                .total_cost = data.session.total_cost,
+                .turn_count = data.session.turn_count,
+                .duration_seconds = data.session.duration_seconds,
+            };
+        }
+    } else |_| {}
+
+    // Fallback to JSON
+    return loadSessionJson(allocator, path);
+}
+
+fn loadSessionJson(allocator: std.mem.Allocator, path: []const u8) !Session {
     const content = try std.fs.cwd().readFileAlloc(allocator, path, 16 * 1024 * 1024);
     defer allocator.free(content);
 
@@ -52,6 +176,42 @@ pub fn loadSession(allocator: std.mem.Allocator, path: []const u8) !Session {
 }
 
 pub fn listSessions(allocator: std.mem.Allocator, session_dir: []const u8) ![]Session {
+    const db = getSessionDb(allocator) catch {
+        return listSessionsJson(allocator, session_dir);
+    };
+    const rows = db.listSessions(allocator) catch {
+        return listSessionsJson(allocator, session_dir);
+    };
+    defer session_db_mod.freeSessionRows(allocator, rows);
+
+    var sessions = try allocator.alloc(Session, rows.len);
+    var init_count: usize = 0;
+    errdefer {
+        for (sessions[0..init_count]) |*s| deinitSession(allocator, s);
+        allocator.free(sessions);
+    }
+
+    for (rows, 0..) |row, i| {
+        sessions[i] = .{
+            .id = try allocator.dupe(u8, row.id),
+            .created_at = row.created_at,
+            .updated_at = row.updated_at,
+            .title = try allocator.dupe(u8, row.title),
+            .messages = try allocator.alloc(Message, 0),
+            .model = try allocator.dupe(u8, row.model),
+            .provider = try allocator.dupe(u8, row.provider),
+            .total_tokens = row.total_tokens,
+            .total_cost = row.total_cost,
+            .turn_count = row.turn_count,
+            .duration_seconds = row.duration_seconds,
+        };
+        init_count = i + 1;
+    }
+
+    return sessions;
+}
+
+fn listSessionsJson(allocator: std.mem.Allocator, session_dir: []const u8) ![]Session {
     var dir = std.fs.cwd().openDir(session_dir, .{ .iterate = true }) catch |err| switch (err) {
         error.FileNotFound => return allocator.alloc(Session, 0),
         else => return err,
@@ -74,7 +234,7 @@ pub fn listSessions(allocator: std.mem.Allocator, session_dir: []const u8) ![]Se
         const full_path = try std.fs.path.join(allocator, &.{ session_dir, entry.path });
         defer allocator.free(full_path);
 
-        const session = loadSession(allocator, full_path) catch continue;
+        const session = loadSessionJson(allocator, full_path) catch continue;
         try sessions.append(allocator, session);
     }
 
@@ -82,8 +242,16 @@ pub fn listSessions(allocator: std.mem.Allocator, session_dir: []const u8) ![]Se
     return sessions.toOwnedSlice(allocator);
 }
 
-pub fn deleteSession(_: std.mem.Allocator, path: []const u8) !void {
-    try std.fs.cwd().deleteFile(path);
+pub fn deleteSession(allocator: std.mem.Allocator, path: []const u8) !void {
+    if (getSessionDb(allocator)) |db| {
+        const basename = std.fs.path.basename(path);
+        const id = if (std.mem.endsWith(u8, basename, ".json"))
+            basename[0..basename.len - 5]
+        else
+            basename;
+        db.deleteSession(id) catch {};
+    } else |_| {}
+    std.fs.cwd().deleteFile(path) catch {};
 }
 
 pub fn generateSessionId(allocator: std.mem.Allocator) ![]u8 {

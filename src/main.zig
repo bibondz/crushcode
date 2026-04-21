@@ -57,7 +57,8 @@ pub fn main() !void {
             std.posix.exit(130);
         }
     };
-    const empty_mask = std.os.linux.sigemptyset();
+    var empty_mask: std.posix.sigset_t = undefined;
+    @memset(std.mem.asBytes(&empty_mask), 0);
     _ = std.posix.sigaction(std.posix.SIG.INT, &.{
         .handler = .{ .handler = Posix.sigintHandler },
         .mask = empty_mask,
