@@ -2,7 +2,7 @@
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-21
-**Commit:** dc7461b
+**Commit:** 14abafc
 **Stats:** ~268 `.zig` files, ~117K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
@@ -41,11 +41,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 40 | SQLite Session Backend — replace JSON, enable analytics + crash recovery | ✅ Done | c6ccc08 |
 | Phase 41 | Web Tools — web_search + web_fetch tools for AI (19 builtin tools total) | ✅ Done | dc7461b |
 | Phase 42 | Image in Terminal — Kitty/Sixel protocol + image_display tool (20 builtin tools) | ✅ Done | 133ba1c |
-| Phase 43 | Smart Context — query intent extraction, relevance scoring, auto-pruning | ✅ Done | uncommitted |
-| Phase 44 | LSP as Tools — 6 LSP tools (definition, references, diagnostics, hover, symbols, rename) | ✅ Done | uncommitted |
-| Phase 45 | Multi-File Edit — atomic batch edits with transaction rollback | ✅ Done | uncommitted |
-| Phase 46 | Cost Analytics — /cost dashboard with per-session/day/provider/model breakdown | ✅ Done | uncommitted |
-| Phase 47 | Session Forking — /fork command to branch conversations | ✅ Done | uncommitted |
+| Phase 43 | Smart Context — query intent extraction, relevance scoring, auto-pruning | ✅ Done | 6ae6d3c |
+| Phase 44 | LSP as Tools — 6 LSP tools (definition, references, diagnostics, hover, symbols, rename) | ✅ Done | 6ae6d3c |
+| Phase 45 | Multi-File Edit — atomic batch edits with transaction rollback | ✅ Done | 6ae6d3c |
+| Phase 46 | Cost Analytics — /cost dashboard with per-session/day/provider/model breakdown | ✅ Done | 14abafc |
+| Phase 47 | Session Forking — /fork command to branch conversations | ✅ Done | 14abafc |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -219,6 +219,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.39.0** | **Phase 40: SQLite Session Backend** | **✅ Done** |
 | **v0.40.0** | **Phase 41: Web Search + Fetch Tools** | **✅ Done** |
 | **v0.41.0** | **Phase 42: Image in Terminal (Kitty/Sixel)** | **✅ Done** |
+| **v0.42.0** | **Phases 43-47: Smart Context, LSP Tools, Multi-File Edit, Cost Analytics, Session Forking** | **✅ Done** |
 
 ---
 
