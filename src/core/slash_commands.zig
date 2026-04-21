@@ -51,6 +51,7 @@ pub const all_slash_command_names = [_][]const u8{
     "/skills/auto",
     "/plan",     "/undo",     "/lsp-restart", "/export",
     "/rewind",
+    "/compress",
 };
 
 /// Check if a string is a recognized slash command.

@@ -61,6 +61,7 @@ const fork_mod = @import("fork");
 const team_coordinator_lib = @import("team_coordinator");
 const safety_checkpoint_mod = @import("safety_checkpoint");
 const session_tree_mod = @import("session_tree");
+const semantic_compressor_mod = @import("semantic_compressor");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -3363,7 +3364,7 @@ pub const Model = struct {
                 try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/tree [refresh] — Show session tree hierarchy\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/tree [refresh] — Show session tree hierarchy\n/compress [status|run] — Semantic context compression\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -3885,6 +3886,44 @@ pub const Model = struct {
                         try self.addMessageUnlocked("assistant", text);
                     }
                 }
+            }
+        } else if (std.mem.eql(u8, name, "/compress") or std.mem.startsWith(u8, name, "/compress ")) {
+            const sub = std.mem.trim(u8, name["/compress".len..], " ");
+            var compressor = semantic_compressor_mod.SemanticCompressor.init(self.allocator);
+            defer compressor.deinit();
+
+            if (sub.len == 0 or std.mem.eql(u8, sub, "status")) {
+                if (self.codebase_context) |ctx_content| {
+                    const total_tokens = compressor.estimateTokens(ctx_content);
+                    const file_count = self.context_file_count;
+                    const text = try std.fmt.allocPrint(self.allocator,
+                        "Context: {d} files, ~{d} tokens uncompressed\n\nCompression levels:\n  Full (>0.8 score): complete source\n  Signatures (0.5-0.8): fn signatures + types + docs\n  Interface (0.2-0.5): struct fields, type aliases only\n  Summary (<0.2): one-line per file\n\nUse /compress run to apply compression and see report.",
+                        .{ file_count, total_tokens },
+                    );
+                    try self.addMessageUnlocked("assistant", text);
+                } else {
+                    try self.addMessageUnlocked("assistant", "No codebase context loaded. Context is built on startup.");
+                }
+            } else if (std.mem.eql(u8, sub, "run")) {
+                if (self.codebase_context) |ctx_content| {
+                    const file_info = semantic_compressor_mod.FileInfo{
+                        .path = "context",
+                        .content = ctx_content,
+                        .estimated_tokens = @intCast(compressor.estimateTokens(ctx_content)),
+                    };
+                    const scores = [_]f64{0.9, 0.6, 0.3, 0.1};
+                    const result = compressor.compressContext(&.{file_info}, &scores) catch {
+                        try self.addMessageUnlocked("assistant", "Compression failed.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    const report = compressor.formatCompressionReport(result) catch "Error formatting report";
+                    try self.addMessageUnlocked("assistant", report);
+                } else {
+                    try self.addMessageUnlocked("assistant", "No codebase context to compress.");
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "Usage: /compress [status|run]");
             }
         }
 

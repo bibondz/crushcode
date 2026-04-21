@@ -535,6 +535,7 @@ pub fn build(b: *std.Build) !void {
     const context_optimizer_mod = simpleMod(b, "src/ai/context_optimizer.zig", target, optimize);
     const project_memory_mod = simpleMod(b, "src/agent/project_memory.zig", target, optimize);
     const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
+    const semantic_compressor_mod = simpleMod(b, "src/agent/semantic_compressor.zig", target, optimize);
     const worker_mod = simpleMod(b, "src/agent/worker.zig", target, optimize);
     const worker_runner_mod = createMod(b, "src/agent/worker_runner.zig", target, optimize, &.{
         imp("worker", worker_mod),
@@ -690,7 +691,7 @@ pub fn build(b: *std.Build) !void {
         imp("orchestration", orchestration_mod),
     });
     addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod), imp("session_db", session_db_mod), imp("cost_dashboard", cost_dashboard_mod), imp("fork", fork_mod) });
-    addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod)});
+    addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod), imp("semantic_compressor", semantic_compressor_mod)});
     addImports(tui_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
@@ -723,7 +724,7 @@ pub fn build(b: *std.Build) !void {
         usage_pricing_mod,        usage_budget_mod,             usage_report_mod,        hashline_mod,          hash_index_mod,             conflict_mod,         validated_edit_mod,        pattern_search_mod,  lsp_handler_mod,
         mcp_handler_mod,          ai_handlers_mod,              tool_handlers_mod,       system_handlers_mod,   experimental_handlers_mod,  handlers_mod,         main_mod,                  fallback_mod,        parallel_mod,
         skill_import_mod,         worktree_mod,                 lifecycle_hooks_mod,     intent_gate_mod,       graph_types_mod,            graph_parser_mod,     graph_algorithms_mod,      graph_mod,           agent_loop_mod,
-        workflow_mod,             compaction_mod,               context_budget_mod,              project_memory_mod,    smart_context_mod,         capability_catalog_mod,     intensity_mod,        tiered_loader_mod,         revision_loop_mod,   session_summarizer_mod,
+        workflow_mod,             compaction_mod,               context_budget_mod,              project_memory_mod,            smart_context_mod,         semantic_compressor_mod,   capability_catalog_mod,     intensity_mod,        tiered_loader_mod,         revision_loop_mod,   session_summarizer_mod,
         model_hotswap_mod,        adversarial_review_mod,       spinner_mod,             markdown_renderer_mod, error_display_mod,          convergence_mod,      color_mod,                 source_tracker_mod,  knowledge_lint_mod,
         slash_commands_mod,       scaffold_mod,                 mcp_transport_mod,       mcp_oauth_mod,         mcp_client_mod,             mcp_discovery_mod,    mcp_bridge_mod,            auth_mod,            profile_mod,
         connect_mod,              json_output_mod,              permission_evaluate_mod, app_theme_mod,         theme_mod,                  checkpoint_mod,       memory_mod,                lsp_mod,             json_extract_mod,
@@ -794,6 +795,7 @@ pub fn build(b: *std.Build) !void {
         context_budget_mod,
         project_memory_mod,
         smart_context_mod,
+        semantic_compressor_mod,
         user_model_mod,
         feedback_mod,
         checkpoint_mod,
