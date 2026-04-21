@@ -16,6 +16,8 @@ const web_search_mod = @import("web_search");
 const image_display_mod = @import("image_display");
 const edit_batch_mod = @import("edit_batch");
 const lsp_tools_mod = @import("lsp_tools");
+const checkpoint_mod = @import("safety_checkpoint");
+const session_db_mod = @import("session_db");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -69,6 +71,9 @@ threadlocal var active_safelist: ?*SafeCommandList = null;
 threadlocal var active_json_output: json_output_mod.JsonOutput = .{ .enabled = false };
 threadlocal var active_file_tracker: ?*file_tracker_mod.FileTracker = null;
 threadlocal var active_agent_mode: agent_loop_mod.AgentMode = .execute;
+threadlocal var active_checkpoint_manager: ?*checkpoint_mod.CheckpointManager = null;
+threadlocal var active_session_db_ref: ?*session_db_mod.SessionDB = null;
+threadlocal var active_checkpoint_session_id: []const u8 = "";
 
 pub fn setPermissionEvaluator(evaluator: ?*PermissionEvaluator) void {
     active_evaluator = evaluator;
@@ -100,6 +105,30 @@ pub fn setFileTracker(tracker: ?*file_tracker_mod.FileTracker) void {
 
 pub fn setAgentMode(mode: agent_loop_mod.AgentMode) void {
     active_agent_mode = mode;
+}
+
+pub fn setCheckpointManager(mgr: ?*checkpoint_mod.CheckpointManager) void {
+    active_checkpoint_manager = mgr;
+}
+
+pub fn setSessionDbForCheckpoint(db: ?*session_db_mod.SessionDB) void {
+    active_session_db_ref = db;
+}
+
+pub fn setCheckpointSessionId(session_id: []const u8) void {
+    active_checkpoint_session_id = session_id;
+}
+
+/// Attempt to snapshot a file before a destructive operation.
+/// Non-blocking: logs and continues on failure.
+fn checkpointBeforeWrite(file_path: []const u8, operation: []const u8) void {
+    const cp = active_checkpoint_manager orelse return;
+    const db = active_session_db_ref orelse return;
+    const sid = active_checkpoint_session_id;
+    if (sid.len == 0) return;
+    cp.snapshotFile(db, sid, file_path, operation) catch |err| {
+        std.log.warn("[checkpoint] snapshotFile failed for {s}: {}", .{ file_path, err });
+    };
 }
 
 fn buildToolFailure(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall, err: anyerror) !ToolExecution {
@@ -614,6 +643,9 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
         return buildValidationError(allocator, "write_file", msg);
     }
 
+    // Checkpoint: snapshot current file content before overwriting
+    checkpointBeforeWrite(parsed.value.path, "write_file");
+
     const file = try std.fs.cwd().createFile(parsed.value.path, .{});
     defer file.close();
     try file.writeAll(parsed.value.content);
@@ -857,6 +889,9 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     if (std.mem.eql(u8, parsed.value.old_string, parsed.value.new_string)) {
         return buildValidationError(allocator, "edit", "old_string and new_string are identical. No change needed.");
     }
+
+    // Checkpoint: snapshot current file content before editing
+    checkpointBeforeWrite(parsed.value.file_path, "edit");
 
     const file = try std.fs.cwd().openFile(parsed.value.file_path, .{});
     defer file.close();

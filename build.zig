@@ -121,7 +121,8 @@ pub fn build(b: *std.Build) !void {
     const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
     // db modules (declared early — referenced by session_mod and others)
     const sqlite_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
-    const session_db_mod = createMod(b, "src/db/session_db.zig", target, optimize, &.{imp("sqlite", sqlite_mod)});
+    const safety_checkpoint_mod = simpleMod(b, "src/safety/checkpoint.zig", target, optimize);
+    const session_db_mod = createMod(b, "src/db/session_db.zig", target, optimize, &.{imp("sqlite", sqlite_mod), imp("safety_checkpoint", safety_checkpoint_mod)});
     const cost_dashboard_mod = createMod(b, "src/analytics/cost_dashboard.zig", target, optimize, &.{
         imp("sqlite", sqlite_mod),
         imp("session_db", session_db_mod),
@@ -327,6 +328,7 @@ pub fn build(b: *std.Build) !void {
         imp("widget_helpers", widget_helpers_mod),
         imp("diff", diff_mod),
     });
+    const session_tree_mod = simpleMod(b, "src/tui/widgets/session_tree.zig", target, optimize);
     addImports(widget_messages_mod, &.{imp("typewriter", widget_typewriter_mod)});
     const widget_code_view_mod = createMod(b, "src/tui/widgets/code_view.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
@@ -546,6 +548,10 @@ pub fn build(b: *std.Build) !void {
     const feedback_mod = simpleMod(b, "src/agent/feedback.zig", target, optimize);
     const delegate_mod = simpleMod(b, "src/agent/delegate.zig", target, optimize);
     const moa_mod = simpleMod(b, "src/agent/moa.zig", target, optimize);
+    const team_coordinator_mod = createMod(b, "src/agent/team_coordinator.zig", target, optimize, &.{
+        imp("registry", registry_mod),
+        imp("core_api", core_api_mod),
+    });
     const auto_gen_mod = simpleMod(b, "src/skills/auto_gen.zig", target, optimize);
     const phase_runner_mod = createMod(b, "src/execution/phase_runner.zig", target, optimize, &.{
         imp("workflow", workflow_mod),
@@ -584,6 +590,8 @@ pub fn build(b: *std.Build) !void {
         imp("capability", capability_mod),
         imp("worker_runner", worker_runner_mod),
         imp("checkpoint", checkpoint_mod),
+        imp("core_api", core_api_mod),
+        imp("registry", registry_mod),
     });
     const scaffold_mod = simpleMod(b, "src/scaffold/project.zig", target, optimize);
     const capability_catalog_mod = simpleMod(b, "src/capability/catalog.zig", target, optimize);
@@ -682,7 +690,8 @@ pub fn build(b: *std.Build) !void {
         imp("orchestration", orchestration_mod),
     });
     addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod), imp("session_db", session_db_mod), imp("cost_dashboard", cost_dashboard_mod), imp("fork", fork_mod) });
-    addImports(tui_mod, &.{imp("myers", myers_mod)});
+    addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod)});
+    addImports(tui_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
@@ -690,6 +699,7 @@ pub fn build(b: *std.Build) !void {
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
     addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod), imp("edit_batch", edit_batch_mod), imp("lsp_tools", lsp_tools_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod), imp("session_db", session_db_mod)});
     addImports(chat_bridge_mod, &.{
         imp("ai_types", ai_types_mod),
         imp("core_api", core_api_mod),
@@ -732,6 +742,7 @@ pub fn build(b: *std.Build) !void {
         plan_handler_mod,
         delegate_mod,
         moa_mod,
+        team_coordinator_mod,
         sqlite_mod,
         session_db_mod,
         db_migration_mod,
@@ -743,6 +754,8 @@ pub fn build(b: *std.Build) !void {
         fork_mod,
         image_mod,
         cost_dashboard_mod,
+        session_tree_mod,
+        safety_checkpoint_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -839,6 +852,7 @@ pub fn build(b: *std.Build) !void {
         plan_handler_mod,
         delegate_mod,
         moa_mod,
+        team_coordinator_mod,
         sqlite_mod,
         session_db_mod,
         db_migration_mod,

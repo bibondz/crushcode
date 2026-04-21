@@ -22,6 +22,8 @@ const router_mod = @import("router");
 const capability_mod = @import("capability");
 const worker_runner_mod = @import("worker_runner");
 const checkpoint_mod = @import("checkpoint");
+const core_api = @import("core_api");
+const registry_mod = @import("registry");
 
 const Allocator = std.mem.Allocator;
 const ArrayList = array_list_compat.ArrayList;
@@ -178,6 +180,11 @@ pub const OrchestrationEngine = struct {
     checkpoint_manager: ?CheckpointManager,
     checkpoint_dir: []const u8,
     team_plans: std.StringHashMap(*OrchestrationPlan),
+    /// AI client configuration for real execution. Set via setAiClientConfig().
+    ai_provider_name: []const u8,
+    ai_base_url: []const u8,
+    ai_api_key: []const u8,
+    ai_model: []const u8,
 
     /// Initialize a new OrchestrationEngine with all sub-components.
     pub fn init(allocator: Allocator) !OrchestrationEngine {
@@ -218,7 +225,29 @@ pub const OrchestrationEngine = struct {
             .checkpoint_manager = checkpoint_manager,
             .checkpoint_dir = cp_dir,
             .team_plans = std.StringHashMap(*OrchestrationPlan).init(allocator),
+            .ai_provider_name = "",
+            .ai_base_url = "",
+            .ai_api_key = "",
+            .ai_model = "",
         };
+    }
+
+    /// Set AI client configuration for real execution calls.
+    /// When set, executePhase will use the AI client instead of returning simulated results.
+    pub fn setAiClientConfig(self: *OrchestrationEngine, provider_name: []const u8, base_url: []const u8, api_key: []const u8, model: []const u8) !void {
+        if (self.ai_provider_name.len > 0) self.allocator.free(self.ai_provider_name);
+        if (self.ai_base_url.len > 0) self.allocator.free(self.ai_base_url);
+        if (self.ai_api_key.len > 0) self.allocator.free(self.ai_api_key);
+        if (self.ai_model.len > 0) self.allocator.free(self.ai_model);
+        self.ai_provider_name = try self.allocator.dupe(u8, provider_name);
+        self.ai_base_url = try self.allocator.dupe(u8, base_url);
+        self.ai_api_key = try self.allocator.dupe(u8, api_key);
+        self.ai_model = try self.allocator.dupe(u8, model);
+    }
+
+    /// Check if AI client config is available for real execution.
+    pub fn hasAiClientConfig(self: *const OrchestrationEngine) bool {
+        return self.ai_api_key.len > 0 and self.ai_base_url.len > 0 and self.ai_model.len > 0;
     }
 
     /// Free all owned resources.
@@ -240,6 +269,12 @@ pub const OrchestrationEngine = struct {
 
         // CheckpointManager has no deinit — just stores references
         self.allocator.free(self.checkpoint_dir);
+
+        // Clean up AI client config strings
+        if (self.ai_provider_name.len > 0) self.allocator.free(self.ai_provider_name);
+        if (self.ai_base_url.len > 0) self.allocator.free(self.ai_base_url);
+        if (self.ai_api_key.len > 0) self.allocator.free(self.ai_api_key);
+        if (self.ai_model.len > 0) self.allocator.free(self.ai_model);
 
         // Clean up orchestration log entries
         for (self.orchestration_log.items) |entry| {
@@ -519,8 +554,10 @@ pub const OrchestrationEngine = struct {
 
     /// Execute a specific phase of a team's plan.
     ///
-    /// If worker_runner is available, delegates to it for subprocess execution.
-    /// Otherwise returns a simulated/skipped result.
+    /// Execution priority:
+    ///   1. AI client (real execution via HTTP API call)
+    ///   2. Worker runner (subprocess execution)
+    ///   3. Simulated fallback (for testing)
     /// Saves a checkpoint after each phase attempt.
     pub fn executePhase(self: *OrchestrationEngine, team_id: []const u8, phase_index: u32) !ExecutionResult {
         const start = std.time.milliTimestamp();
@@ -533,8 +570,47 @@ pub const OrchestrationEngine = struct {
         var status: ExecutionStatus = .skipped;
         var output: []const u8 = undefined;
 
-        // Attempt real execution via worker_runner if available
-        if (self.worker_runner) |*wr| {
+        // Priority 1: Real execution via AI client
+        if (self.hasAiClientConfig()) {
+            executeAiPhase: {
+                const provider = registry_mod.Provider{
+                    .name = self.ai_provider_name,
+                    .config = .{
+                        .base_url = self.ai_base_url,
+                        .api_key = self.ai_api_key,
+                        .models = &.{},
+                    },
+                    .allocator = self.allocator,
+                };
+
+                const model_to_use = if (phase.recommended_model.len > 0) phase.recommended_model else self.ai_model;
+
+                var client = core_api.AIClient.init(self.allocator, provider, model_to_use, self.ai_api_key) catch |err| {
+                    output = std.fmt.allocPrint(self.allocator, "AI client init failed for phase '{s}': {s}", .{ phase.phase_name, @errorName(err) }) catch
+                        try self.allocator.dupe(u8, "AI client init failed");
+                    status = .failed;
+                    break :executeAiPhase;
+                };
+                defer client.deinit();
+
+                // Build a prompt that includes phase context
+                const prompt = std.fmt.allocPrint(self.allocator, "Execute the following phase:\n\nPhase: {s}\nDescription: {s}", .{ phase.phase_name, phase.phase_description }) catch
+                    phase.phase_description;
+                defer if (std.mem.indexOf(u8, prompt, "Execute the following") != null) self.allocator.free(prompt);
+
+                const response = client.sendChat(prompt) catch |err| {
+                    output = std.fmt.allocPrint(self.allocator, "AI call failed for phase '{s}': {s}", .{ phase.phase_name, @errorName(err) }) catch
+                        try self.allocator.dupe(u8, "AI call failed");
+                    status = .failed;
+                    break :executeAiPhase;
+                };
+
+                const content = if (response.choices.len > 0) response.choices[0].message.content orelse "" else "";
+                output = try self.allocator.dupe(u8, content);
+                status = .completed;
+            }
+        } else if (self.worker_runner) |*wr| {
+            // Priority 2: Worker runner (subprocess)
             if (wr.runAndCollect(phase.phase_description, phase.specialty, phase.recommended_model)) |result_val| {
                 var result = result_val;
                 defer result.deinit(self.allocator);
@@ -546,7 +622,8 @@ pub const OrchestrationEngine = struct {
                 status = .failed;
             }
         } else {
-            output = std.fmt.allocPrint(self.allocator, "Simulated: phase '{s}' (no worker runner)", .{phase.phase_name}) catch
+            // Priority 3: Simulated fallback
+            output = std.fmt.allocPrint(self.allocator, "Simulated: phase '{s}' (no AI client or worker runner)", .{phase.phase_name}) catch
                 try self.allocator.dupe(u8, "simulated");
             status = .skipped;
         }

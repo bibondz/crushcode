@@ -6,7 +6,12 @@
 
 const std = @import("std");
 const sqlite = @import("sqlite");
+const checkpoint_types = @import("safety_checkpoint");
 const Allocator = std.mem.Allocator;
+
+// Re-export Checkpoint type so callers can access it through session_db
+pub const Checkpoint = checkpoint_types.Checkpoint;
+pub const freeCheckpoints = checkpoint_types.freeCheckpoints;
 
 // ---------------------------------------------------------------------------
 // Schema
@@ -39,7 +44,17 @@ pub const SCHEMA: [:0]const u8 =
     "created_at INTEGER NOT NULL" ++
     ");" ++
     "CREATE INDEX IF NOT EXISTS idx_message_session ON message(session_id, position);" ++
-    "CREATE INDEX IF NOT EXISTS idx_session_updated ON session(updated_at DESC);";
+    "CREATE INDEX IF NOT EXISTS idx_session_updated ON session(updated_at DESC);" ++
+    "CREATE TABLE IF NOT EXISTS checkpoints (" ++
+    "id INTEGER PRIMARY KEY AUTOINCREMENT, " ++
+    "session_id TEXT NOT NULL, " ++
+    "file_path TEXT NOT NULL, " ++
+    "timestamp INTEGER NOT NULL, " ++
+    "operation TEXT NOT NULL, " ++
+    "original_content TEXT NOT NULL, " ++
+    "file_size INTEGER NOT NULL" ++
+    ");" ++
+    "CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, timestamp);";
 
 // ---------------------------------------------------------------------------
 // Data types
@@ -284,6 +299,99 @@ pub const SessionDB = struct {
     // JSON migration helper
     // -----------------------------------------------------------------------
 
+    // -----------------------------------------------------------------------
+    // Tree queries (Phase 49)
+    // -----------------------------------------------------------------------
+
+    /// Get all child sessions of a given parent session.
+    /// Uses the "Fork of <parent_id>" title convention from fork.zig.
+    /// Caller owns the returned slice.
+    pub fn getChildSessions(self: *SessionDB, allocator: Allocator, parent_id: []const u8) ![]SessionRow {
+        const prefix = try std.fmt.allocPrint(allocator, "Fork of {s}%", .{parent_id});
+        defer allocator.free(prefix);
+
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\SELECT id, title, model, provider, total_tokens, total_cost, turn_count, duration_seconds, created_at, updated_at
+            \\FROM session WHERE title LIKE ?1 ESCAPE '\' ORDER BY created_at ASC
+        );
+        defer stmt.deinit();
+
+        // Build LIKE pattern: "Fork of <parent_id>%"
+        const like_pattern = try std.fmt.allocPrint(allocator, "Fork of {s}%%", .{parent_id});
+        defer allocator.free(like_pattern);
+        try stmt.bindText(1, like_pattern);
+
+        var results = std.ArrayList(SessionRow).empty;
+        errdefer {
+            for (results.items) |*r| {
+                allocator.free(r.id);
+                allocator.free(r.title);
+                allocator.free(r.model);
+                allocator.free(r.provider);
+            }
+            results.deinit(allocator);
+        }
+
+        while (try stmt.step() == .row) {
+            try results.append(allocator, .{
+                .id = try allocator.dupe(u8, stmt.columnText(0)),
+                .title = try allocator.dupe(u8, stmt.columnText(1)),
+                .model = try allocator.dupe(u8, stmt.columnText(2)),
+                .provider = try allocator.dupe(u8, stmt.columnText(3)),
+                .total_tokens = @intCast(stmt.columnInt(4)),
+                .total_cost = stmt.columnDouble(5),
+                .turn_count = @intCast(stmt.columnInt(6)),
+                .duration_seconds = @intCast(stmt.columnInt(7)),
+                .created_at = stmt.columnInt(8),
+                .updated_at = stmt.columnInt(9),
+            });
+        }
+
+        return try results.toOwnedSlice(allocator);
+    }
+
+    /// Get session metadata (id, title, provider, model, turn_count, total_cost, created_at)
+    /// for a specific session. Returns null if not found.
+    /// Caller owns the returned struct's string fields.
+    pub fn getSessionMetadata(self: *SessionDB, allocator: Allocator, session_id: []const u8) !?SessionMetadata {
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\SELECT id, title, provider, model, turn_count, total_cost, created_at
+            \\FROM session WHERE id = ?1
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, session_id);
+
+        if (try stmt.step() != .row) return null;
+
+        return SessionMetadata{
+            .id = try allocator.dupe(u8, stmt.columnText(0)),
+            .title = try allocator.dupe(u8, stmt.columnText(1)),
+            .provider = try allocator.dupe(u8, stmt.columnText(2)),
+            .model = try allocator.dupe(u8, stmt.columnText(3)),
+            .turn_count = @intCast(stmt.columnInt(4)),
+            .total_cost = stmt.columnDouble(5),
+            .created_at = stmt.columnInt(6),
+        };
+    }
+
+    /// Session metadata for tree building (returned from getSessionMetadata).
+    pub const SessionMetadata = struct {
+        id: []const u8,
+        title: []const u8,
+        provider: []const u8,
+        model: []const u8,
+        turn_count: u32,
+        total_cost: f64,
+        created_at: i64,
+
+        pub fn deinit(self: *const SessionMetadata, allocator: Allocator) void {
+            allocator.free(self.id);
+            allocator.free(self.title);
+            allocator.free(self.provider);
+            allocator.free(self.model);
+        }
+    };
+
     /// Import a session row from the old JSON format into SQLite.
     /// Only inserts the session metadata — the caller (migration.zig) handles
     /// parsing and inserting individual messages via `saveSession`.
@@ -304,6 +412,143 @@ pub const SessionDB = struct {
         try stmt.bindInt(9, session.created_at);
         try stmt.bindInt(10, session.updated_at);
         _ = try stmt.step();
+    }
+
+    // -------------------------------------------------------------------
+    // Checkpoint CRUD
+    // -------------------------------------------------------------------
+
+    /// Ensure the checkpoints table exists (idempotent).
+    pub fn createCheckpointTable(self: *SessionDB) !void {
+        try self.db.exec(
+            "CREATE TABLE IF NOT EXISTS checkpoints (" ++
+            "id INTEGER PRIMARY KEY AUTOINCREMENT, " ++
+            "session_id TEXT NOT NULL, " ++
+            "file_path TEXT NOT NULL, " ++
+            "timestamp INTEGER NOT NULL, " ++
+            "operation TEXT NOT NULL, " ++
+            "original_content TEXT NOT NULL, " ++
+            "file_size INTEGER NOT NULL" ++
+            ");" ++
+            "CREATE INDEX IF NOT EXISTS idx_checkpoints_session ON checkpoints(session_id, timestamp);"
+        );
+    }
+
+    /// Insert a checkpoint row. Returns the auto-generated id.
+    pub fn insertCheckpoint(
+        self: *SessionDB,
+        session_id: []const u8,
+        file_path: []const u8,
+        timestamp: i64,
+        operation: []const u8,
+        original_content: []const u8,
+        file_size: u64,
+    ) !i64 {
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\INSERT INTO checkpoints (session_id, file_path, timestamp, operation, original_content, file_size)
+            \\VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, session_id);
+        try stmt.bindText(2, file_path);
+        try stmt.bindInt(3, timestamp);
+        try stmt.bindText(4, operation);
+        try stmt.bindText(5, original_content);
+        try stmt.bindInt(6, @intCast(file_size));
+        _ = try stmt.step();
+        return self.db.lastInsertRowId();
+    }
+
+    /// Get all checkpoints for a session, ordered by timestamp descending.
+    /// Caller owns the returned slice and must call `freeCheckpoints`.
+    pub fn getCheckpoints(self: *SessionDB, allocator: Allocator, session_id: []const u8) ![]Checkpoint {
+        // Count first
+        var count_stmt = try sqlite.Stmt.prepare(&self.db,
+            "SELECT COUNT(*) FROM checkpoints WHERE session_id = ?1"
+        );
+        defer count_stmt.deinit();
+        try count_stmt.bindText(1, session_id);
+        _ = try count_stmt.step();
+        const count: usize = @intCast(count_stmt.columnInt(0));
+
+        if (count == 0) return try allocator.alloc(Checkpoint, 0);
+
+        const checkpoints = try allocator.alloc(Checkpoint, count);
+        errdefer {
+            for (checkpoints) |*cp| cp.deinit(allocator);
+            allocator.free(checkpoints);
+        }
+
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\SELECT id, session_id, file_path, timestamp, operation, original_content, file_size
+            \\FROM checkpoints WHERE session_id = ?1
+            \\ORDER BY timestamp DESC
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, session_id);
+
+        var idx: usize = 0;
+        while (try stmt.step() == .row and idx < count) : (idx += 1) {
+            checkpoints[idx] = .{
+                .id = stmt.columnInt(0),
+                .session_id = try allocator.dupe(u8, stmt.columnText(1)),
+                .file_path = try allocator.dupe(u8, stmt.columnText(2)),
+                .timestamp = stmt.columnInt(3),
+                .operation = try allocator.dupe(u8, stmt.columnText(4)),
+                .original_content = try allocator.dupe(u8, stmt.columnText(5)),
+                .file_size = @intCast(stmt.columnInt(6)),
+            };
+        }
+        return checkpoints;
+    }
+
+    /// Get a single checkpoint by id. Returns null if not found.
+    pub fn getCheckpoint(self: *SessionDB, allocator: Allocator, id: i64) !?Checkpoint {
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\SELECT id, session_id, file_path, timestamp, operation, original_content, file_size
+            \\FROM checkpoints WHERE id = ?1
+        );
+        defer stmt.deinit();
+        try stmt.bindInt(1, id);
+
+        if (try stmt.step() != .row) return null;
+
+        return .{
+            .id = stmt.columnInt(0),
+            .session_id = try allocator.dupe(u8, stmt.columnText(1)),
+            .file_path = try allocator.dupe(u8, stmt.columnText(2)),
+            .timestamp = stmt.columnInt(3),
+            .operation = try allocator.dupe(u8, stmt.columnText(4)),
+            .original_content = try allocator.dupe(u8, stmt.columnText(5)),
+            .file_size = @intCast(stmt.columnInt(6)),
+        };
+    }
+
+    /// Delete a single checkpoint by id.
+    pub fn deleteCheckpoint(self: *SessionDB, id: i64) !void {
+        var stmt = try sqlite.Stmt.prepare(&self.db, "DELETE FROM checkpoints WHERE id = ?1");
+        defer stmt.deinit();
+        try stmt.bindInt(1, id);
+        _ = try stmt.step();
+    }
+
+    /// Delete old checkpoints for a session, keeping only the newest `keep_count`.
+    /// Returns the number of deleted rows.
+    pub fn deleteOldCheckpoints(self: *SessionDB, session_id: []const u8, keep_count: u32) !u32 {
+        var stmt = try sqlite.Stmt.prepare(&self.db,
+            \\DELETE FROM checkpoints
+            \\WHERE session_id = ?1 AND id NOT IN (
+            \\  SELECT id FROM checkpoints
+            \\  WHERE session_id = ?1
+            \\  ORDER BY timestamp DESC
+            \\  LIMIT ?2
+            \\)
+        );
+        defer stmt.deinit();
+        try stmt.bindText(1, session_id);
+        try stmt.bindInt(2, @intCast(keep_count));
+        _ = try stmt.step();
+        return @intCast(self.db.changes());
     }
 };
 

@@ -58,6 +58,9 @@ const lsp_manager_mod = @import("lsp_manager");
 const cost_dashboard_mod = @import("cost_dashboard");
 const session_db_mod = @import("session_db");
 const fork_mod = @import("fork");
+const team_coordinator_lib = @import("team_coordinator");
+const safety_checkpoint_mod = @import("safety_checkpoint");
+const session_tree_mod = @import("session_tree");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -253,6 +256,8 @@ pub const Model = struct {
     crush_active: bool = false,
     crush_engine: ?crush_mode_mod.CrushEngine = null,
     crush_progress: []const u8 = "",
+    /// Live agent team for parallel AI execution via /team commands
+    live_team: ?team_coordinator_lib.LiveAgentTeam = null,
     always_allow_tools: std.ArrayList([]const u8),
     permission_mutex: std.Thread.Mutex,
     permission_condition: std.Thread.Condition,
@@ -312,6 +317,7 @@ pub const Model = struct {
         context_total_files: u32 = 0,
     context_scored_files: u32 = 0,
     lsp_manager: lsp_manager_mod.LSPManager,
+    session_tree: session_tree_mod.SessionTreeWidget,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         const model = try allocator.create(Model);
@@ -426,6 +432,7 @@ pub const Model = struct {
             .plan_mode = plan_mod.PlanMode.init(allocator),
             .delegator = delegate_mod.SubAgentDelegator.init(allocator, delegate_mod.DelegationConfig.init(allocator)),
             .lsp_manager = lsp_manager_mod.LSPManager.init(allocator),
+            .session_tree = session_tree_mod.SessionTreeWidget.init(allocator),
         };
         errdefer model.destroy();
 
@@ -643,6 +650,8 @@ pub const Model = struct {
         self.delegator.deinit();
         // Clean up LSP manager
         self.lsp_manager.deinit();
+        // Clean up session tree
+        self.session_tree.deinit();
         // Clean up memory
         self.memory.deinit();
         // Clean up crush engine
@@ -3019,15 +3028,162 @@ pub const Model = struct {
             self.crush_progress = "Ready — awaiting provider connection for execution";
             try self.addMessageUnlocked("system", "Crush Mode plan generated. Full auto-execution requires streaming AI response — use `/crush <task>` with an active provider.");
             self.crush_active = false;
-        } else if (std.mem.eql(u8, name, "/team")) {
-            var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
-                try self.addMessageUnlocked("assistant", "Error: failed to initialize orchestration engine.");
-                ctx.redraw = true;
-                return;
-            };
-            defer engine.deinit();
-            engine.printStats();
-            try self.addMessageUnlocked("assistant", "Team orchestration stats printed to log.");
+        } else if (std.mem.startsWith(u8, name, "/team")) {
+            // /team subcommands: create, add, run, status, results, cancel
+            if (std.mem.startsWith(u8, name, "/team create ")) {
+                const team_name = std.mem.trim(u8, name["/team create ".len..], " ");
+                if (team_name.len == 0) {
+                    try self.addMessageUnlocked("assistant", "Usage: /team create <name>");
+                } else {
+                    // Clean up existing team if any
+                    if (self.live_team != null) {
+                        self.live_team.?.deinit();
+                        self.live_team = null;
+                    }
+                    var team = team_coordinator_lib.LiveAgentTeam.init(self.allocator);
+                    team.createTeam(team_name, 4, 500000) catch {
+                        try self.addMessageUnlocked("assistant", "Error: failed to create team.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    self.live_team = team;
+                    const text = try std.fmt.allocPrint(self.allocator, "Team '{s}' created.\nMax parallel: 4 agents\nBudget: 500,000 tokens\nUse /team add <task> to assign tasks.", .{team_name});
+                    defer self.allocator.free(text);
+                    try self.addMessageUnlocked("assistant", text);
+                }
+            } else if (std.mem.startsWith(u8, name, "/team add ")) {
+                const task_prompt = std.mem.trim(u8, name["/team add ".len..], " ");
+                if (task_prompt.len == 0) {
+                    try self.addMessageUnlocked("assistant", "Usage: /team add <task description>");
+                } else if (self.live_team == null) {
+                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                } else {
+                    const agent_id = self.live_team.?.assignTask(task_prompt, null, "") catch {
+                        try self.addMessageUnlocked("assistant", "Error: failed to assign task.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    const text = try std.fmt.allocPrint(self.allocator, "Task assigned to agent-{d}.\nUse /team run to execute all tasks.", .{agent_id});
+                    defer self.allocator.free(text);
+                    try self.addMessageUnlocked("assistant", text);
+                }
+            } else if (std.mem.eql(u8, name, "/team run")) {
+                if (self.live_team == null) {
+                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                } else {
+                    const idle_count = self.live_team.?.countByStatus(.idle);
+                    if (idle_count == 0) {
+                        try self.addMessageUnlocked("assistant", "No idle tasks to run. Use /team add <task> to assign tasks.");
+                    } else {
+                        // Resolve base URL from registry or override
+                        const base_url: []const u8 = if (self.override_url) |url| url else blk: {
+                            const provider = self.registry.getProvider(self.provider_name) orelse break :blk "";
+                            break :blk provider.config.base_url;
+                        };
+                        if (base_url.len == 0) {
+                            try self.addMessageUnlocked("assistant", "Error: no provider base URL available. Initialize a provider first.");
+                        } else {
+                            try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Executing {d} task(s)...", .{idle_count}));
+                            self.live_team.?.executeAll(
+                                self.provider_name,
+                                base_url,
+                                self.api_key,
+                                self.model_name,
+                            ) catch {
+                                try self.addMessageUnlocked("assistant", "Error: team execution failed.");
+                                ctx.redraw = true;
+                                return;
+                            };
+                            const done = self.live_team.?.countByStatus(.done);
+                            const failed = self.live_team.?.countByStatus(.failed);
+                            const text = try std.fmt.allocPrint(self.allocator, "Team execution complete.\nCompleted: {d}\nFailed: {d}\nUse /team results to see outputs.", .{ done, failed });
+                            defer self.allocator.free(text);
+                            try self.addMessageUnlocked("assistant", text);
+                        }
+                    }
+                }
+            } else if (std.mem.eql(u8, name, "/team status")) {
+                if (self.live_team == null) {
+                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                } else {
+                    const status_json = self.live_team.?.getStatus() catch {
+                        try self.addMessageUnlocked("assistant", "Error: failed to get team status.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer self.allocator.free(status_json);
+                    try self.addMessageUnlocked("assistant", status_json);
+                }
+            } else if (std.mem.eql(u8, name, "/team results")) {
+                if (self.live_team == null) {
+                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                } else {
+                    const results = self.live_team.?.getResults() catch {
+                        try self.addMessageUnlocked("assistant", "Error: failed to get results.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer {
+                        for (results) |*r| r.deinit(self.allocator);
+                        self.allocator.free(results);
+                    }
+                    if (results.len == 0) {
+                        try self.addMessageUnlocked("assistant", "No completed results yet. Use /team run to execute tasks.");
+                    } else {
+                        var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+                        defer buf.deinit();
+                        const writer = buf.writer();
+                        writer.print("=== Team Results ({d}) ===\n", .{results.len}) catch {};
+                        for (results) |r| {
+                            const status_icon = switch (r.status) {
+                                .done => "✅",
+                                .failed => "❌",
+                                else => "❓",
+                            };
+                            writer.print("\n{s} Agent {d} ({s})\n", .{ status_icon, r.agent_id, r.agent_name }) catch {};
+                            writer.print("  Task: {s:.80}\n", .{r.task_prompt}) catch {};
+                            writer.print("  Output: {s:.200}\n", .{r.output}) catch {};
+                            writer.print("  Tokens: {d} | Cost: ${d:.4}\n", .{ r.token_usage, r.cost }) catch {};
+                        }
+                        try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+                    }
+                }
+            } else if (std.mem.eql(u8, name, "/team cancel")) {
+                if (self.live_team == null) {
+                    try self.addMessageUnlocked("assistant", "No team to cancel.");
+                } else {
+                    self.live_team.?.cancelAll();
+                    try self.addMessageUnlocked("assistant", "All running agents cancelled.");
+                }
+            } else {
+                // Default /team or /team help — show orchestration stats + usage help
+                var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
+                    try self.addMessageUnlocked("assistant",
+                        \\Team Commands:
+                        \\  /team create <name>    — create a new agent team
+                        \\  /team add <task>       — add a task to the team
+                        \\  /team run              — execute all team tasks in parallel
+                        \\  /team status           — show JSON status of all agents
+                        \\  /team results          — show results from completed agents
+                        \\  /team cancel           — cancel all running agents
+                    );
+                    ctx.redraw = true;
+                    return;
+                };
+                defer engine.deinit();
+                engine.printStats();
+                try self.addMessageUnlocked("assistant",
+                    \\Team orchestration stats printed to log.
+                    \\
+                    \\Team Commands:
+                    \\  /team create <name>    — create a new agent team
+                    \\  /team add <task>       — add a task to the team
+                    \\  /team run              — execute all team tasks in parallel
+                    \\  /team status           — show JSON status of all agents
+                    \\  /team results          — show results from completed agents
+                    \\  /team cancel           — cancel all running agents
+                );
+            }
         } else if (std.mem.startsWith(u8, name, "/spawn ")) {
             const spawn_desc = std.mem.trim(u8, name["/spawn ".len..], " ");
             if (spawn_desc.len == 0) {
@@ -3207,7 +3363,7 @@ pub const Model = struct {
                 try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/tree [refresh] — Show session tree hierarchy\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
@@ -3331,6 +3487,36 @@ pub const Model = struct {
                 }
             } else {
                 try self.addMessageUnlocked("assistant", "Usage: /fork [list]\n  /fork        - Fork current session\n  /fork list   - List all forks");
+            }
+        } else if (std.mem.startsWith(u8, name, "/tree")) {
+            const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
+            if (sub.len > 0 and std.mem.eql(u8, sub, "refresh")) {
+                // Force reload from database
+                const db = session_mod.getSessionDb(self.allocator) catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                self.session_tree.loadFromDb(db) catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                const rendered = self.session_tree.renderToString(self.allocator) catch "Error rendering tree";
+                try self.addMessageUnlocked("assistant", rendered);
+            } else {
+                // Toggle or show tree
+                if (self.session_tree.root_nodes.items.len == 0) {
+                    // Load for the first time
+                    const db = session_mod.getSessionDb(self.allocator) catch |err| {
+                        try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                        return;
+                    };
+                    self.session_tree.loadFromDb(db) catch |err| {
+                        try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
+                        return;
+                    };
+                }
+                const rendered = self.session_tree.renderToString(self.allocator) catch "Error rendering tree";
+                try self.addMessageUnlocked("assistant", rendered);
             }
         } else if (std.mem.eql(u8, name, "/workers")) {
             self.parallel_executor.reapCompleted();
@@ -3601,6 +3787,105 @@ pub const Model = struct {
             } else {
                 try self.addMessageUnlocked("assistant", "Usage: /cost [total|today|model|session]");
             }
+        } else if (std.mem.eql(u8, name, "/rewind") or std.mem.startsWith(u8, name, "/rewind ")) {
+            const rewind_sub = std.mem.trim(u8, name["/rewind".len..], " ");
+            const db_ptr = session_mod.getSessionDb(self.allocator) catch {
+                try self.addMessageUnlocked("assistant", "Failed to open session database for rewind.");
+                ctx.redraw = true;
+                return;
+            };
+            const session_id = if (self.current_session) |sess| sess.id else "";
+            if (session_id.len == 0) {
+                try self.addMessageUnlocked("assistant", "No active session to rewind.");
+            } else if (rewind_sub.len == 0) {
+                // /rewind — list all checkpoints for this session
+                var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                const checkpoints = mgr.listCheckpoints(db_ptr, self.allocator, session_id) catch {
+                    try self.addMessageUnlocked("assistant", "Error listing checkpoints.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const text = mgr.formatCheckpointList(self.allocator, checkpoints) catch "Error formatting checkpoints";
+                safety_checkpoint_mod.freeCheckpoints(self.allocator, checkpoints);
+                try self.addMessageUnlocked("assistant", text);
+            } else if (std.mem.eql(u8, rewind_sub, "last")) {
+                // /rewind last — restore most recent checkpoint
+                var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                const restored = mgr.rewindLast(db_ptr, self.allocator, session_id) catch {
+                    try self.addMessageUnlocked("assistant", "Error rewinding last checkpoint.");
+                    ctx.redraw = true;
+                    return;
+                };
+                if (restored) |cp| {
+                    const text = std.fmt.allocPrint(self.allocator, "Rewound: restored {s} (checkpoint #{d}, {s})", .{ cp.file_path, cp.id, cp.operation }) catch "Rewound last checkpoint.";
+                    var cp_mut = cp;
+                    cp_mut.deinit(self.allocator);
+                    try self.addMessageUnlocked("assistant", text);
+                } else {
+                    try self.addMessageUnlocked("assistant", "No checkpoints to rewind for this session.");
+                }
+            } else if (std.mem.eql(u8, rewind_sub, "all")) {
+                // /rewind all — restore ALL checkpoints
+                var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                const count = mgr.rewindAll(db_ptr, self.allocator, session_id) catch {
+                    try self.addMessageUnlocked("assistant", "Error rewinding all checkpoints.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const text = std.fmt.allocPrint(self.allocator, "Rewound all: restored {d} file(s) to their original state.", .{count}) catch "Rewound all checkpoints.";
+                try self.addMessageUnlocked("assistant", text);
+            } else {
+                // /rewind <N> — restore checkpoint by number (1-indexed)
+                const idx = std.fmt.parseInt(usize, rewind_sub, 10) catch {
+                    try self.addMessageUnlocked("assistant",
+                        \\Rewind Commands:
+                        \\  /rewind        — list all checkpoints for this session
+                        \\  /rewind last   — restore the most recent checkpoint
+                        \\  /rewind all    — restore ALL checkpoints for this session
+                        \\  /rewind <N>    — restore checkpoint number N
+                    );
+                    ctx.redraw = true;
+                    return;
+                };
+                if (idx == 0) {
+                    try self.addMessageUnlocked("assistant", "Checkpoint numbers start at 1. Use /rewind to list them.");
+                } else {
+                    var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                    const checkpoints = mgr.listCheckpoints(db_ptr, self.allocator, session_id) catch {
+                        try self.addMessageUnlocked("assistant", "Error listing checkpoints.");
+                        ctx.redraw = true;
+                        return;
+                    };
+                    defer safety_checkpoint_mod.freeCheckpoints(self.allocator, checkpoints);
+                    if (idx > checkpoints.len) {
+                        const err_text = std.fmt.allocPrint(self.allocator, "Checkpoint #{d} not found. Only {d} checkpoint(s) available.", .{ idx, checkpoints.len }) catch "Checkpoint not found.";
+                        try self.addMessageUnlocked("assistant", err_text);
+                    } else {
+                        const cp = checkpoints[idx - 1];
+                        // Restore this specific checkpoint
+                        if (std.fs.path.dirname(cp.file_path)) |dir_part| {
+                            if (dir_part.len > 0) {
+                                std.fs.cwd().makePath(dir_part) catch {};
+                            }
+                        }
+                        const file = std.fs.cwd().createFile(cp.file_path, .{ .truncate = true }) catch {
+                            try self.addMessageUnlocked("assistant", "Error writing file during rewind.");
+                            ctx.redraw = true;
+                            return;
+                        };
+                        defer file.close();
+                        file.writeAll(cp.original_content) catch {
+                            try self.addMessageUnlocked("assistant", "Error writing file content during rewind.");
+                            ctx.redraw = true;
+                            return;
+                        };
+                        // Delete the restored checkpoint
+                        db_ptr.deleteCheckpoint(cp.id) catch {};
+                        const text = std.fmt.allocPrint(self.allocator, "Rewound: restored {s} (checkpoint #{d}, {s})", .{ cp.file_path, idx, cp.operation }) catch "Rewound checkpoint.";
+                        try self.addMessageUnlocked("assistant", text);
+                    }
+                }
+            }
         }
 
         ctx.redraw = true;
@@ -3738,6 +4023,24 @@ pub const Model = struct {
     fn requestThreadMain(self: *Model) void {
         active_stream_model = self;
         defer active_stream_model = null;
+
+        // Set checkpoint threadlocals for this request thread
+        const session_id = if (self.current_session) |sess| sess.id else "";
+        tool_executors.setCheckpointSessionId(session_id);
+        if (session_id.len > 0) {
+            if (session_mod.getSessionDb(self.allocator)) |db| {
+                tool_executors.setSessionDbForCheckpoint(db);
+                // The CheckpointManager is lightweight — create on stack
+                var cp_mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                tool_executors.setCheckpointManager(&cp_mgr);
+            } else |_| {}
+        }
+        defer {
+            tool_executors.setCheckpointManager(null);
+            tool_executors.setSessionDbForCheckpoint(null);
+            tool_executors.setCheckpointSessionId("");
+        }
+
         self.runStreamingRequest() catch |err| {
             self.finishRequestWithCaughtError(err);
         };
