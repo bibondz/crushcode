@@ -8,7 +8,7 @@ const migration_mod = @import("db_migration");
 var g_session_db: ?session_db_mod.SessionDB = null;
 
 /// Get or initialize the SQLite session database.
-fn getSessionDb(allocator: std.mem.Allocator) !*session_db_mod.SessionDB {
+pub fn getSessionDb(allocator: std.mem.Allocator) !*session_db_mod.SessionDB {
     if (g_session_db != null) return &g_session_db.?;
 
     const session_dir = try defaultSessionDir(allocator);

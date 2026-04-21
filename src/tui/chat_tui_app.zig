@@ -55,6 +55,9 @@ const plan_mod = @import("plan_handler");
 const feedback_mod = @import("feedback");
 const delegate_mod = @import("delegate");
 const lsp_manager_mod = @import("lsp_manager");
+const cost_dashboard_mod = @import("cost_dashboard");
+const session_db_mod = @import("session_db");
+const fork_mod = @import("fork");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -3204,13 +3207,131 @@ pub const Model = struct {
                 try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/plan [on|off|approve|cancel|status] — Plan mode: propose changes before executing\n/help — Show available commands");
+            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
             const text = try std.fmt.allocPrint(self.allocator, "Current model: {s}/{s}", .{ self.provider_name, self.model_name });
             defer self.allocator.free(text);
             try self.addMessageUnlocked("assistant", text);
+        } else if (std.mem.startsWith(u8, name, "/cost")) {
+            const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
+            const db = session_mod.getSessionDb(self.allocator) catch |err| {
+                try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                return;
+            };
+            var dashboard = cost_dashboard_mod.CostDashboard.init(self.allocator, db);
+            if (sub.len == 0 or std.mem.eql(u8, sub, "total")) {
+                const total = dashboard.getTotalCost() catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                const today = dashboard.getTodayCost() catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                const by_provider_raw = dashboard.getCostByProvider() catch &[_]cost_dashboard_mod.ProviderCost{};
+                const by_provider: []cost_dashboard_mod.ProviderCost = @constCast(by_provider_raw);
+                defer {
+                    for (by_provider) |p| self.allocator.free(p.provider);
+                    self.allocator.free(by_provider);
+                }
+                const report = cost_dashboard_mod.formatTotalReport(self.allocator, total, today, by_provider) catch "Error formatting report";
+                try self.addMessageUnlocked("assistant", report);
+            } else if (std.mem.eql(u8, sub, "model")) {
+                const by_model_raw = dashboard.getCostByModel() catch &[_]cost_dashboard_mod.ModelCost{};
+                const by_model: []cost_dashboard_mod.ModelCost = @constCast(by_model_raw);
+                defer {
+                    for (by_model) |m| self.allocator.free(m.model);
+                    self.allocator.free(by_model);
+                }
+                const report = cost_dashboard_mod.formatByModelReport(self.allocator, by_model) catch "Error formatting report";
+                try self.addMessageUnlocked("assistant", report);
+            } else if (std.mem.eql(u8, sub, "today")) {
+                const today = dashboard.getTodayCost() catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                const text = try std.fmt.allocPrint(self.allocator, "Today's Cost\n-------------\nCost: ${d:.4}\nTokens: {d}\nSessions: {d}", .{ today.cost, today.tokens, today.session_count });
+                try self.addMessageUnlocked("assistant", text);
+            } else if (std.mem.eql(u8, sub, "session")) {
+                const top_raw = dashboard.getTopSessions() catch &[_]session_db_mod.SessionRow{};
+                const top: []session_db_mod.SessionRow = @constCast(top_raw);
+                defer {
+                    for (top) |s| {
+                        self.allocator.free(s.id);
+                        self.allocator.free(s.title);
+                        self.allocator.free(s.model);
+                        self.allocator.free(s.provider);
+                    }
+                    self.allocator.free(top);
+                }
+                var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+                defer buf.deinit();
+                try buf.writer().print("Top Sessions:\n\n", .{});
+                for (top) |s| {
+                    try buf.writer().print("* {s}\n  ${d:.4} * {d} tokens * {d} turns\n  Model: {s}/{s}\n\n", .{ s.title, s.total_cost, s.total_tokens, s.turn_count, s.provider, s.model });
+                }
+                try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+            } else {
+                try self.addMessageUnlocked("assistant", "Usage: /cost [total|model|today|session]");
+            }
+        } else if (std.mem.startsWith(u8, name, "/fork")) {
+            const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
+            if (sub.len == 0) {
+                const fork_point: u32 = @intCast(self.messages.items.len);
+                // Build a Session from current state
+                var current_session = session_mod.Session{
+                    .id = if (self.session_path.len > 0) blk: {
+                        const base = std.fs.path.basename(self.session_path);
+                        const dot = std.mem.indexOf(u8, base, ".") orelse base.len;
+                        break :blk try self.allocator.dupe(u8, base[0..dot]);
+                    } else "current",
+                    .title = "Current Session",
+                    .model = self.model_name,
+                    .provider = self.provider_name,
+                    .total_tokens = self.total_input_tokens + self.total_output_tokens,
+                    .total_cost = 0,
+                    .turn_count = self.request_count,
+                    .duration_seconds = 0,
+                    .created_at = std.time.timestamp(),
+                    .updated_at = std.time.timestamp(),
+                    .messages = &.{},
+                };
+                defer self.allocator.free(current_session.id);
+                var fm = fork_mod.ForkManager.init(self.allocator, self.session_dir);
+                const result = fm.forkSession(&current_session, fork_point) catch |err| {
+                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Fork error: {s}", .{@errorName(err)}));
+                    return;
+                };
+                defer result.deinit(self.allocator);
+                const text = try std.fmt.allocPrint(self.allocator, "Session forked!\nNew session: {s}\nMessages: {d}\nUse /sessions to switch.", .{ result.new_session_id, result.message_count });
+                try self.addMessageUnlocked("assistant", text);
+            } else if (std.mem.eql(u8, sub, "list")) {
+                var fm = fork_mod.ForkManager.init(self.allocator, self.session_dir);
+                const forks = fm.listAllForks() catch &[_]fork_mod.ForkInfo{};
+                defer {
+                    for (forks) |f| {
+                        self.allocator.free(f.fork_id);
+                        self.allocator.free(f.parent_session_id);
+                        self.allocator.free(f.title);
+                    }
+                    self.allocator.free(forks);
+                }
+                if (forks.len == 0) {
+                    try self.addMessageUnlocked("assistant", "No forks found.");
+                } else {
+                    var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+                    defer buf.deinit();
+                    try buf.writer().print("Session Forks ({d}):\n\n", .{forks.len});
+                    for (forks) |f| {
+                        try buf.writer().print("* {s}\n  Parent: {s} (at message {d})\n\n", .{ f.title, f.parent_session_id, f.fork_point });
+                    }
+                    try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "Usage: /fork [list]\n  /fork        - Fork current session\n  /fork list   - List all forks");
+            }
         } else if (std.mem.eql(u8, name, "/workers")) {
             self.parallel_executor.reapCompleted();
             const parallel_running = self.parallel_executor.runningCount();
@@ -3410,6 +3531,75 @@ pub const Model = struct {
                 }
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
                 try self.addMessageUnlocked("assistant", text);
+            }
+        } else if (std.mem.eql(u8, name, "/cost") or std.mem.startsWith(u8, name, "/cost ")) {
+            const args = if (std.mem.startsWith(u8, name, "/cost ")) name[6..] else "";
+            const sub = std.mem.trim(u8, args, &std.ascii.whitespace);
+
+            const db_ptr = session_mod.getSessionDb(self.allocator) catch {
+                try self.addMessageUnlocked("assistant", "Failed to open session database.");
+                ctx.redraw = true;
+                return;
+            };
+            var dashboard = cost_dashboard_mod.CostDashboard.init(self.allocator, db_ptr);
+
+            if (sub.len == 0 or std.mem.eql(u8, sub, "total")) {
+                // Show total + today + by provider
+                const total = dashboard.getTotalCost() catch {
+                    try self.addMessageUnlocked("assistant", "Error querying total cost.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const today = dashboard.getTodayCost() catch {
+                    try self.addMessageUnlocked("assistant", "Error querying today's cost.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const by_provider = dashboard.getCostByProvider() catch
+                    @as([]cost_dashboard_mod.ProviderCost, &.{});
+                defer cost_dashboard_mod.freeProviderCosts(self.allocator, by_provider);
+
+                const report = cost_dashboard_mod.formatTotalReport(self.allocator, total, today, by_provider) catch "Error formatting report";
+                try self.addMessageUnlocked("assistant", report);
+            } else if (std.mem.eql(u8, sub, "model") or std.mem.eql(u8, sub, "by-model")) {
+                const by_model = dashboard.getCostByModel() catch
+                    @as([]cost_dashboard_mod.ModelCost, &.{});
+                defer cost_dashboard_mod.freeModelCosts(self.allocator, by_model);
+
+                const report = cost_dashboard_mod.formatByModelReport(self.allocator, by_model) catch "Error formatting report";
+                try self.addMessageUnlocked("assistant", report);
+            } else if (std.mem.eql(u8, sub, "today")) {
+                const today = dashboard.getTodayCost() catch {
+                    try self.addMessageUnlocked("assistant", "Error querying today's cost.");
+                    ctx.redraw = true;
+                    return;
+                };
+                const text = try std.fmt.allocPrint(self.allocator, "\xf0\x9f\x92\xb0 Today's Cost\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\nCost: ${d:.4}\nTokens: {d}\nSessions: {d}", .{ today.cost, today.tokens, today.session_count });
+                try self.addMessageUnlocked("assistant", text);
+            } else if (std.mem.eql(u8, sub, "session") or std.mem.eql(u8, sub, "sessions")) {
+                const top = dashboard.getTopSessions() catch
+                    @as([]session_db_mod.SessionRow, &.{});
+                defer session_db_mod.freeSessionRows(self.allocator, top);
+
+                if (top.len == 0) {
+                    try self.addMessageUnlocked("assistant", "No sessions recorded yet.");
+                } else {
+                    var buf: [4096]u8 = undefined;
+                    var poffset: usize = 0;
+                    if (std.fmt.bufPrint(&buf, "\xf0\x9f\x93\x8b Top Sessions by Cost\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\n", .{})) |written| {
+                        poffset = written.len;
+                    } else |_| {}
+                    for (top, 0..) |s, i| {
+                        const preview = if (s.title.len > 30) s.title[0..30] else s.title;
+                        if (std.fmt.bufPrint(buf[poffset..], "#{d} ${d:.4} [{s}/{s}] {s}\n", .{ i + 1, s.total_cost, s.provider, s.model, preview })) |written| {
+                            poffset += written.len;
+                        } else |_| {}
+                    }
+                    const text = try self.allocator.dupe(u8, buf[0..poffset]);
+                    try self.addMessageUnlocked("assistant", text);
+                }
+            } else {
+                try self.addMessageUnlocked("assistant", "Usage: /cost [total|today|model|session]");
             }
         }
 

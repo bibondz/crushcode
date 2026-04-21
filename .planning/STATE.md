@@ -22,11 +22,11 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.37+ Competitive Dominance — COMPLETE |
-| Phase | All 5 phases (38–42) complete |
-| Status | ✅ Milestone finished — 20 builtin tools |
-| Code Version | 0.41.0 |
-| Binary Size | 115MB (includes SQLite amalgamation) |
+| Milestone | v0.42+ Intelligent Context & Tool Expansion — COMPLETE |
+| Phase | All 5 phases (43–47) complete |
+| Status | ✅ Milestone finished — 26 builtin tools |
+| Code Version | 0.46.0 |
+| Binary Size | 124MB (includes SQLite amalgamation) |
 
 ---
 
@@ -40,7 +40,12 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 39 | Crush Mode — auto-agentic task→plan→exec→verify→commit | ✅ Done | c596292 |
 | Phase 40 | SQLite Session Backend — replace JSON, enable analytics + crash recovery | ✅ Done | c6ccc08 |
 | Phase 41 | Web Tools — web_search + web_fetch tools for AI (19 builtin tools total) | ✅ Done | dc7461b |
-| Phase 42 | Image in Terminal — Kitty/Sixel protocol + image_display tool (20 builtin tools) | ✅ Done | uncommitted |
+| Phase 42 | Image in Terminal — Kitty/Sixel protocol + image_display tool (20 builtin tools) | ✅ Done | 133ba1c |
+| Phase 43 | Smart Context — query intent extraction, relevance scoring, auto-pruning | ✅ Done | uncommitted |
+| Phase 44 | LSP as Tools — 6 LSP tools (definition, references, diagnostics, hover, symbols, rename) | ✅ Done | uncommitted |
+| Phase 45 | Multi-File Edit — atomic batch edits with transaction rollback | ✅ Done | uncommitted |
+| Phase 46 | Cost Analytics — /cost dashboard with per-session/day/provider/model breakdown | ✅ Done | uncommitted |
+| Phase 47 | Session Forking — /fork command to branch conversations | ✅ Done | uncommitted |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -107,11 +112,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 
 ---
 
-## Competitive Position (Updated — Milestone Complete)
+## Competitive Position (Updated — v0.42+ Complete)
 
 | Feature Area | Crushcode | Claude Code | OpenCode | Codex | Goose |
 |---|---|---|---|---|---|
-| Builtin tools | **20** | 40+ | 20+ | 15 | 12 |
+| Builtin tools | **26** | 40+ | 20+ | 15 | 12 |
 | Providers | **22** | 1 | 20+ | 1 | 10 |
 | Session backend | **SQLite** ✅ | JSONL | SQLite | File | File |
 | Syntax highlight | **20 langs** ✅ | ⚠️ | ⚠️ | ❌ | ❌ |
@@ -124,6 +129,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Web Search | **✅** | ✅ | ❌ | ❌ | ❌ |
 | Web Fetch | **✅** | ✅ | ❌ | ❌ | ❌ |
 | Image in Terminal | **Kitty + Sixel** ✅ | ❌ | ❌ | ❌ | ❌ |
+| Smart Context | **Intent-based scoring** ✅ | ❌ | ❌ | ❌ | ❌ |
+| LSP as Tools | **6 tools** ✅ | ✅ | ❌ | ❌ | ❌ |
+| Multi-File Edit | **Atomic batch** ✅ | ❌ | ❌ | ❌ | ❌ |
+| Cost Analytics | **/cost dashboard** ✅ | ❌ | ❌ | ❌ | ❌ |
+| Session Forking | **/fork command** ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ---
 

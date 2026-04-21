@@ -122,6 +122,10 @@ pub fn build(b: *std.Build) !void {
     // db modules (declared early — referenced by session_mod and others)
     const sqlite_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
     const session_db_mod = createMod(b, "src/db/session_db.zig", target, optimize, &.{imp("sqlite", sqlite_mod)});
+    const cost_dashboard_mod = createMod(b, "src/analytics/cost_dashboard.zig", target, optimize, &.{
+        imp("sqlite", sqlite_mod),
+        imp("session_db", session_db_mod),
+    });
     const db_migration_mod = createMod(b, "src/db/migration.zig", target, optimize, &.{imp("sqlite", sqlite_mod), imp("session_db", session_db_mod)});
     const session_mod = simpleMod(b, "src/session.zig", target, optimize);
     const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
@@ -170,6 +174,9 @@ pub fn build(b: *std.Build) !void {
     const image_display_mod = simpleMod(b, "src/tools/image_display.zig", target, optimize);
     const edit_batch_mod = simpleMod(b, "src/tools/edit_batch.zig", target, optimize);
     const lsp_tools_mod = simpleMod(b, "src/tools/lsp_tools.zig", target, optimize);
+    const fork_mod = createMod(b, "src/session/fork.zig", target, optimize, &.{
+        imp("session", session_mod),
+    });
 
     const streaming_types_mod = simpleMod(b, "src/streaming/types.zig", target, optimize);
     const streaming_buffer_mod = createMod(b, "src/streaming/buffer.zig", target, optimize, &.{imp("types", streaming_types_mod)});
@@ -674,7 +681,7 @@ pub fn build(b: *std.Build) !void {
         imp("autopilot", autopilot_mod),   imp("phase_runner", phase_runner_mod),
         imp("orchestration", orchestration_mod),
     });
-    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod) });
+    addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod), imp("session_db", session_db_mod), imp("cost_dashboard", cost_dashboard_mod), imp("fork", fork_mod) });
     addImports(tui_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
@@ -733,7 +740,9 @@ pub fn build(b: *std.Build) !void {
         image_display_mod,
         edit_batch_mod,
         lsp_tools_mod,
+        fork_mod,
         image_mod,
+        cost_dashboard_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -836,6 +845,8 @@ pub fn build(b: *std.Build) !void {
         image_display_mod,
         edit_batch_mod,
         lsp_tools_mod,
+        fork_mod,
+        cost_dashboard_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
