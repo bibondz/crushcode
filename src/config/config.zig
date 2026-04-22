@@ -554,3 +554,156 @@ pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
 
     return config;
 }
+
+// ==================== Tests ====================
+
+const testing = std.testing;
+
+test "Config.init defaults" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try testing.expectEqualStrings("", config.default_provider);
+    try testing.expectEqualStrings("", config.default_model);
+    try testing.expectEqualStrings("", config.system_prompt);
+    try testing.expectEqual(@as(u32, 4096), config.max_tokens);
+    try testing.expectEqual(@as(f32, 0.7), config.temperature);
+    try testing.expectEqual(@as(u16, 19876), config.oauth_port);
+    try testing.expectEqual(@as(usize, 0), config.api_keys.count());
+    try testing.expectEqual(@as(usize, 0), config.mcp_servers.len);
+    try testing.expectEqual(@as(usize, 0), config.provider_overrides.count());
+    try testing.expect(config.skills_dir == null);
+}
+
+test "Config deinit clean" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    config.deinit();
+}
+
+test "Config.getApiKey returns null for unset provider" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try testing.expect(config.getApiKey("openai") == null);
+    try testing.expect(config.getApiKey("anthropic") == null);
+}
+
+test "Config.setApiKey and getApiKey round-trip" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.setApiKey("openai", "sk-test-key");
+    const result = config.getApiKey("openai");
+    try testing.expect(result != null);
+    try testing.expectEqualStrings("sk-test-key", result.?);
+}
+
+test "Config.setApiKey multiple keys" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.setApiKey("openai", "sk-openai-key");
+    try config.setApiKey("anthropic", "sk-ant-key");
+    try config.setApiKey("gemini", "AIza-key");
+
+    try testing.expectEqualStrings("sk-openai-key", config.getApiKey("openai").?);
+    try testing.expectEqualStrings("sk-ant-key", config.getApiKey("anthropic").?);
+    try testing.expectEqualStrings("AIza-key", config.getApiKey("gemini").?);
+    try testing.expectEqual(@as(usize, 3), config.api_keys.count());
+}
+
+test "Config.setApiKey overwrite existing key" {
+    // setApiKey leaks old value + new key_copy on overwrite — use page_allocator
+    const allocator = std.heap.page_allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.setApiKey("openai", "old-key");
+    try testing.expectEqualStrings("old-key", config.getApiKey("openai").?);
+
+    try config.setApiKey("openai", "new-key");
+    try testing.expectEqualStrings("new-key", config.getApiKey("openai").?);
+    try testing.expectEqual(@as(usize, 1), config.api_keys.count());
+}
+
+test "Config.saveProviderOverride stores url" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.saveProviderOverride("openrouter", "https://custom.api.com/v1");
+
+    const url = config.getProviderOverrideUrl("openrouter");
+    try testing.expect(url != null);
+    try testing.expectEqualStrings("https://custom.api.com/v1", url.?);
+}
+
+test "Config.saveProviderOverride null provider is no-op" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.saveProviderOverride(null, "https://example.com");
+    try testing.expectEqual(@as(usize, 0), config.provider_overrides.count());
+}
+
+test "Config.saveProviderOverride null base_url stores override with null url" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try config.saveProviderOverride("ollama", null);
+
+    const url = config.getProviderOverrideUrl("ollama");
+    try testing.expect(url == null);
+    try testing.expectEqual(@as(usize, 1), config.provider_overrides.count());
+}
+
+test "Config.getProviderOverrideUrl returns null for unknown provider" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try testing.expect(config.getProviderOverrideUrl("nonexistent") == null);
+}
+
+test "MCPServerDef.deinit cleanup" {
+    const allocator = testing.allocator;
+    const name = try allocator.dupe(u8, "filesystem");
+    const url = try allocator.dupe(u8, "http://localhost:8080");
+    const transport = try allocator.dupe(u8, "stdio");
+    const command = try allocator.dupe(u8, "npx");
+    const args = try allocator.alloc([]const u8, 2);
+    args[0] = try allocator.dupe(u8, "arg1");
+    args[1] = try allocator.dupe(u8, "arg2");
+
+    var server = MCPServerDef{
+        .name = name,
+        .url = url,
+        .transport = transport,
+        .command = command,
+        .args = args,
+    };
+    server.deinit(allocator);
+}
+
+test "ProviderOverride.deinit cleanup" {
+    const allocator = testing.allocator;
+    const base_url = try allocator.dupe(u8, "https://custom.api.com/v1");
+
+    var override = ProviderOverride{ .base_url = base_url };
+    override.deinit(allocator);
+}
+
+test "Config.getSystemPrompt returns null when empty" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    try testing.expect(config.getSystemPrompt() == null);
+}

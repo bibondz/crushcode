@@ -280,3 +280,94 @@ pub const ExtendedConfig = struct {
         try file.writeAll(output);
     }
 };
+
+// ---------------------------------------------------------------------------
+// Unit Tests
+// ---------------------------------------------------------------------------
+
+const testing = std.testing;
+
+test "ProviderType.fromString returns .local for 'local'" {
+    try testing.expectEqual(ProviderType.local, ProviderType.fromString("local"));
+}
+
+test "ProviderType.fromString returns .custom for 'custom'" {
+    try testing.expectEqual(ProviderType.custom, ProviderType.fromString("custom"));
+}
+
+test "ProviderType.fromString returns .api for 'api'" {
+    try testing.expectEqual(ProviderType.api, ProviderType.fromString("api"));
+}
+
+test "ProviderType.fromString returns .api for empty string" {
+    try testing.expectEqual(ProviderType.api, ProviderType.fromString(""));
+}
+
+test "ProviderType.fromString returns .api for unknown string" {
+    try testing.expectEqual(ProviderType.api, ProviderType.fromString("unknown"));
+}
+
+test "AuthType.fromString returns .bearer_token for 'bearer_token'" {
+    try testing.expectEqual(AuthType.bearer_token, AuthType.fromString("bearer_token"));
+}
+
+test "AuthType.fromString returns .basic_auth for 'basic_auth'" {
+    try testing.expectEqual(AuthType.basic_auth, AuthType.fromString("basic_auth"));
+}
+
+test "AuthType.fromString returns .oauth for 'oauth'" {
+    try testing.expectEqual(AuthType.oauth, AuthType.fromString("oauth"));
+}
+
+test "AuthType.fromString returns .api_key for 'api_key'" {
+    try testing.expectEqual(AuthType.api_key, AuthType.fromString("api_key"));
+}
+
+test "AuthType.fromString returns .api_key for empty string" {
+    try testing.expectEqual(AuthType.api_key, AuthType.fromString(""));
+}
+
+test "AuthType.fromString returns .api_key for unknown string" {
+    try testing.expectEqual(AuthType.api_key, AuthType.fromString("unknown"));
+}
+
+test "ExtendedConfig.init sets correct defaults" {
+    const allocator = testing.allocator;
+    var cfg = try ExtendedConfig.init(allocator);
+    defer cfg.deinit();
+
+    // Default provider and model should be empty strings
+    try testing.expectEqualStrings("", cfg.default.provider);
+    try testing.expectEqualStrings("", cfg.default.model);
+
+    // Fallback defaults
+    try testing.expect(cfg.fallback.enabled == true);
+    try testing.expect(cfg.fallback.retry_with_fallback == true);
+
+    // Retry policy defaults
+    try testing.expect(cfg.retry_policy.default_max_attempts == 3);
+    try testing.expect(cfg.retry_policy.jitter == true);
+
+    // Performance defaults
+    try testing.expect(cfg.performance.request_timeout == 30);
+    try testing.expectEqualStrings("gzip", cfg.performance.compression);
+}
+
+test "ExtendedConfig deinit cleans up without leak" {
+    const allocator = testing.allocator;
+    var cfg = try ExtendedConfig.init(allocator);
+    cfg.deinit();
+    // If this test completes without memory leak detected by the testing
+    // allocator, deinit is correct.
+}
+
+test "FallbackConfig default providers contains anthropic and openai" {
+    const allocator = testing.allocator;
+    var cfg = try ExtendedConfig.init(allocator);
+    defer cfg.deinit();
+
+    const providers = cfg.fallback.providers;
+    try testing.expect(providers.len >= 2);
+    try testing.expectEqualStrings("anthropic", providers[0]);
+    try testing.expectEqualStrings("openai", providers[1]);
+}

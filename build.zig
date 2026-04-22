@@ -77,6 +77,7 @@ pub fn build(b: *std.Build) !void {
         imp("file_compat", compat_file_mod),
     });
     addImports(registry_mod, &.{imp("providers_file", providers_file_mod)});
+    addImports(registry_mod, &.{imp("array_list_compat", compat_array_list_mod), imp("file_compat", compat_file_mod)});
 
     const migrate_mod = createMod(b, "src/config/migrate.zig", target, optimize, &.{imp("env", env_mod)});
     const auth_mod = createMod(b, "src/config/auth.zig", target, optimize, &.{imp("env", env_mod)});
@@ -943,9 +944,21 @@ pub fn build(b: *std.Build) !void {
         recipe_mod,
         recipe_loader_mod,
         recipe_runner_mod,
+        registry_mod,
+        fileops_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
+
+    // Dedicated registry test step
+    const registry_tests = b.addTest(.{ .root_module = registry_mod });
+    const test_registry_step = b.step("test-registry", "Run registry unit tests");
+    test_registry_step.dependOn(&registry_tests.step);
+
+    // Dedicated protocol test step
+    const protocol_tests = b.addTest(.{ .root_module = plugin_mod });
+    const test_protocol_step = b.step("test-protocol", "Run plugin protocol unit tests");
+    test_protocol_step.dependOn(&protocol_tests.step);
 
     const mcp_e2e_tests = b.addTest(.{ .root_module = mcp_client_mod });
     const e2e_step = b.step("test-e2e", "Run E2E tests with MCP server (requires RUN_MCP_E2E_TESTS=1)");

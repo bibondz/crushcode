@@ -631,3 +631,257 @@ test "MCPTool - fromJson" {
     try testing.expect(std.mem.eql(u8, tool.name, "read_file"));
     try testing.expect(std.mem.eql(u8, tool.description, "Read a file"));
 }
+
+test "MCPRequest - toJson with null params renders null" {
+    const req = MCPRequest{
+        .jsonrpc = "2.0",
+        .method = "ping",
+        .params = .{ .null = {} },
+        .id = 1,
+    };
+
+    const json_str = try req.toJson(testing.allocator);
+    defer testing.allocator.free(json_str);
+
+    // Verify the exact structure contains null for params
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"params\":null") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"id\":1") != null);
+}
+
+test "MCPRequest - toJson preserves id value" {
+    const req = MCPRequest{
+        .jsonrpc = "2.0",
+        .method = "initialize",
+        .params = .{ .null = {} },
+        .id = 99999,
+    };
+
+    const json_str = try req.toJson(testing.allocator);
+    defer testing.allocator.free(json_str);
+
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"id\":99999") != null);
+}
+
+test "MCPRequest - toJson with nested object params" {
+    var inner = json.ObjectMap.init(testing.allocator);
+    defer inner.deinit();
+    try inner.put("key", .{ .string = "value" });
+
+    var params = json.ObjectMap.init(testing.allocator);
+    defer params.deinit();
+    try params.put("nested", .{ .object = inner });
+
+    const req = MCPRequest{
+        .jsonrpc = "2.0",
+        .method = "tools/call",
+        .params = .{ .object = params },
+        .id = 7,
+    };
+
+    const json_str = try req.toJson(testing.allocator);
+    defer testing.allocator.free(json_str);
+
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"nested\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"key\":\"value\"") != null);
+    try testing.expect(std.mem.indexOf(u8, json_str, "\"id\":7") != null);
+}
+
+test "MCPResponse - fromJson with error response" {
+    const response_str = "{\"jsonrpc\":\"2.0\",\"error\":{\"code\":-32600,\"message\":\"Invalid Request\"},\"id\":5}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, response_str, .{});
+    defer parsed.deinit();
+
+    const response = try MCPResponse.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, response.jsonrpc, "2.0"));
+    try testing.expect(response.result == null);
+    try testing.expect(response.json_error != null);
+    try testing.expect(response.id == 5);
+}
+
+test "MCPResponse - fromJson defaults missing jsonrpc to 2.0" {
+    const response_str = "{\"result\":{\"status\":\"ok\"},\"id\":1}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, response_str, .{});
+    defer parsed.deinit();
+
+    const response = try MCPResponse.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, response.jsonrpc, "2.0"));
+}
+
+test "MCPResponse - fromJson defaults missing id to 0" {
+    const response_str = "{\"jsonrpc\":\"2.0\",\"result\":{}}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, response_str, .{});
+    defer parsed.deinit();
+
+    const response = try MCPResponse.fromJson(testing.allocator, parsed.value);
+    try testing.expect(response.id == 0);
+}
+
+test "MCPResponse - fromJson rejects non-object value" {
+    const result = MCPResponse.fromJson(testing.allocator, .{ .string = "not an object" });
+    try testing.expectError(error.InvalidResponse, result);
+}
+
+test "MCPResponse - fromJson with non-integer id defaults to 0" {
+    const response_str = "{\"jsonrpc\":\"2.0\",\"result\":{},\"id\":\"not-a-number\"}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, response_str, .{});
+    defer parsed.deinit();
+
+    const response = try MCPResponse.fromJson(testing.allocator, parsed.value);
+    try testing.expect(response.id == 0);
+}
+
+test "MCPTool - fromJson with complete definition including outputSchema" {
+    const tool_json =
+        \\{"name":"execute","description":"Execute a command","inputSchema":{"type":"object","properties":{"cmd":{"type":"string"}}},"outputSchema":{"type":"string"}}
+    ;
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, tool_json, .{});
+    defer parsed.deinit();
+
+    const tool = try MCPTool.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, tool.name, "execute"));
+    try testing.expect(std.mem.eql(u8, tool.description, "Execute a command"));
+    try testing.expect(tool.input_schema == .object);
+    try testing.expect(tool.output_schema != null);
+    try testing.expect(tool.output_schema.? == .object);
+}
+
+test "MCPTool - fromJson with minimal definition uses defaults" {
+    const tool_json = "{\"name\":\"minimal_tool\"}";
+    var parsed = try json.parseFromSlice(json.Value, testing.allocator, tool_json, .{});
+    defer parsed.deinit();
+
+    const tool = try MCPTool.fromJson(testing.allocator, parsed.value);
+    try testing.expect(std.mem.eql(u8, tool.name, "minimal_tool"));
+    try testing.expect(std.mem.eql(u8, tool.description, ""));
+    try testing.expect(tool.input_schema == .null);
+    try testing.expect(tool.output_schema == null);
+}
+
+test "MCPServerConfig - toJson with stdio transport" {
+    const config = MCPServerConfig{
+        .transport = .stdio,
+        .command = "node",
+        .args = &[_][]const u8{ "server.js", "--verbose" },
+        .env_vars = &[_][]const u8{ "NODE_ENV=test" },
+    };
+
+    const json_val = try config.toJson(testing.allocator);
+    defer {
+        var v = json_val;
+        v.dump(testing.allocator);
+    }
+
+    const obj = json_val.object;
+    try testing.expect(std.mem.eql(u8, obj.get("transport").?.string, "stdio"));
+    try testing.expect(std.mem.eql(u8, obj.get("command").?.string, "node"));
+    try testing.expect(obj.get("args").?.array.items.len == 2);
+    try testing.expect(std.mem.eql(u8, obj.get("args").?.array.items[0].string, "server.js"));
+    try testing.expect(std.mem.eql(u8, obj.get("env_vars").?.array.items[0].string, "NODE_ENV=test"));
+    try testing.expect(std.mem.eql(u8, obj.get("method").?.string, "POST"));
+}
+
+test "MCPServerConfig - toJson with http transport and headers" {
+    var headers = json.ObjectMap.init(testing.allocator);
+    defer headers.deinit();
+    try headers.put("Authorization", .{ .string = "Bearer test-token" });
+
+    const config = MCPServerConfig{
+        .transport = .http,
+        .url = "http://localhost:8080/mcp",
+        .headers = headers,
+        .method = "PUT",
+    };
+
+    const json_val = try config.toJson(testing.allocator);
+    defer {
+        var v = json_val;
+        v.dump(testing.allocator);
+    }
+
+    const obj = json_val.object;
+    try testing.expect(std.mem.eql(u8, obj.get("transport").?.string, "http"));
+    try testing.expect(std.mem.eql(u8, obj.get("url").?.string, "http://localhost:8080/mcp"));
+    try testing.expect(obj.get("headers") != null);
+    try testing.expect(std.mem.eql(u8, obj.get("method").?.string, "PUT"));
+}
+
+test "MCPServerConfig - toJson with minimal fields omits optional fields" {
+    const config = MCPServerConfig{
+        .transport = .sse,
+    };
+
+    const json_val = try config.toJson(testing.allocator);
+    defer {
+        var v = json_val;
+        v.dump(testing.allocator);
+    }
+
+    const obj = json_val.object;
+    try testing.expect(std.mem.eql(u8, obj.get("transport").?.string, "sse"));
+    try testing.expect(obj.get("command") == null);
+    try testing.expect(obj.get("url") == null);
+    try testing.expect(obj.get("env_vars") == null);
+    try testing.expect(obj.get("args") == null);
+    try testing.expect(obj.get("headers") == null);
+}
+
+test "isTokenExpired - returns false when expires_at is null" {
+    const tokens = OAuthTokens{
+        .access_token = "test-token",
+    };
+    try testing.expect(!isTokenExpired(&tokens));
+}
+
+test "isTokenExpired - returns true when expires_at is in the past" {
+    const tokens = OAuthTokens{
+        .access_token = "test-token",
+        .expires_at = 1, // year 1970 — always in the past
+    };
+    try testing.expect(isTokenExpired(&tokens));
+}
+
+test "isTokenExpired - returns false when expires_at is in the future" {
+    const future: i64 = std.time.timestamp() + 3600; // 1 hour from now
+    const tokens = OAuthTokens{
+        .access_token = "test-token",
+        .expires_at = future,
+    };
+    try testing.expect(!isTokenExpired(&tokens));
+}
+
+test "calculateExpiresAt - returns future timestamp" {
+    const now = std.time.timestamp();
+    const result = calculateExpiresAt(3600);
+    // Should be roughly now + 3600 (allow 5s tolerance for slow execution)
+    try testing.expect(result >= now + 3595);
+    try testing.expect(result <= now + 3605);
+}
+
+test "MCPToolResult - default fields" {
+    const result = MCPToolResult{
+        .success = false,
+        .result = null,
+        .error_message = null,
+        .error_code = null,
+    };
+    try testing.expect(!result.success);
+    try testing.expect(result.result == null);
+    try testing.expect(result.error_message == null);
+    try testing.expect(result.error_code == null);
+}
+
+test "MCPToolResult - with all fields populated" {
+    var data = json.ObjectMap.init(testing.allocator);
+    defer data.deinit();
+    try data.put("output", .{ .string = "hello" });
+
+    const result = MCPToolResult{
+        .success = true,
+        .result = .{ .object = data },
+        .error_message = null,
+        .error_code = null,
+    };
+    try testing.expect(result.success);
+    try testing.expect(result.result != null);
+    try testing.expect(result.result.? == .object);
+}

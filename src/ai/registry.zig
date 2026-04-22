@@ -720,3 +720,356 @@ pub const ProviderRegistry = struct {
         }
     }
 };
+
+// ========== UNIT TESTS ==========
+
+const testing = std.testing;
+
+// -------------------------------------------------------
+// 1. ProviderType.toString — all 20 enum values
+// -------------------------------------------------------
+
+test "ProviderType.toString maps all enum values correctly" {
+    try testing.expectEqualStrings("openai", ProviderType.openai.toString());
+    try testing.expectEqualStrings("anthropic", ProviderType.anthropic.toString());
+    try testing.expectEqualStrings("gemini", ProviderType.gemini.toString());
+    try testing.expectEqualStrings("xai", ProviderType.xai.toString());
+    try testing.expectEqualStrings("mistral", ProviderType.mistral.toString());
+    try testing.expectEqualStrings("groq", ProviderType.groq.toString());
+    try testing.expectEqualStrings("deepseek", ProviderType.deepseek.toString());
+    try testing.expectEqualStrings("together", ProviderType.together.toString());
+    try testing.expectEqualStrings("azure", ProviderType.azure.toString());
+    try testing.expectEqualStrings("vertexai", ProviderType.vertexai.toString());
+    try testing.expectEqualStrings("bedrock", ProviderType.bedrock.toString());
+    try testing.expectEqualStrings("ollama", ProviderType.ollama.toString());
+    try testing.expectEqualStrings("lm-studio", ProviderType.lm_studio.toString());
+    try testing.expectEqualStrings("llama-cpp", ProviderType.llama_cpp.toString());
+    try testing.expectEqualStrings("openrouter", ProviderType.openrouter.toString());
+    try testing.expectEqualStrings("zai", ProviderType.zai.toString());
+    try testing.expectEqualStrings("vercel-gateway", ProviderType.vercel_gateway.toString());
+    try testing.expectEqualStrings("opencode-zen", ProviderType.opencode_zen.toString());
+    try testing.expectEqualStrings("opencode-go", ProviderType.opencode_go.toString());
+    try testing.expectEqualStrings("minimax", ProviderType.minimax.toString());
+}
+
+// -------------------------------------------------------
+// 2. parseApiFormat — private function, testable from same file
+// -------------------------------------------------------
+
+test "parseApiFormat returns anthropic for anthropic" {
+    try testing.expectEqual(ApiFormat.anthropic, parseApiFormat("anthropic"));
+}
+
+test "parseApiFormat returns google for google" {
+    try testing.expectEqual(ApiFormat.google, parseApiFormat("google"));
+}
+
+test "parseApiFormat returns ollama for ollama" {
+    try testing.expectEqual(ApiFormat.ollama, parseApiFormat("ollama"));
+}
+
+test "parseApiFormat returns openai for openai" {
+    try testing.expectEqual(ApiFormat.openai, parseApiFormat("openai"));
+}
+
+test "parseApiFormat defaults to openai for unknown format" {
+    try testing.expectEqual(ApiFormat.openai, parseApiFormat("anything_else"));
+}
+
+test "parseApiFormat defaults to openai for empty string" {
+    try testing.expectEqual(ApiFormat.openai, parseApiFormat(""));
+}
+
+// -------------------------------------------------------
+// 3. Provider.init + Provider.deinit
+// -------------------------------------------------------
+
+test "Provider.init creates correct openai provider" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .openai);
+    defer provider.deinit();
+
+    try testing.expectEqualStrings("openai", provider.name);
+    try testing.expect(provider.config.base_url.len > 0);
+    try testing.expectEqualStrings("", provider.config.api_key);
+    try testing.expect(provider.config.models.len > 0);
+    try testing.expectEqual(ApiFormat.openai, provider.config.api_format);
+    try testing.expect(!provider.config.is_local);
+}
+
+test "Provider.init creates correct ollama provider" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .ollama);
+    defer provider.deinit();
+
+    try testing.expectEqualStrings("ollama", provider.name);
+    try testing.expect(provider.config.base_url.len > 0);
+    try testing.expectEqualStrings("", provider.config.api_key);
+    try testing.expect(provider.config.models.len > 0);
+    try testing.expectEqual(ApiFormat.ollama, provider.config.api_format);
+    try testing.expect(provider.config.is_local);
+}
+
+test "Provider.init creates correct openrouter provider" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .openrouter);
+    defer provider.deinit();
+
+    try testing.expectEqualStrings("openrouter", provider.name);
+    try testing.expect(provider.config.base_url.len > 0);
+    try testing.expectEqualStrings("", provider.config.api_key);
+    try testing.expect(provider.config.models.len > 0);
+    try testing.expectEqual(ApiFormat.openai, provider.config.api_format);
+    try testing.expect(!provider.config.is_local);
+    try testing.expect(provider.config.keep_prefix);
+}
+
+test "Provider.init local providers have is_local set" {
+    const allocator = testing.allocator;
+
+    var ollama_p = try Provider.init(allocator, .ollama);
+    defer ollama_p.deinit();
+    try testing.expect(ollama_p.config.is_local);
+
+    var lm_studio_p = try Provider.init(allocator, .lm_studio);
+    defer lm_studio_p.deinit();
+    try testing.expect(lm_studio_p.config.is_local);
+
+    var llama_cpp_p = try Provider.init(allocator, .llama_cpp);
+    defer llama_cpp_p.deinit();
+    try testing.expect(llama_cpp_p.config.is_local);
+
+    var zen_p = try Provider.init(allocator, .opencode_zen);
+    defer zen_p.deinit();
+    try testing.expect(zen_p.config.is_local);
+
+    var go_p = try Provider.init(allocator, .opencode_go);
+    defer go_p.deinit();
+    try testing.expect(go_p.config.is_local);
+}
+
+test "Provider.init remote providers do not have is_local set" {
+    const allocator = testing.allocator;
+
+    var openai_p = try Provider.init(allocator, .openai);
+    defer openai_p.deinit();
+    try testing.expect(!openai_p.config.is_local);
+
+    var anthropic_p = try Provider.init(allocator, .anthropic);
+    defer anthropic_p.deinit();
+    try testing.expect(!anthropic_p.config.is_local);
+
+    var openrouter_p = try Provider.init(allocator, .openrouter);
+    defer openrouter_p.deinit();
+    try testing.expect(!openrouter_p.config.is_local);
+}
+
+test "Provider.init anthropic has anthropic api_format" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .anthropic);
+    defer provider.deinit();
+    try testing.expectEqual(ApiFormat.anthropic, provider.config.api_format);
+    try testing.expect(!provider.config.is_local);
+}
+
+test "Provider.init gemini has google api_format" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .gemini);
+    defer provider.deinit();
+    try testing.expectEqual(ApiFormat.google, provider.config.api_format);
+}
+
+test "Provider.init bedrock has anthropic api_format" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .bedrock);
+    defer provider.deinit();
+    try testing.expectEqual(ApiFormat.anthropic, provider.config.api_format);
+}
+
+test "Provider.init minimax has correct config" {
+    const allocator = testing.allocator;
+    var provider = try Provider.init(allocator, .minimax);
+    defer provider.deinit();
+    try testing.expectEqualStrings("minimax", provider.name);
+    try testing.expectEqual(ApiFormat.openai, provider.config.api_format);
+    try testing.expect(!provider.config.is_local);
+    try testing.expect(provider.config.models.len > 0);
+}
+
+// -------------------------------------------------------
+// 4. ProviderRegistry lifecycle
+// -------------------------------------------------------
+
+test "ProviderRegistry init and deinit without providers" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+}
+
+test "ProviderRegistry registerProvider and getProvider" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.registerProvider(.openai);
+    try registry.registerProvider(.ollama);
+
+    const openai = registry.getProvider("openai");
+    try testing.expect(openai != null);
+    try testing.expectEqualStrings("openai", openai.?.name);
+
+    const ollama = registry.getProvider("ollama");
+    try testing.expect(ollama != null);
+    try testing.expectEqualStrings("ollama", ollama.?.name);
+    try testing.expectEqual(ApiFormat.ollama, ollama.?.config.api_format);
+
+    const missing = registry.getProvider("nonexistent");
+    try testing.expect(missing == null);
+}
+
+test "ProviderRegistry listProviders returns registered names" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    try registry.registerProvider(.openai);
+    try registry.registerProvider(.anthropic);
+    try registry.registerProvider(.ollama);
+
+    const names = try registry.listProviders();
+    defer allocator.free(names);
+
+    try testing.expect(names.len == 3);
+}
+
+test "ProviderRegistry getProvider returns null for unregistered provider" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    try testing.expect(registry.getProvider("openai") == null);
+}
+
+// -------------------------------------------------------
+// 5. parseOpenAIModelsJson
+// -------------------------------------------------------
+
+test "parseOpenAIModelsJson extracts model IDs from OpenAI format" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const json = "{\"data\":[{\"id\":\"gpt-4o\"},{\"id\":\"gpt-3.5-turbo\"}]}";
+    const models = try registry.parseOpenAIModelsJson(json);
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    try testing.expect(models.len == 2);
+    try testing.expectEqualStrings("gpt-4o", models[0]);
+    try testing.expectEqualStrings("gpt-3.5-turbo", models[1]);
+}
+
+test "parseOpenAIModelsJson handles empty JSON" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const models = try registry.parseOpenAIModelsJson("{}");
+    try testing.expect(models.len == 0);
+}
+
+test "parseOpenAIModelsJson handles multiple models" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const json = "{\"data\":[{\"id\":\"gpt-4o\"},{\"id\":\"gpt-4-turbo\"},{\"id\":\"gpt-4\"},{\"id\":\"gpt-3.5-turbo\"}]}";
+    const models = try registry.parseOpenAIModelsJson(json);
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    try testing.expect(models.len == 4);
+    try testing.expectEqualStrings("gpt-4o", models[0]);
+    try testing.expectEqualStrings("gpt-4-turbo", models[1]);
+    try testing.expectEqualStrings("gpt-4", models[2]);
+    try testing.expectEqualStrings("gpt-3.5-turbo", models[3]);
+}
+
+// -------------------------------------------------------
+// 6. parseOllamaModelsJson
+// -------------------------------------------------------
+
+test "parseOllamaModelsJson extracts model names from Ollama format" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const json = "{\"models\":[{\"name\":\"llama3\"},{\"name\":\"mistral\"}]}";
+    const models = try registry.parseOllamaModelsJson(json);
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    try testing.expect(models.len == 2);
+    try testing.expectEqualStrings("llama3", models[0]);
+    try testing.expectEqualStrings("mistral", models[1]);
+}
+
+test "parseOllamaModelsJson handles empty JSON" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const models = try registry.parseOllamaModelsJson("{}");
+    try testing.expect(models.len == 0);
+}
+
+// -------------------------------------------------------
+// 7. parseGeminiModelsJson
+// -------------------------------------------------------
+
+test "parseGeminiModelsJson extracts and strips models/ prefix" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const json = "{\"models\":[{\"name\":\"models/gemini-1.5-pro\"}]}";
+    const models = try registry.parseGeminiModelsJson(json);
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    try testing.expect(models.len == 1);
+    try testing.expectEqualStrings("gemini-1.5-pro", models[0]);
+}
+
+test "parseGeminiModelsJson handles name without models/ prefix" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const json = "{\"models\":[{\"name\":\"gemini-2.0-flash-exp\"}]}";
+    const models = try registry.parseGeminiModelsJson(json);
+    defer {
+        for (models) |m| allocator.free(m);
+        allocator.free(models);
+    }
+
+    try testing.expect(models.len == 1);
+    try testing.expectEqualStrings("gemini-2.0-flash-exp", models[0]);
+}
+
+test "parseGeminiModelsJson handles empty JSON" {
+    const allocator = testing.allocator;
+    var registry = ProviderRegistry.init(allocator);
+    defer registry.deinit();
+
+    const models = try registry.parseGeminiModelsJson("{}");
+    try testing.expect(models.len == 0);
+}
