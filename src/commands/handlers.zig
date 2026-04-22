@@ -239,6 +239,7 @@ pub fn printHelp() !void {
         \\  review            Code review and QA
         \\  research          Research and exploration
         \\  general           Default category
+        \\
         \\Options:
         \\  --provider <id>    Use specific AI provider
         \\  --model <id>       Use specific model

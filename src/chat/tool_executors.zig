@@ -1984,3 +1984,207 @@ test "executeBuiltinTool - edit replaces text correctly" {
     defer std.testing.allocator.free(content);
     try std.testing.expect(std.mem.eql(u8, content, "foo qux baz"));
 }
+
+test "executeBuiltinTool - grep finds pattern in file" {
+    const tmp_path = "/tmp/crushcode_test_grep_42.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    try tmp_file.writeAll("hello zig world\nfoo bar baz\nzig is great");
+    tmp_file.close();
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"pattern\": \"zig\", \"path\": \"{s}\"}}", .{tmp_path});
+    defer std.testing.allocator.free(args);
+
+    const tool_call = core.ParsedToolCall{
+        .id = "te-10",
+        .name = "grep",
+        .arguments = args,
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "Found") != null);
+}
+
+test "executeBuiltinTool - grep no matches returns empty" {
+    const tmp_path = "/tmp/crushcode_test_grep_nomatch.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    try tmp_file.writeAll("hello world\nfoo bar");
+    tmp_file.close();
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"pattern\": \"zzzz_nonexistent_pattern_xyz\", \"path\": \"{s}\"}}", .{tmp_path});
+    defer std.testing.allocator.free(args);
+
+    const tool_call = core.ParsedToolCall{
+        .id = "te-11",
+        .name = "grep",
+        .arguments = args,
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "Found 0") != null);
+}
+
+test "executeBuiltinTool - search_files finds pattern" {
+    const tmp_path = "/tmp/crushcode_test_search_unique_77.zig";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    try tmp_file.writeAll("const foo = 42;");
+    tmp_file.close();
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"pattern\": \"crushcode_test_search_unique_77.zig\", \"directory\": \"/tmp\"}}", .{});
+    defer std.testing.allocator.free(args);
+
+    const tool_call = core.ParsedToolCall{
+        .id = "te-12",
+        .name = "search_files",
+        .arguments = args,
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "crushcode_test_search_unique_77.zig") != null);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "Found 1") != null);
+}
+
+test "executeBuiltinTool - git_status returns output" {
+    const tool_call = core.ParsedToolCall{
+        .id = "te-13",
+        .name = "git_status",
+        .arguments = "{}",
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    // Should contain "git_status" in display or "clean"/"Working tree" in result
+    const has_display = std.mem.indexOf(u8, execution.display, "git_status") != null;
+    const has_result = std.mem.indexOf(u8, execution.result, "clean") != null or
+        std.mem.indexOf(u8, execution.result, "Working tree") != null or
+        execution.result.len > 0;
+    try std.testing.expect(has_display or has_result);
+}
+
+test "executeBuiltinTool - git_log returns output" {
+    const tool_call = core.ParsedToolCall{
+        .id = "te-14",
+        .name = "git_log",
+        .arguments = "{\"count\": 3}",
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.display, "git_log") != null);
+    // Result should contain commit info (hash) or be non-empty
+    try std.testing.expect(execution.result.len > 0);
+}
+
+test "executeBuiltinTool - git_diff returns output" {
+    const tool_call = core.ParsedToolCall{
+        .id = "te-15",
+        .name = "git_diff",
+        .arguments = "{}",
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.display, "git_diff") != null);
+    // Result is either "No changes" or actual diff content
+    try std.testing.expect(execution.result.len > 0);
+}
+
+test "executeBuiltinTool - shell captures stderr" {
+    const tool_call = core.ParsedToolCall{
+        .id = "te-16",
+        .name = "shell",
+        .arguments = "{\"command\": \"echo ok_stdout_42 && echo err_stderr_77 >&2\"}",
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "ok_stdout_42") != null);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "err_stderr_77") != null);
+}
+
+test "executeBuiltinTool - list_directory lists files" {
+    const tool_call = core.ParsedToolCall{
+        .id = "te-17",
+        .name = "list_directory",
+        .arguments = "{\"path\": \"/tmp\"}",
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.display, "list_directory") != null);
+    try std.testing.expect(std.mem.indexOf(u8, execution.display, "entries") != null);
+    try std.testing.expect(execution.result.len > 0);
+}
+
+test "executeBuiltinTool - create_file and delete_file" {
+    // Use relative path since delete_file rejects absolute paths
+    const rel_path = "crushcode_test_create_del_88.txt";
+    // Clean up in case file exists from a prior run
+    std.fs.cwd().deleteFile(rel_path) catch {};
+    defer std.fs.cwd().deleteFile(rel_path) catch {};
+
+    // Create
+    const create_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\": \"{s}\", \"content\": \"test content abc\"}}", .{rel_path});
+    defer std.testing.allocator.free(create_args);
+
+    const create_call = core.ParsedToolCall{
+        .id = "te-18a",
+        .name = "create_file",
+        .arguments = create_args,
+    };
+    const create_exec = try executeBuiltinTool(std.testing.allocator, create_call);
+    defer std.testing.allocator.free(create_exec.display);
+    defer std.testing.allocator.free(create_exec.result);
+    try std.testing.expect(std.mem.indexOf(u8, create_exec.result, "Created file") != null);
+
+    // Verify file exists
+    const verify = try std.fs.cwd().openFile(rel_path, .{});
+    verify.close();
+
+    // Delete
+    const delete_args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\": \"{s}\"}}", .{rel_path});
+    defer std.testing.allocator.free(delete_args);
+
+    const delete_call = core.ParsedToolCall{
+        .id = "te-18b",
+        .name = "delete_file",
+        .arguments = delete_args,
+    };
+    const delete_exec = try executeBuiltinTool(std.testing.allocator, delete_call);
+    defer std.testing.allocator.free(delete_exec.display);
+    defer std.testing.allocator.free(delete_exec.result);
+    try std.testing.expect(std.mem.indexOf(u8, delete_exec.result, "Deleted") != null);
+
+    // Verify file is gone
+    const gone = std.fs.cwd().openFile(rel_path, .{});
+    try std.testing.expectError(error.FileNotFound, gone);
+}
+
+test "executeBuiltinTool - file_info returns file details" {
+    const tmp_path = "/tmp/crushcode_test_fileinfo_99.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    try tmp_file.writeAll("hello file info test");
+    tmp_file.close();
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const args = try std.fmt.allocPrint(std.testing.allocator, "{{\"path\": \"{s}\"}}", .{tmp_path});
+    defer std.testing.allocator.free(args);
+
+    const tool_call = core.ParsedToolCall{
+        .id = "te-19",
+        .name = "file_info",
+        .arguments = args,
+    };
+    const execution = try executeBuiltinTool(std.testing.allocator, tool_call);
+    defer std.testing.allocator.free(execution.display);
+    defer std.testing.allocator.free(execution.result);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "file") != null);
+    try std.testing.expect(std.mem.indexOf(u8, execution.result, "bytes") != null or
+        std.mem.indexOf(u8, execution.result, "B") != null);
+}

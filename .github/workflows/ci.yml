@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master, 002-*]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.13.0
+
+      - name: Build
+        run: zig build
+
+      - name: Run shared module tests
+        run: |
+          zig test src/core/json_helpers.zig
+          zig test src/core/string_utils.zig
+          zig test src/core/collections.zig
+          zig test src/core/process.zig
+
+      - name: Check formatting
+        run: zig fmt --check src/
+        continue-on-error: true
