@@ -292,7 +292,7 @@ pub const VaultPersistence = struct {
         errdefer buf.deinit();
         const writer = buf.writer();
 
-        try writer.writeAll("{\"version\":\"0.25.0\"");
+        try writer.writeAll("{\"version\":\"1.0.0\"");
         try writer.print(",\"node_count\":{d}", .{vault.count()});
         try writer.print(",\"saved_at\":{d}", .{std.time.timestamp()});
 

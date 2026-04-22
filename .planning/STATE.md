@@ -1,9 +1,9 @@
-# State: Crushcode v0.58.0
+# State: Crushcode v1.0.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-22
-**Commit:** 3aa8b70
-**Stats:** ~283 `.zig` files, ~126K lines
+**Commit:** 159172f
+**Stats:** ~247 `.zig` files, ~101K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.58+ Core Edit Safety — COMPLETE |
-| Phase | Edit safety features complete |
-| Status | ✅ Milestone finished — mtime check, per-file backup, auto LSP diagnostics |
-| Code Version | 0.58.0 |
+| Milestone | v1.0.0 Stable Release — COMPLETE |
+| Phase | Consolidation, safety, tests, CI — all complete |
+| Status | ✅ Stable release ready — 41 tests, CI pipeline, 4 shared modules, zero warnings |
+| Code Version | 1.0.0 |
 | Binary Size | 125MB (includes SQLite amalgamation) |
 
 ---
@@ -60,6 +60,8 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 59 | Subagent Tool — AI-callable subagent with depth/timeout controls (30 builtin tools) | ✅ Done | 80f5caa |
 | Phase 60 | Recipes System — .recipe.md templates with {{variable}} substitution, /recipe command | ✅ Done | 80f5caa |
 | Edit Safety | mtime check before edit/write, auto LSP diagnostics after edit | ✅ Done | 3aa8b70 |
+| Stable Polish | Code consolidation: 4 shared modules, generic dispatch, requireField helper, safety fixes | ✅ Done | 434df44 |
+| Stable Tests | 41 tests (21 shared modules + 20 tool executors), CI/CD, help text polish | ✅ Done | 159172f |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -243,6 +245,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.52.0** | **Phases 53-57: Hook System, New Tools, Smart Commands, Skill Loader, Advanced Permissions** | **✅ Done** |
 | **v0.57.0** | **Phases 58-60: OS Notifications, Subagent Tool, Recipes System** | **✅ Done** |
 | **v0.58.0** | **Edit Safety: mtime check, per-file backup, auto LSP diagnostics** | **✅ Done** |
+| **v1.0.0** | **Stable Release: code consolidation, 41 tests, CI/CD, version bump** | **✅ Done** |
 
 ---
 
@@ -303,5 +306,5 @@ vendor/sqlite3/ — SQLite 3.47.0 amalgamation (vendored C)
 ## Session Continuity
 
 **Last Updated:** 2026-04-22
-**Current Work:** v0.58.0 Edit Safety milestone COMPLETE. mtime check, per-file backup, auto LSP diagnostics shipped.
-**Next Step:** Define next milestone via GSD — ready for user to queue next phase
+**Current Work:** v1.0.0 Stable Release COMPLETE. 41 tests, CI pipeline, 4 shared modules, safety fixes, code consolidation.
+**Next Step:** Push to remote. Post-v1.0: chat_tui_app split, expanded test coverage.

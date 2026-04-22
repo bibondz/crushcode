@@ -344,7 +344,7 @@ fn cmdExit(allocator: Allocator, args: []const u8) !CommandResult {
 
 fn cmdVersion(allocator: Allocator, args: []const u8) !CommandResult {
     _ = args;
-    return CommandResult.init(allocator, "Crushcode v0.25.0");
+    return CommandResult.init(allocator, "Crushcode v1.0.0");
 }
 
 fn cmdStatus(allocator: Allocator, args: []const u8) !CommandResult {
