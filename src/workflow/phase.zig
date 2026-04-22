@@ -463,7 +463,7 @@ pub const PhaseWorkflow = struct {
         if (phase_output.len == 0) {
             result.verdict = .block;
             result.summary = "Discuss phase produced no output";
-            result.addIssue("Empty output — requirements not gathered") catch {};
+            result.addIssue("Empty output — requirements not gathered") catch |err| std.log.warn("addIssue failed: {}", .{err});
             return result;
         }
 
@@ -479,14 +479,14 @@ pub const PhaseWorkflow = struct {
         if (keyword_hits == 0) {
             result.verdict = .flag;
             result.summary = "No requirement-like keywords detected";
-            result.addIssue("Output lacks recognizable requirement keywords") catch {};
+            result.addIssue("Output lacks recognizable requirement keywords") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         // Very short output is suspicious
         if (phase_output.len < 50) {
             result.verdict = .flag;
             result.summary = "Discuss output is very short";
-            result.addIssue("Output is under 50 chars — may be insufficient") catch {};
+            result.addIssue("Output is under 50 chars — may be insufficient") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         return result;
@@ -500,7 +500,7 @@ pub const PhaseWorkflow = struct {
         if (phase_output.len == 0) {
             result.verdict = .block;
             result.summary = "Plan phase produced no output";
-            result.addIssue("Empty plan — nothing to execute") catch {};
+            result.addIssue("Empty plan — nothing to execute") catch |err| std.log.warn("addIssue failed: {}", .{err});
             return result;
         }
 
@@ -527,7 +527,7 @@ pub const PhaseWorkflow = struct {
         }
 
         if (task_hits == 0) {
-            _ = reviewer.addFinding(review, .high, .architecture, "No task keywords found", "Plan output lacks recognizable task descriptions") catch {};
+            _ = reviewer.addFinding(review, .high, .architecture, "No task keywords found", "Plan output lacks recognizable task descriptions") catch |err| std.log.warn("addFinding failed: {}", .{err});
         }
 
         // Heuristic: check for success criteria
@@ -540,12 +540,12 @@ pub const PhaseWorkflow = struct {
         }
 
         if (criteria_hits == 0) {
-            _ = reviewer.addFinding(review, .medium, .testing, "No success criteria detected", "Plan should define verification criteria") catch {};
+            _ = reviewer.addFinding(review, .medium, .testing, "No success criteria detected", "Plan should define verification criteria") catch |err| std.log.warn("addFinding failed: {}", .{err});
         }
 
         // Short plan is suspicious
         if (phase_output.len < 100) {
-            _ = reviewer.addFinding(review, .high, .documentation, "Plan is very short", "Plan output is under 100 chars — may be insufficient") catch {};
+            _ = reviewer.addFinding(review, .high, .documentation, "Plan is very short", "Plan output is under 100 chars — may be insufficient") catch |err| std.log.warn("addFinding failed: {}", .{err});
         }
 
         // Map review verdict to gate verdict
@@ -570,7 +570,7 @@ pub const PhaseWorkflow = struct {
 
         // Collect finding titles as issues
         for (review.findings.items) |finding| {
-            result.addIssue(finding.title) catch {};
+            result.addIssue(finding.title) catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         return result;
@@ -591,17 +591,17 @@ pub const PhaseWorkflow = struct {
         if (task_hits == 0) {
             result.verdict = .block;
             result.summary = "No task keywords found in plan";
-            result.addIssue("Plan lacks recognizable task descriptions") catch {};
+            result.addIssue("Plan lacks recognizable task descriptions") catch |err| std.log.warn("addIssue failed: {}", .{err});
         } else if (task_hits <= 1) {
             result.verdict = .flag;
             result.summary = "Very few task keywords in plan";
-            result.addIssue("Plan may not have enough detail for execution") catch {};
+            result.addIssue("Plan may not have enough detail for execution") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         if (phase_output.len < 100) {
             result.verdict = .block;
             result.summary = "Plan output is too short";
-            result.addIssue("Plan is under 100 chars") catch {};
+            result.addIssue("Plan is under 100 chars") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         return result;
@@ -614,7 +614,7 @@ pub const PhaseWorkflow = struct {
         if (phase_output.len == 0) {
             result.verdict = .block;
             result.summary = "Execute phase produced no output";
-            result.addIssue("Empty output — nothing to verify") catch {};
+            result.addIssue("Empty output — nothing to verify") catch |err| std.log.warn("addIssue failed: {}", .{err});
             return result;
         }
 
@@ -642,11 +642,11 @@ pub const PhaseWorkflow = struct {
         if (fail_hits > 3 and fail_hits > success_hits * 2) {
             result.verdict = .block;
             result.summary = "Too many errors in execution output";
-            result.addIssue("Error keywords dominate the output") catch {};
+            result.addIssue("Error keywords dominate the output") catch |err| std.log.warn("addIssue failed: {}", .{err});
         } else if (fail_hits > 0 and success_hits == 0) {
             result.verdict = .flag;
             result.summary = "Errors detected with no success markers";
-            result.addIssue("Execution has errors but no success indicators") catch {};
+            result.addIssue("Execution has errors but no success indicators") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         return result;
@@ -659,7 +659,7 @@ pub const PhaseWorkflow = struct {
         if (phase_output.len == 0) {
             result.verdict = .flag;
             result.summary = "Verify phase produced no output";
-            result.addIssue("No verification output recorded") catch {};
+            result.addIssue("No verification output recorded") catch |err| std.log.warn("addIssue failed: {}", .{err});
             return result;
         }
 
@@ -684,15 +684,15 @@ pub const PhaseWorkflow = struct {
         if (fail_hits > 0 and pass_hits == 0) {
             result.verdict = .block;
             result.summary = "Verification shows failures with no passes";
-            result.addIssue("Tests failing — cannot ship") catch {};
+            result.addIssue("Tests failing — cannot ship") catch |err| std.log.warn("addIssue failed: {}", .{err});
         } else if (fail_hits > pass_hits) {
             result.verdict = .block;
             result.summary = "More failures than passes in verification";
-            result.addIssue("Failures outnumber passes") catch {};
+            result.addIssue("Failures outnumber passes") catch |err| std.log.warn("addIssue failed: {}", .{err});
         } else if (pass_hits == 0) {
             result.verdict = .flag;
             result.summary = "No explicit pass indicators found";
-            result.addIssue("Consider adding explicit pass/fail markers") catch {};
+            result.addIssue("Consider adding explicit pass/fail markers") catch |err| std.log.warn("addIssue failed: {}", .{err});
         }
 
         return result;
@@ -758,7 +758,7 @@ pub const PhaseWorkflow = struct {
         var gaps = array_list_compat.ArrayList(*WorkflowPhase).init(self.allocator);
         for (self.phases.items) |phase| {
             if (phase.isGapPhase()) {
-                gaps.append(phase) catch {};
+                gaps.append(phase) catch |err| std.log.warn("gapPhases: append failed: {}", .{err});
             }
         }
         return gaps;
@@ -957,7 +957,7 @@ pub const PhaseWorkflow = struct {
         const stdout = file_compat.File.stdout().writer();
         const pct = self.progress();
 
-        stdout.print("\n=== Workflow: {s} ({d:.0}% complete) ===\n\n", .{ self.name, pct }) catch {};
+        stdout.print("\n=== Workflow: {s} ({d:.0}% complete) ===\n\n", .{ self.name, pct }) catch |err| std.log.warn("print failed: {}", .{err});
 
         for (self.phases.items) |phase| {
             const status_icon = switch (phase.status) {
@@ -970,18 +970,18 @@ pub const PhaseWorkflow = struct {
                 .verified => "✓ ",
             };
             if (phase.isGapPhase()) {
-                stdout.print("  {s} Phase {d:.1}: {s}\n", .{ status_icon, phase.number, phase.name }) catch {};
+                stdout.print("  {s} Phase {d:.1}: {s}\n", .{ status_icon, phase.number, phase.name }) catch |err| std.log.warn("print failed: {}", .{err});
             } else {
-                stdout.print("  {s} Phase {d:.0}: {s}\n", .{ status_icon, phase.number, phase.name }) catch {};
+                stdout.print("  {s} Phase {d:.0}: {s}\n", .{ status_icon, phase.number, phase.name }) catch |err| std.log.warn("print failed: {}", .{err});
             }
-            stdout.print("     Goal: {s}\n", .{phase.goal}) catch {};
+            stdout.print("     Goal: {s}\n", .{phase.goal}) catch |err| std.log.warn("print failed: {}", .{err});
 
             if (phase.tasks.items.len > 0) {
                 var done: u32 = 0;
                 for (phase.tasks.items) |phase_task| {
                     if (phase_task.status == .completed or phase_task.status == .verified) done += 1;
                 }
-                stdout.print("     Tasks: {d}/{d}\n", .{ done, phase.tasks.items.len }) catch {};
+                stdout.print("     Tasks: {d}/{d}\n", .{ done, phase.tasks.items.len }) catch |err| std.log.warn("print failed: {}", .{err});
             }
 
             if (phase.criteria.items.len > 0) {
@@ -989,31 +989,31 @@ pub const PhaseWorkflow = struct {
                 for (phase.criteria.items) |c| {
                     if (c.passed) passed += 1;
                 }
-                stdout.print("     Criteria: {d}/{d}\n", .{ passed, phase.criteria.items.len }) catch {};
+                stdout.print("     Criteria: {d}/{d}\n", .{ passed, phase.criteria.items.len }) catch |err| std.log.warn("print failed: {}", .{err});
             }
-            stdout.print("\n", .{}) catch {};
+            stdout.print("\n", .{}) catch |err| std.log.warn("print failed: {}", .{err});
         }
 
         // Show gate status if available
         if (self.last_gate_result) |gr| {
-            stdout.print("  [REVIEW GATE: {s}", .{gr.verdict.toString()}) catch {};
+            stdout.print("  [REVIEW GATE: {s}", .{gr.verdict.toString()}) catch |err| std.log.warn("print failed: {}", .{err});
             if (gr.issues.items.len > 0) {
-                stdout.print(" — {d} issue{s}", .{ gr.issues.items.len, if (gr.issues.items.len == 1) "" else "s" }) catch {};
+                stdout.print(" — {d} issue{s}", .{ gr.issues.items.len, if (gr.issues.items.len == 1) "" else "s" }) catch |err| std.log.warn("print failed: {}", .{err});
             }
-            stdout.print("]\n", .{}) catch {};
+            stdout.print("]\n", .{}) catch |err| std.log.warn("print failed: {}", .{err});
         }
 
         if (self.current_phase) |cp| {
             if (cp == @floor(cp)) {
-                stdout.print("  ▶ Current: Phase {d:.0}\n", .{cp}) catch {};
+                stdout.print("  ▶ Current: Phase {d:.0}\n", .{cp}) catch |err| std.log.warn("print failed: {}", .{err});
             } else {
-                stdout.print("  ▶ Current: Phase {d:.1}\n", .{cp}) catch {};
+                stdout.print("  ▶ Current: Phase {d:.1}\n", .{cp}) catch |err| std.log.warn("print failed: {}", .{err});
             }
         } else if (self.nextPhase()) |np| {
             if (np.isGapPhase()) {
-                stdout.print("  ▶ Next: Phase {d:.1} ({s})\n", .{ np.number, np.name }) catch {};
+                stdout.print("  ▶ Next: Phase {d:.1} ({s})\n", .{ np.number, np.name }) catch |err| std.log.warn("print failed: {}", .{err});
             } else {
-                stdout.print("  ▶ Next: Phase {d:.0} ({s})\n", .{ np.number, np.name }) catch {};
+                stdout.print("  ▶ Next: Phase {d:.0} ({s})\n", .{ np.number, np.name }) catch |err| std.log.warn("print failed: {}", .{err});
             }
         }
     }
@@ -1090,15 +1090,11 @@ pub const PhaseWorkflow = struct {
                 git_mod.autoCommit(allocator, desc) catch {
                     // Commit failure is non-fatal — continue
                 };
-
-                // If task execution had failed:
-                // wave_failed = true;
-                // break;
             }
 
             if (wave_failed) {
                 // Rollback to checkpoint before this wave
-                git_mod.rollbackTo(allocator, checkpoint) catch {};
+                git_mod.rollbackTo(allocator, checkpoint) catch |err| std.log.warn("rollback failed: {}", .{err});
                 results.failed = true;
                 results.failed_wave = @as(u32, @intCast(wave_idx));
                 return results;

@@ -106,8 +106,8 @@ pub const ProviderOAuth = struct {
         defer callback_server.deinit();
 
         const stdout = file_compat.File.stdout().writer();
-        stdout.print("Please open this URL in your browser:\n{s}\n", .{auth_url}) catch {};
-        stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch {};
+        stdout.print("Please open this URL in your browser:\n{s}\n", .{auth_url}) catch |err| std.log.warn("stdout write failed: {}", .{err});
+        stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch |err| std.log.warn("stdout write failed: {}", .{err});
 
         const callback_result = try waitForCallback(&callback_server, state, self.allocator);
         defer self.allocator.free(callback_result.code);
@@ -389,7 +389,7 @@ pub const ProviderOAuth = struct {
         defer self.allocator.free(token_path);
 
         const dir = std.fs.path.dirname(token_path) orelse return error.InvalidPath;
-        std.fs.cwd().makePath(dir) catch {};
+        std.fs.cwd().makePath(dir) catch |err| std.log.warn("failed to create token directory: {}", .{err});
 
         var buf = array_list_compat.ArrayList(u8).init(self.allocator);
         defer buf.deinit();
@@ -622,7 +622,7 @@ fn waitForCallback(
         \\HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n
         \\<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>
     ;
-    _ = conn.stream.write(response_html) catch {};
+    _ = conn.stream.write(response_html) catch |err| std.log.warn("failed to send OAuth response to browser: {}", .{err});
 
     const result_code = code orelse return error.OAuthCallbackFailed;
     const result_state = state orelse return error.OAuthCallbackFailed;

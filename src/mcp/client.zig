@@ -265,7 +265,7 @@ pub const MCPClient = struct {
                 const tools = try self.allocator.alloc(MCPTool, tools_array.items.len);
 
                 for (tools_array.items, 0..) |tool_obj, i| {
-                    tools[i] = MCPTool.fromJson(self.allocator, tool_obj) catch unreachable;
+                    tools[i] = try MCPTool.fromJson(self.allocator, tool_obj);
                 }
 
                 return tools;

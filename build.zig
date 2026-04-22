@@ -168,13 +168,19 @@ pub fn build(b: *std.Build) !void {
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
     const skill_sync_mod = simpleMod(b, "src/skills/sync.zig", target, optimize);
     const tools_mod = simpleMod(b, "src/tools/registry.zig", target, optimize);
+    const json_helpers_mod = simpleMod(b, "src/core/json_helpers.zig", target, optimize);
+    const string_utils_mod = simpleMod(b, "src/core/string_utils.zig", target, optimize);
+    const process_mod = simpleMod(b, "src/core/process.zig", target, optimize);
+    addImports(shell_mod, &.{imp("string_utils", string_utils_mod)});
     const web_fetch_mod = simpleMod(b, "src/tools/web_fetch.zig", target, optimize);
     const web_search_mod = createMod(b, "src/tools/web_search.zig", target, optimize, &.{
         imp("web_fetch", web_fetch_mod),
     });
     const image_display_mod = simpleMod(b, "src/tools/image_display.zig", target, optimize);
     const edit_batch_mod = simpleMod(b, "src/tools/edit_batch.zig", target, optimize);
+    addImports(edit_batch_mod, &.{imp("json_helpers", json_helpers_mod), imp("string_utils", string_utils_mod)});
     const lsp_tools_mod = simpleMod(b, "src/tools/lsp_tools.zig", target, optimize);
+    addImports(lsp_tools_mod, &.{imp("json_helpers", json_helpers_mod)});
     const todo_mod = simpleMod(b, "src/tools/todo.zig", target, optimize);
     const apply_patch_mod = simpleMod(b, "src/tools/apply_patch.zig", target, optimize);
     const question_mod = simpleMod(b, "src/tools/question.zig", target, optimize);
@@ -341,6 +347,7 @@ pub fn build(b: *std.Build) !void {
         imp("theme", theme_mod),
     });
     const code_preview_mod = simpleMod(b, "src/tui/code_preview.zig", target, optimize);
+    addImports(code_preview_mod, &.{imp("string_utils", string_utils_mod)});
     const image_mod = simpleMod(b, "src/tui/image.zig", target, optimize);
     const widget_data_table_mod = simpleMod(b, "src/tui/widgets/data_table.zig", target, optimize);
     const widget_scroll_panel_mod = simpleMod(b, "src/tui/widgets/scroll_panel.zig", target, optimize);
@@ -422,6 +429,7 @@ pub fn build(b: *std.Build) !void {
     const team_handler_mod = simpleMod(b, "src/commands/handlers/team_handler.zig", target, optimize);
     const memory_handler_mod = simpleMod(b, "src/commands/handlers/memory_handler.zig", target, optimize);
     const plan_handler_mod = simpleMod(b, "src/commands/handlers/plan_handler.zig", target, optimize);
+    addImports(plan_handler_mod, &.{imp("json_helpers", json_helpers_mod)});
     addImports(ai_handlers_mod, &.{
         imp("args", cli_mod), imp("registry", registry_mod), imp("config", config_mod),   imp("chat", chat_mod),
         imp("tui", tui_mod),  imp("core_api", core_api_mod), imp("connect", connect_mod), imp("profile", profile_mod),
@@ -525,8 +533,10 @@ pub fn build(b: *std.Build) !void {
 
     const graph_types_mod = simpleMod(b, "src/graph/types.zig", target, optimize);
     const graph_parser_mod = createMod(b, "src/graph/parser.zig", target, optimize, &.{imp("types", graph_types_mod)});
+    addImports(graph_parser_mod, &.{imp("string_utils", string_utils_mod)});
     const graph_algorithms_mod = createMod(b, "src/graph/algorithms.zig", target, optimize, &.{imp("types", graph_types_mod)});
     const graph_mod = createMod(b, "src/graph/graph.zig", target, optimize, &.{ imp("types", graph_types_mod), imp("parser", graph_parser_mod), imp("algorithms", graph_algorithms_mod) });
+    addImports(graph_mod, &.{imp("string_utils", string_utils_mod)});
 
     // Knowledge modules (Phase 48)
     const knowledge_schema_mod = simpleMod(b, "src/knowledge/schema.zig", target, optimize);
@@ -551,6 +561,7 @@ pub fn build(b: *std.Build) !void {
     const project_memory_mod = simpleMod(b, "src/agent/project_memory.zig", target, optimize);
     const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
     const semantic_compressor_mod = simpleMod(b, "src/agent/semantic_compressor.zig", target, optimize);
+    addImports(semantic_compressor_mod, &.{imp("string_utils", string_utils_mod)});
     const doctor_mod = createMod(b, "src/commands/doctor.zig", target, optimize, &.{imp("shell", shell_mod)});
     const review_mod = createMod(b, "src/commands/review.zig", target, optimize, &.{imp("shell", shell_mod)});
     const commit_mod = createMod(b, "src/commands/commit.zig", target, optimize, &.{imp("shell", shell_mod)});
@@ -728,13 +739,14 @@ pub fn build(b: *std.Build) !void {
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
+        imp("json_helpers", json_helpers_mod), imp("string_utils", string_utils_mod), imp("process", process_mod),
     });
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
     addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod), imp("edit_batch", edit_batch_mod), imp("lsp_tools", lsp_tools_mod), imp("todo", todo_mod), imp("apply_patch", apply_patch_mod), imp("question", question_mod), imp("subagent", subagent_mod)});
-    addImports(todo_mod, &.{imp("core_api", core_api_mod)});
-    addImports(apply_patch_mod, &.{imp("core_api", core_api_mod)});
-    addImports(question_mod, &.{imp("core_api", core_api_mod), imp("file_compat", compat_file_mod)});
+    addImports(todo_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
+    addImports(apply_patch_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
+    addImports(question_mod, &.{imp("core_api", core_api_mod), imp("file_compat", compat_file_mod), imp("json_helpers", json_helpers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod), imp("session_db", session_db_mod)});
     addImports(chat_tool_executors_mod, &.{imp("hooks_registry", hooks_registry_mod)});
     addImports(chat_bridge_mod, &.{

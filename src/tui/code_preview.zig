@@ -3,6 +3,7 @@
 /// Provides CodeSnippet, DiffHunk, and CodePreview types for formatting
 /// file contents, highlighted ranges, and side-by-side diffs to stdout.
 const std = @import("std");
+const string_utils = @import("string_utils");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
 
@@ -362,14 +363,10 @@ pub const CodePreview = struct {
     /// Count the number of lines in content (number of '\n').
     /// An empty string has 0 lines. A trailing newline does not add an extra line.
     pub fn countLines(content: []const u8) u32 {
-        if (content.len == 0) return 0;
-        var count: u32 = 0;
-        for (content) |ch| {
-            if (ch == '\n') count += 1;
-        }
-        // If content doesn't end with \n, the last line wasn't counted
-        if (content[content.len - 1] != '\n') count += 1;
-        return count;
+        const n = string_utils.countLines(content);
+        // string_utils counts trailing-newline as an extra line; code_preview doesn't
+        if (content.len > 0 and content[content.len - 1] == '\n') return n - 1;
+        return n;
     }
 
     /// Extract lines [start..end] (1-based, inclusive) from content.

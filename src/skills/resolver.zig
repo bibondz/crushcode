@@ -62,7 +62,7 @@ pub const SkillResolver = struct {
     pub fn init(allocator: Allocator, search_paths: []const []const u8) SkillResolver {
         // Deep-copy search paths
         const paths_allocated = allocator.alloc([]const u8, search_paths.len) catch {
-            const empty = allocator.alloc([]const u8, 0) catch unreachable;
+            const empty = allocator.alloc([]const u8, 0) catch unreachable; // zero-size alloc cannot fail
             return SkillResolver{
                 .allocator = allocator,
                 .search_paths = empty,

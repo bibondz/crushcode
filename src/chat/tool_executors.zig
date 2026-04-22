@@ -1,4 +1,7 @@
 const std = @import("std");
+const string_utils = @import("string_utils");
+const json_helpers = @import("json_helpers");
+const process = @import("process");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const core = @import("core_api");
@@ -66,6 +69,11 @@ pub const ToolExecution = struct {
 const BuiltinToolDefinition = struct {
     name: []const u8,
     executor: ToolExecutor,
+};
+
+const BuiltinDispatchEntry = struct {
+    name: []const u8,
+    executor: *const fn (std.mem.Allocator, core.ParsedToolCall) anyerror!ToolExecution,
 };
 
 threadlocal var active_evaluator: ?*PermissionEvaluator = null;
@@ -271,39 +279,44 @@ fn adaptToolExecution(
     // Tier 3: Evaluator — existing permission evaluator (skipped if safelist-approved)
     if (!safelist_approved) {
         if (active_evaluator) |evaluator| {
-            var req = PermissionRequest.init(tool_name, "execute", allocator) catch unreachable;
-            defer req.deinit(allocator);
-            const perm_result = evaluator.evaluate(&req);
-            switch (perm_result.action) {
-                .deny => {
-                    const msg = perm_result.error_message orelse "Permission denied";
-                    out("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
-                    if (active_audit_logger) |logger| {
-                        logger.logDecision(tool_name, "execute", .deny, perm_result.auto_approved) catch {};
-                    }
-                    return try ToolResult.init(allocator, call_id, msg, false);
-                },
-                .ask => {
-                    out("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
-                    var buf: [16]u8 = undefined;
-                    const stdin = file_compat.File.stdin().reader();
-                    const answer = stdin.readUntilDelimiterOrEof(&buf, '\n') catch "n" orelse "n";
-                    if (answer.len == 0 or !(answer[0] == 'y' or answer[0] == 'Y')) {
+            eval: {
+                var req = PermissionRequest.init(tool_name, "execute", allocator) catch |err| {
+                    std.log.warn("PermissionRequest.init failed: {} — skipping evaluator", .{err});
+                    break :eval;
+                };
+                defer req.deinit(allocator);
+                const perm_result = evaluator.evaluate(&req);
+                switch (perm_result.action) {
+                    .deny => {
+                        const msg = perm_result.error_message orelse "Permission denied";
+                        out("\n\x1b[31m[Permission Denied]\x1b[0m {s}\n", .{msg});
                         if (active_audit_logger) |logger| {
-                            logger.logDecision(tool_name, "execute", .deny, false) catch {};
+                            logger.logDecision(tool_name, "execute", .deny, perm_result.auto_approved) catch {};
                         }
-                        return try ToolResult.init(allocator, call_id, "User denied permission", false);
-                    }
-                    if (active_audit_logger) |logger| {
-                        logger.logDecision(tool_name, "execute", .allow, false) catch {};
-                    }
-                },
-                .allow => {
-                    out("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
-                    if (active_audit_logger) |logger| {
-                        logger.logDecision(tool_name, "execute", .allow, perm_result.auto_approved) catch {};
-                    }
-                },
+                        return try ToolResult.init(allocator, call_id, msg, false);
+                    },
+                    .ask => {
+                        out("\n\x1b[33m[Permission] {s} operation requested — allow? [y/N]\x1b[0m ", .{tool_name});
+                        var buf: [16]u8 = undefined;
+                        const stdin = file_compat.File.stdin().reader();
+                        const answer = stdin.readUntilDelimiterOrEof(&buf, '\n') catch "n" orelse "n";
+                        if (answer.len == 0 or !(answer[0] == 'y' or answer[0] == 'Y')) {
+                            if (active_audit_logger) |logger| {
+                                logger.logDecision(tool_name, "execute", .deny, false) catch {};
+                            }
+                            return try ToolResult.init(allocator, call_id, "User denied permission", false);
+                        }
+                        if (active_audit_logger) |logger| {
+                            logger.logDecision(tool_name, "execute", .allow, false) catch {};
+                        }
+                    },
+                    .allow => {
+                        out("\n\x1b[2m[Permission] {s} → allowed\x1b[0m\n", .{tool_name});
+                        if (active_audit_logger) |logger| {
+                            logger.logDecision(tool_name, "execute", .allow, perm_result.auto_approved) catch {};
+                        }
+                    },
+                }
             }
         } else {
             const is_shell = std.mem.eql(u8, tool_name, "shell");
@@ -614,70 +627,40 @@ fn executeShellTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall
         if (secs > 0) {
             const cmd = try std.fmt.allocPrint(allocator, "timeout --signal=KILL {d} sh -c {s}", .{ secs, parsed.value.command });
             defer allocator.free(cmd);
-            const argv: [3][]const u8 = .{ "sh", "-c", cmd };
-            var child = std.process.Child.init(&argv, allocator);
-            child.stdout_behavior = .Pipe;
-            child.stderr_behavior = .Pipe;
-
-            _ = try child.spawn();
-
-            var stdout = std.ArrayListUnmanaged(u8){};
-            var stderr = std.ArrayListUnmanaged(u8){};
+            const result = try process.runShellCommand(allocator, cmd);
             defer {
-                stdout.deinit(allocator);
-                stderr.deinit(allocator);
+                allocator.free(result.stdout);
+                allocator.free(result.stderr);
             }
-
-            try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-            const term = try child.wait();
-            const exit_code: u8 = switch (term) {
-                .Exited => |code| @intCast(code),
-                .Signal => |code| @intCast(code),
-                else => 1,
-            };
+            const exit_code = result.exit_code;
             const timed_out = exit_code == 124;
             // Truncate stdout only — preserve exit_code and stderr formatting
-            const truncated_stdout = try truncateToolOutput(allocator, stdout.items);
+            const truncated_stdout = try truncateToolOutput(allocator, result.stdout);
             defer {
-                if (truncated_stdout.ptr != stdout.items.ptr) allocator.free(truncated_stdout);
+                if (truncated_stdout.ptr != result.stdout.ptr) allocator.free(truncated_stdout);
             }
             return .{
                 .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\", timeout={d}s) → exit {d}{s}\n", .{ parsed.value.command, secs, exit_code, if (timed_out) " (TIMEOUT)" else "" }),
-                .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, stderr.items }),
+                .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, result.stderr }),
             };
         }
     }
 
-    const argv: [3][]const u8 = .{ "sh", "-c", parsed.value.command };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, parsed.value.command);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
-
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    const term = try child.wait();
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |code| @intCast(code),
-        else => 1,
-    };
+    const exit_code = result.exit_code;
 
     // Truncate stdout only — preserve exit_code and stderr formatting
-    const truncated_stdout = try truncateToolOutput(allocator, stdout.items);
+    const truncated_stdout = try truncateToolOutput(allocator, result.stdout);
     defer {
-        if (truncated_stdout.ptr != stdout.items.ptr) allocator.free(truncated_stdout);
+        if (truncated_stdout.ptr != result.stdout.ptr) allocator.free(truncated_stdout);
     }
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\") → exit {d}\n", .{ parsed.value.command, exit_code }),
-        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, stderr.items }),
+        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, result.stderr }),
     };
 }
 
@@ -752,33 +735,22 @@ fn executeGlobTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     const find_cmd = try std.fmt.allocPrint(allocator, "find . -name '{s}' -type f 2>/dev/null | head -{d}", .{ parsed.value.pattern, max });
     defer allocator.free(find_cmd);
 
-    const argv: [3][]const u8 = .{ "sh", "-c", find_cmd };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, find_cmd);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
     var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
+    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
     while (lines.next()) |line| {
         if (line.len > 0) count += 1;
     }
 
     // Truncate glob output
-    const truncated_output = try truncateToolOutput(allocator, stdout.items);
+    const truncated_output = try truncateToolOutput(allocator, result.stdout);
     defer {
-        if (truncated_output.ptr != stdout.items.ptr) allocator.free(truncated_output);
+        if (truncated_output.ptr != result.stdout.ptr) allocator.free(truncated_output);
     }
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 glob(\"{s}\") → {d} files\n", .{ parsed.value.pattern, count }),
@@ -883,33 +855,22 @@ fn tryExecuteGrep(allocator: std.mem.Allocator, pattern: []const u8, path: []con
     }
     try writer.print(" 2>/dev/null | head -{d}", .{max_results});
 
-    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, cmd_buf.items);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
     var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
+    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
     while (lines.next()) |line| {
         if (line.len > 0) count += 1;
     }
 
     // Truncate grep output
-    const truncated_output = try truncateToolOutput(allocator, stdout.items);
+    const truncated_output = try truncateToolOutput(allocator, result.stdout);
     defer {
-        if (truncated_output.ptr != stdout.items.ptr) allocator.free(truncated_output);
+        if (truncated_output.ptr != result.stdout.ptr) allocator.free(truncated_output);
     }
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 grep(\"{s}\") → {d} matches\n", .{ pattern, count }),
@@ -1052,27 +1013,12 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
 fn executeGitStatusTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     _ = tool_call;
 
-    const argv: [3][]const u8 = .{ "sh", "-c", "git status --porcelain 2>&1" };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, "git status --porcelain 2>&1");
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
-
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    const term = try child.wait();
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |code| @intCast(code),
-        else => 1,
-    };
+    const exit_code = result.exit_code;
 
     if (exit_code != 0) {
         return .{
@@ -1081,7 +1027,7 @@ fn executeGitStatusTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
         };
     }
 
-    const trimmed = std.mem.trim(u8, stdout.items, " \t\r\n");
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (trimmed.len == 0) {
         return .{
             .display = try std.fmt.allocPrint(allocator, "🔧 git_status → clean\n", .{}),
@@ -1131,24 +1077,13 @@ fn executeGitDiffTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCa
     // Redirect stderr to stdout so we can capture error messages
     try writer.writeAll(" 2>&1");
 
-    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, cmd_buf.items);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
-    const trimmed = std.mem.trim(u8, stdout.items, " \t\r\n");
+    const trimmed = std.mem.trim(u8, result.stdout, " \t\r\n");
     if (trimmed.len == 0) {
         return .{
             .display = try std.fmt.allocPrint(allocator, "🔧 git_diff → no changes\n", .{}),
@@ -1196,30 +1131,19 @@ fn executeGitLogTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCal
 
     try writer.writeAll(" 2>&1");
 
-    const argv: [3][]const u8 = .{ "sh", "-c", cmd_buf.items };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, cmd_buf.items);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
-    const truncated = try truncateToolOutput(allocator, stdout.items);
-    const truncated_owned = if (truncated.ptr == stdout.items.ptr) try allocator.dupe(u8, truncated) else truncated;
+    const truncated = try truncateToolOutput(allocator, result.stdout);
+    const truncated_owned = if (truncated.ptr == result.stdout.ptr) try allocator.dupe(u8, truncated) else truncated;
     defer {
-        if (truncated.ptr != stdout.items.ptr) allocator.free(truncated);
+        if (truncated.ptr != result.stdout.ptr) allocator.free(truncated);
     }
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 git_log(-n{d}) → {d} bytes\n", .{ count, stdout.items.len }),
+        .display = try std.fmt.allocPrint(allocator, "🔧 git_log(-n{d}) → {d} bytes\n", .{ count, result.stdout.len }),
         .result = truncated_owned,
     };
 }
@@ -1244,32 +1168,21 @@ fn executeSearchFilesTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     const find_cmd = try std.fmt.allocPrint(allocator, "find '{s}' -name '{s}' -type f 2>/dev/null | head -{d}", .{ directory, parsed.value.pattern, max_results });
     defer allocator.free(find_cmd);
 
-    const argv: [3][]const u8 = .{ "sh", "-c", find_cmd };
-    var child = std.process.Child.init(&argv, allocator);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Pipe;
-
-    _ = try child.spawn();
-
-    var stdout = std.ArrayListUnmanaged(u8){};
-    var stderr = std.ArrayListUnmanaged(u8){};
+    const result = try process.runShellCommand(allocator, find_cmd);
     defer {
-        stdout.deinit(allocator);
-        stderr.deinit(allocator);
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    try child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024);
-    _ = try child.wait();
-
     var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, stdout.items, "\n");
+    var lines = std.mem.splitSequence(u8, result.stdout, "\n");
     while (lines.next()) |line| {
         if (line.len > 0) count += 1;
     }
 
-    const truncated_output = try truncateToolOutput(allocator, stdout.items);
+    const truncated_output = try truncateToolOutput(allocator, result.stdout);
     defer {
-        if (truncated_output.ptr != stdout.items.ptr) allocator.free(truncated_output);
+        if (truncated_output.ptr != result.stdout.ptr) allocator.free(truncated_output);
     }
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 search_files(\"{s}\") → {d} files\n", .{ parsed.value.pattern, count }),
@@ -1658,46 +1571,9 @@ fn isLeapYear(year: u64) bool {
     return (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0);
 }
 
-fn countLines(text: []const u8) u32 {
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, text, "\n");
-    while (lines.next()) |_| {
-        count += 1;
-    }
-    return count;
-}
+const countLines = string_utils.countLines;
 
-/// Extract a string field value from a JSON string (simple inline parser).
-fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const u8 {
-    const full_needle = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{field_name}) catch return null;
-    defer std.heap.page_allocator.free(full_needle);
-
-    const idx = std.mem.indexOf(u8, json, full_needle) orelse return null;
-    const rest = json[idx + full_needle.len ..];
-
-    // Skip whitespace and colon
-    var i: usize = 0;
-    while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t' or rest[i] == '\n' or rest[i] == '\r' or rest[i] == ':')) {
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    // Expect opening quote
-    if (rest[i] != '"') return null;
-    i += 1;
-
-    // Find closing quote (handle escaped quotes)
-    const value_start = i;
-    while (i < rest.len) {
-        if (rest[i] == '"' and (i == 0 or rest[i - 1] != '\\')) {
-            break;
-        }
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    return rest[value_start..i];
-}
+const extractJsonStringField = json_helpers.extractJsonStringField;
 
 fn executeEditBatchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     const preview = edit_batch_mod.previewBatchEdit(allocator, tool_call.arguments) catch |err|
@@ -1810,76 +1686,48 @@ fn executeImageDisplayTool(allocator: std.mem.Allocator, tool_call: core.ParsedT
     };
 }
 
-fn executeLspDefinitionTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeDefinition(allocator, tool_call.arguments) catch |err|
+/// Generic LSP tool executor — eliminates 6 identical per-tool wrappers.
+/// The comptime `tool_name` is concatenated into format strings at compile time
+/// via Zig's `++` operator; `executor_fn` is monomorphised per call site.
+fn executeLspTool(
+    allocator: std.mem.Allocator,
+    tool_call: core.ParsedToolCall,
+    comptime tool_name: []const u8,
+    comptime executor_fn: fn (std.mem.Allocator, []const u8) anyerror![]const u8,
+) !ToolExecution {
+    const result = executor_fn(allocator, tool_call.arguments) catch |err|
         return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_definition → error: {s}\n", .{@errorName(err)}),
+            .display = try std.fmt.allocPrint(allocator, "🔧 " ++ tool_name ++ " → error: {s}\n", .{@errorName(err)}),
             .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
         };
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_definition → found\n", .{}),
+        .display = try std.fmt.allocPrint(allocator, "🔧 " ++ tool_name ++ " → success\n", .{}),
         .result = result,
     };
 }
 
-fn executeLspReferencesTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeReferences(allocator, tool_call.arguments) catch |err|
-        return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_references → error: {s}\n", .{@errorName(err)}),
-            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
-        };
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_references → found\n", .{}),
-        .result = result,
-    };
+fn executeLspDefinitionTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_definition", lsp_tools_mod.executeDefinition);
 }
 
-fn executeLspDiagnosticsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeDiagnostics(allocator, tool_call.arguments) catch |err|
-        return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_diagnostics → error: {s}\n", .{@errorName(err)}),
-            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
-        };
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_diagnostics → done\n", .{}),
-        .result = result,
-    };
+fn executeLspReferencesTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_references", lsp_tools_mod.executeReferences);
 }
 
-fn executeLspHoverTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeHover(allocator, tool_call.arguments) catch |err|
-        return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_hover → error: {s}\n", .{@errorName(err)}),
-            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
-        };
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_hover → found\n", .{}),
-        .result = result,
-    };
+fn executeLspDiagnosticsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_diagnostics", lsp_tools_mod.executeDiagnostics);
 }
 
-fn executeLspSymbolsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeSymbols(allocator, tool_call.arguments) catch |err|
-        return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_symbols → error: {s}\n", .{@errorName(err)}),
-            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
-        };
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_symbols → listed\n", .{}),
-        .result = result,
-    };
+fn executeLspHoverTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_hover", lsp_tools_mod.executeHover);
 }
 
-fn executeLspRenameTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
-    const result = lsp_tools_mod.executeRename(allocator, tool_call.arguments) catch |err|
-        return .{
-            .display = try std.fmt.allocPrint(allocator, "🔧 lsp_rename → error: {s}\n", .{@errorName(err)}),
-            .result = try std.fmt.allocPrint(allocator, "Error: {s}", .{@errorName(err)}),
-        };
-    return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 lsp_rename → preview\n", .{}),
-        .result = result,
-    };
+fn executeLspSymbolsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_symbols", lsp_tools_mod.executeSymbols);
+}
+
+fn executeLspRenameTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) anyerror!ToolExecution {
+    return executeLspTool(allocator, tool_call, "lsp_rename", lsp_tools_mod.executeRename);
 }
 
 fn executeTodoWriteTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
@@ -1924,95 +1772,44 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     if (tool_call.arguments.len == 0) {
         return buildValidationError(allocator, tool_call.name, "Tool call requires non-empty arguments JSON.");
     }
-    if (std.mem.eql(u8, tool_call.name, "read_file")) {
-        return executeReadFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "shell")) {
-        return executeShellTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "write_file")) {
-        return executeWriteFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "glob")) {
-        return executeGlobTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "grep")) {
-        return executeGrepTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "edit")) {
-        return executeEditTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "list_directory")) {
-        return executeListDirectoryTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "create_file")) {
-        return executeCreateFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "move_file")) {
-        return executeMoveFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "copy_file")) {
-        return executeCopyFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "delete_file")) {
-        return executeDeleteFileTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "file_info")) {
-        return executeFileInfoTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "git_status")) {
-        return executeGitStatusTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "git_diff")) {
-        return executeGitDiffTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "git_log")) {
-        return executeGitLogTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "search_files")) {
-        return executeSearchFilesTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "web_fetch")) {
-        return executeWebFetchTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "web_search")) {
-        return executeWebSearchTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "image_display")) {
-        return executeImageDisplayTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "edit_batch")) {
-        return executeEditBatchTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_definition")) {
-        return executeLspDefinitionTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_references")) {
-        return executeLspReferencesTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_diagnostics")) {
-        return executeLspDiagnosticsTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_hover")) {
-        return executeLspHoverTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_symbols")) {
-        return executeLspSymbolsTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "lsp_rename")) {
-        return executeLspRenameTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "todo_write")) {
-        return executeTodoWriteTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "apply_patch")) {
-        return executeApplyPatchTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "question")) {
-        return executeQuestionTool(allocator, tool_call);
-    }
-    if (std.mem.eql(u8, tool_call.name, "subagent")) {
-        return executeSubagentTool(allocator, tool_call);
+
+    const dispatch = [_]BuiltinDispatchEntry{
+        .{ .name = "read_file", .executor = executeReadFileTool },
+        .{ .name = "shell", .executor = executeShellTool },
+        .{ .name = "write_file", .executor = executeWriteFileTool },
+        .{ .name = "glob", .executor = executeGlobTool },
+        .{ .name = "grep", .executor = executeGrepTool },
+        .{ .name = "edit", .executor = executeEditTool },
+        .{ .name = "list_directory", .executor = executeListDirectoryTool },
+        .{ .name = "create_file", .executor = executeCreateFileTool },
+        .{ .name = "move_file", .executor = executeMoveFileTool },
+        .{ .name = "copy_file", .executor = executeCopyFileTool },
+        .{ .name = "delete_file", .executor = executeDeleteFileTool },
+        .{ .name = "file_info", .executor = executeFileInfoTool },
+        .{ .name = "git_status", .executor = executeGitStatusTool },
+        .{ .name = "git_diff", .executor = executeGitDiffTool },
+        .{ .name = "git_log", .executor = executeGitLogTool },
+        .{ .name = "search_files", .executor = executeSearchFilesTool },
+        .{ .name = "web_fetch", .executor = executeWebFetchTool },
+        .{ .name = "web_search", .executor = executeWebSearchTool },
+        .{ .name = "image_display", .executor = executeImageDisplayTool },
+        .{ .name = "edit_batch", .executor = executeEditBatchTool },
+        .{ .name = "lsp_definition", .executor = executeLspDefinitionTool },
+        .{ .name = "lsp_references", .executor = executeLspReferencesTool },
+        .{ .name = "lsp_diagnostics", .executor = executeLspDiagnosticsTool },
+        .{ .name = "lsp_hover", .executor = executeLspHoverTool },
+        .{ .name = "lsp_symbols", .executor = executeLspSymbolsTool },
+        .{ .name = "lsp_rename", .executor = executeLspRenameTool },
+        .{ .name = "todo_write", .executor = executeTodoWriteTool },
+        .{ .name = "apply_patch", .executor = executeApplyPatchTool },
+        .{ .name = "question", .executor = executeQuestionTool },
+        .{ .name = "subagent", .executor = executeSubagentTool },
+    };
+
+    for (dispatch) |entry| {
+        if (std.mem.eql(u8, tool_call.name, entry.name)) {
+            return entry.executor(allocator, tool_call);
+        }
     }
     return error.UnsupportedTool;
 }

@@ -4,6 +4,7 @@
 /// risk levels instead of executing tool calls directly. The user can then
 /// approve or reject individual steps before execution proceeds.
 const std = @import("std");
+const json_helpers = @import("json_helpers");
 const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
@@ -360,39 +361,7 @@ pub fn extractTargetFile(args: []const u8) []const u8 {
     return "";
 }
 
-/// Simple JSON string field extractor — finds "field_name":"value" pattern.
-/// Returns the value without quotes. Caller does NOT own the returned slice.
-fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const u8 {
-    // Look for "field_name"
-    const full_needle = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{field_name}) catch return null;
-    defer std.heap.page_allocator.free(full_needle);
-
-    const idx = std.mem.indexOf(u8, json, full_needle) orelse return null;
-    const rest = json[idx + full_needle.len ..];
-
-    // Skip whitespace and colon
-    var i: usize = 0;
-    while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t' or rest[i] == '\n' or rest[i] == '\r' or rest[i] == ':')) {
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    // Expect opening quote
-    if (rest[i] != '"') return null;
-    i += 1;
-
-    // Find closing quote (handle escaped quotes)
-    const value_start = i;
-    while (i < rest.len) {
-        if (rest[i] == '"' and (i == 0 or rest[i - 1] != '\\')) {
-            break;
-        }
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    return rest[value_start..i];
-}
+const extractJsonStringField = json_helpers.extractJsonStringField;
 
 // ── Tests ─────────────────────────────────────────────────────────────────
 

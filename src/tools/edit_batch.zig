@@ -1,4 +1,6 @@
 const std = @import("std");
+const string_utils = @import("string_utils");
+const json_helpers = @import("json_helpers");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
 
@@ -42,38 +44,7 @@ pub const BatchResult = struct {
     }
 };
 
-/// Extract a string field value from a JSON fragment.
-/// Finds `"field_name"` then skips to the next quoted string value.
-fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const u8 {
-    const full_needle = std.fmt.allocPrint(std.heap.page_allocator, "\"{s}\"", .{field_name}) catch return null;
-    defer std.heap.page_allocator.free(full_needle);
-
-    const idx = std.mem.indexOf(u8, json, full_needle) orelse return null;
-    const rest = json[idx + full_needle.len ..];
-
-    // Skip whitespace and colon
-    var i: usize = 0;
-    while (i < rest.len and (rest[i] == ' ' or rest[i] == '\t' or rest[i] == '\n' or rest[i] == '\r' or rest[i] == ':')) {
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    // Expect opening quote
-    if (rest[i] != '"') return null;
-    i += 1;
-
-    // Find closing quote (handle escaped quotes)
-    const value_start = i;
-    while (i < rest.len) {
-        if (rest[i] == '"' and (i == 0 or rest[i - 1] != '\\')) {
-            break;
-        }
-        i += 1;
-    }
-    if (i >= rest.len) return null;
-
-    return rest[value_start..i];
-}
+const extractJsonStringField = json_helpers.extractJsonStringField;
 
 /// Parse an operation string into the EditOperation enum.
 fn parseOperation(op_str: []const u8) EditOperation {
@@ -84,16 +55,7 @@ fn parseOperation(op_str: []const u8) EditOperation {
     return .create; // default fallback
 }
 
-/// Count the number of newline-separated lines in text.
-fn countLines(text: []const u8) u32 {
-    if (text.len == 0) return 0;
-    var count: u32 = 0;
-    var lines = std.mem.splitSequence(u8, text, "\n");
-    while (lines.next()) |_| {
-        count += 1;
-    }
-    return count;
-}
+const countLines = string_utils.countLines;
 
 /// Read entire file content into an allocated slice.
 fn readFileContent(allocator: Allocator, path: []const u8) ![]const u8 {

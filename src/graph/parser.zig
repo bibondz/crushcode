@@ -1,4 +1,5 @@
 const std = @import("std");
+const string_utils = @import("string_utils");
 const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
@@ -458,13 +459,7 @@ pub const SourceParser = struct {
     }
 
     /// Count lines in content
-    fn countLines(content: []const u8) u32 {
-        var count: u32 = 1;
-        for (content) |c| {
-            if (c == '\n') count += 1;
-        }
-        return count;
-    }
+    const countLines = string_utils.countLines;
 };
 
 // ============================================================================

@@ -136,7 +136,7 @@ pub const Bridge = struct {
 
     pub fn getToolSchemas(self: *Bridge, allocator: Allocator) Allocator.Error![]const client.ToolSchema {
         var schemas = array_list_compat.ArrayList(client.ToolSchema).init(allocator);
-        _ = schemas.ensureTotalCapacity(16) catch unreachable;
+        try schemas.ensureTotalCapacity(16);
 
         for (self.servers.items, 0..) |server, server_idx| {
             if (!server.connected) continue;

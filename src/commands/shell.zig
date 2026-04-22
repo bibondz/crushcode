@@ -1,4 +1,5 @@
 const std = @import("std");
+const string_utils = @import("string_utils");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
@@ -18,11 +19,9 @@ pub const MAX_OUTPUT_CHARS: usize = 30 * 1024;
 
 /// Count the number of newlines in a string
 fn countLines(text: []const u8) usize {
-    var count: usize = 0;
-    for (text) |c| {
-        if (c == '\n') count += 1;
-    }
-    return count;
+    // shell's countLines counts newline characters (not lines)
+    const lines = string_utils.countLines(text);
+    return if (lines == 0) 0 else @intCast(lines - 1);
 }
 
 /// Truncate output to MAX_OUTPUT_CHARS using smart midpoint style:

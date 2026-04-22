@@ -1,4 +1,5 @@
 const std = @import("std");
+const string_utils = @import("string_utils");
 const Allocator = std.mem.Allocator;
 
 /// Compression level applied to file content based on relevance score.
@@ -398,14 +399,7 @@ fn countTypes(content: []const u8) u32 {
     return count;
 }
 
-fn countLines(content: []const u8) u32 {
-    if (content.len == 0) return 0;
-    var count: u32 = 1;
-    for (content) |ch| {
-        if (ch == '\n') count += 1;
-    }
-    return count;
-}
+const countLines = string_utils.countLines;
 
 // ── Tests ──────────────────────────────────────────────────────────────────────
 

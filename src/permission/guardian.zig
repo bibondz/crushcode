@@ -155,7 +155,7 @@ pub const Guardian = struct {
                 .reason = std.fmt.allocPrint(self.allocator, "Operation '{s}' requires approval", .{operation}) catch null,
                 .hook_results = hook_results,
             },
-            .never => unreachable, // handled above
+            .never => unreachable, // exhaustive switch: .never is handled in step 1 (sensitive path check)
         };
     }
 
