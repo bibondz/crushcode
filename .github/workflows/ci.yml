@@ -17,8 +17,11 @@ jobs:
         with:
           version: 0.15.2
 
-      - name: Build
+      - name: Build (Debug)
         run: zig build
+
+      - name: Build (Release)
+        run: zig build -Doptimize=ReleaseSmall
 
       - name: Run shared module tests
         run: |
@@ -36,3 +39,12 @@ jobs:
       - name: Check formatting
         run: zig fmt --check src/
         continue-on-error: true
+
+      - name: Report binary size
+        run: |
+          echo "### Binary Sizes" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | Size |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Debug | $(du -h zig-out/bin/crushcode | cut -f1) |" >> $GITHUB_STEP_SUMMARY
+          zig build -Doptimize=ReleaseSmall
+          echo "| ReleaseSmall | $(du -h zig-out/bin/crushcode | cut -f1) |" >> $GITHUB_STEP_SUMMARY
