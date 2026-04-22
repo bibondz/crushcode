@@ -353,4 +353,11 @@ pub const builtin_tool_schemas = [_]core.ToolSchema{
         \\{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"header":{"type":"string"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string"}},"required":["label","description"]}},"multiple":{"type":"boolean"}},"required":["question","header","options"]}}},"required":["questions"]}
         ,
     },
+    .{
+        .name = "subagent",
+        .description = "Spawn a focused sub-agent to handle a specific task. Returns the sub-agent's output.",
+        .parameters =
+        \\{"type":"object","properties":{"description":{"type":"string","description":"Short description of the task"},"prompt":{"type":"string","description":"Detailed instructions for the sub-agent"},"category":{"type":"string","enum":["visual_engineering","deep","quick","general","review","research"],"description":"Agent category"},"tools_allowed":{"type":"array","items":{"type":"string"},"description":"Restrict which tools the sub-agent can use"}},"required":["description","prompt"]}
+        ,
+    },
 };

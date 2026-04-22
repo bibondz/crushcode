@@ -3999,14 +3999,31 @@ pub const Model = struct {
             try self.addMessageUnlocked("assistant", result);
         } else if (std.mem.eql(u8, name, "/commit") or std.mem.startsWith(u8, name, "/commit ")) {
             const commit_args = std.mem.trim(u8, name["/commit".len..], " ");
-            const result = commit_mod.runCommit(self.allocator, commit_args) catch {
-                try self.addMessageUnlocked("assistant", "Commit analysis failed. Make sure you are in a git repository.");
-                ctx.redraw = true;
-                return;
-            };
-            defer self.allocator.free(result);
-            try self.addMessageUnlocked("assistant", result);
-        }
+             const result = commit_mod.runCommit(self.allocator, commit_args) catch {
+                 try self.addMessageUnlocked("assistant", "Commit analysis failed. Make sure you are in a git repository.");
+                 ctx.redraw = true;
+                 return;
+             };
+             defer self.allocator.free(result);
+             try self.addMessageUnlocked("assistant", result);
+        } else if (std.mem.eql(u8, name, "/recipe") or std.mem.startsWith(u8, name, "/recipe ")) {
+            const recipe_args = std.mem.trim(u8, name["/recipe".len..], " ");
+            if (recipe_args.len == 0 or std.mem.eql(u8, recipe_args, "list")) {
+                try self.addMessageUnlocked("system", "📋 Recipe commands: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
+            } else if (std.mem.startsWith(u8, recipe_args, "show ")) {
+                const recipe_name = recipe_args[5..];
+                const msg = try std.fmt.allocPrint(self.allocator, "📋 Showing recipe: {s}", .{recipe_name});
+                defer self.allocator.free(msg);
+                try self.addMessageUnlocked("system", msg);
+            } else if (std.mem.startsWith(u8, recipe_args, "run ")) {
+                const rest = recipe_args[4..];
+                const msg = try std.fmt.allocPrint(self.allocator, "📋 Running recipe: {s}", .{rest});
+                defer self.allocator.free(msg);
+                try self.addMessageUnlocked("assistant", msg);
+            } else {
+                try self.addMessageUnlocked("system", "📋 Usage: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
+            }
+         }
 
         ctx.redraw = true;
     }

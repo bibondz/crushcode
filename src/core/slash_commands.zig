@@ -54,6 +54,7 @@ pub const all_slash_command_names = [_][]const u8{
     "/rewind",
     "/compress",
     "/doctor",   "/review",   "/commit",
+    "/recipe",
 };
 
 /// Check if a string is a recognized slash command.

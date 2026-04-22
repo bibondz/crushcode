@@ -22,6 +22,7 @@ const todo_mod = @import("todo");
 const apply_patch_mod = @import("apply_patch");
 const question_mod = @import("question");
 const hooks_mod = @import("hooks_registry");
+const subagent_mod = @import("subagent");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -464,6 +465,10 @@ fn questionExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments
     return adaptToolExecution(allocator, call_id, "question", arguments, executeQuestionTool);
 }
 
+fn subagentExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "subagent", arguments, executeSubagentTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -494,6 +499,7 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "todo_write", .executor = todoWriteExecutor },
     .{ .name = "apply_patch", .executor = applyPatchExecutor },
     .{ .name = "question", .executor = questionExecutor },
+    .{ .name = "subagent", .executor = subagentExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -1845,6 +1851,15 @@ fn executeQuestionTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     };
 }
 
+fn executeSubagentTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = subagent_mod.executeSubagentTool(allocator, tool_call.arguments) catch |err|
+        return buildToolFailure(allocator, tool_call, err);
+    return .{
+        .display = result.display,
+        .result = result.result,
+    };
+}
+
 pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     // Guard: empty arguments would cause a confusing JSON parse error downstream;
     // return a descriptive validation error instead.
@@ -1937,6 +1952,9 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "question")) {
         return executeQuestionTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "subagent")) {
+        return executeSubagentTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }

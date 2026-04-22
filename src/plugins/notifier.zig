@@ -3,12 +3,67 @@ const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
+/// Severity level for notifications, used to map to platform urgency levels.
+const Severity = enum {
+    info,
+    success,
+    warning,
+    err,
+};
+
+/// Detected notification backend for the current platform.
+const NotifierType = enum {
+    notify_send,
+    osascript,
+    terminal_notifier,
+    none,
+};
+
+/// Cached result of detectNotifier(). Set once on first call.
+var cached_notifier: ?NotifierType = null;
+
+/// Check if a command exists in PATH by running `which`.
+fn commandExists(cmd: []const u8) bool {
+    var child = std.process.Child.init(&[_][]const u8{ "which", cmd }, std.heap.page_allocator);
+    child.stdin_behavior = .Ignore;
+    child.stdout_behavior = .Ignore;
+    child.stderr_behavior = .Ignore;
+    const result = child.spawnAndWait() catch return false;
+    return switch (result) {
+        .Exited => |code| code == 0,
+        else => false,
+    };
+}
+
+/// Detect the best available notification backend for the current OS.
+/// Result is cached after the first call.
+fn detectNotifier() NotifierType {
+    if (cached_notifier) |n| return n;
+
+    const result: NotifierType = blk: {
+        if (builtin.target.os.tag == .macos) {
+            if (commandExists("terminal-notifier")) break :blk .terminal_notifier;
+            if (commandExists("osascript")) break :blk .osascript;
+            break :blk .none;
+        } else if (builtin.target.os.tag == .windows) {
+            break :blk .none;
+        } else {
+            // Linux / BSD / other Unix
+            if (commandExists("notify-send")) break :blk .notify_send;
+            break :blk .none;
+        }
+    };
+    cached_notifier = result;
+    return result;
+}
+
 pub const NotifierPlugin = struct {
     allocator: Allocator,
     enabled: bool,
     sound_enabled: bool,
     notification_enabled: bool,
     custom_commands: std.StringHashMap([]const u8),
+    current_severity: Severity,
 
     pub fn init(allocator: Allocator) NotifierPlugin {
         return NotifierPlugin{
@@ -17,6 +72,7 @@ pub const NotifierPlugin = struct {
             .sound_enabled = true,
             .notification_enabled = true,
             .custom_commands = std.StringHashMap([]const u8).init(allocator),
+            .current_severity = .info,
         };
     }
 
@@ -42,6 +98,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Crushcode session started: {s}", .{event.session_id.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .info;
         try self.showNotification("Session Started", message);
         try self.playSound("session_start");
     }
@@ -52,6 +109,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Crushcode session completed: {s}", .{event.session_id.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .success;
         try self.showNotification("Session Completed", message);
         try self.playSound("session_complete");
     }
@@ -62,6 +120,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Permission requested for: {s}", .{event.permission.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .info;
         try self.showNotification("Permission Request", message);
         try self.playSound("permission_request");
     }
@@ -72,6 +131,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Permission updated: {s} = {}", .{ event.permission.?, event.permission_granted.? });
         defer self.allocator.free(message);
 
+        self.current_severity = .info;
         try self.showNotification("Permission Updated", message);
         try self.playSound("permission_update");
     }
@@ -82,6 +142,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Task started: {s}", .{event.task_name.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .info;
         try self.showNotification("Task Started", message);
         try self.playSound("task_start");
     }
@@ -92,6 +153,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Task completed: {s}", .{event.task_name.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .success;
         try self.showNotification("Task Completed", message);
         try self.playSound("task_complete");
     }
@@ -102,6 +164,7 @@ pub const NotifierPlugin = struct {
         const message = try std.fmt.allocPrint(self.allocator, "Error occurred: {s}", .{event.error_message.?});
         defer self.allocator.free(message);
 
+        self.current_severity = .err;
         try self.showNotification("Error", message);
         try self.playSound("error");
     }
@@ -116,21 +179,96 @@ pub const NotifierPlugin = struct {
         }
     }
 
+    /// Map Severity to notify-send urgency level string.
+    fn urgencyFromSeverity(severity: Severity) []const u8 {
+        return switch (severity) {
+            .info => "low",
+            .success => "normal",
+            .warning => "normal",
+            .err => "critical",
+        };
+    }
+
     fn showWindowsNotification(self: *NotifierPlugin, title: []const u8, message: []const u8) !void {
         _ = self;
-        // In a real implementation, this would use Windows API
-        // For now, just print to console
-        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {s}: {s}", .{ title, message });
-        defer std.heap.page_allocator.free(full_message);
-        std.log.info("{s}", .{full_message});
+        // Use PowerShell toast notification on Windows
+        const script = try std.fmt.allocPrint(std.heap.page_allocator,
+            \\[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
+            \\$template = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent(0)
+            \\$text = $template.GetElementsByTagName('text')[0]
+            \\$text.AppendChild($template.CreateTextNode('{s}')) | Out-Null
+            \\$toast = [Windows.UI.Notifications.ToastNotification]::new($template)
+            \\[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Crushcode').Show($toast)
+        , .{message});
+        defer std.heap.page_allocator.free(script);
+
+        var child = std.process.Child.init(&[_][]const u8{
+            "powershell", "-Command", script,
+        }, std.heap.page_allocator);
+        child.stdin_behavior = .Ignore;
+        child.stdout_behavior = .Ignore;
+        child.stderr_behavior = .Ignore;
+        _ = child.spawnAndWait() catch {
+            // Fallback to log
+            std.log.info("[Notification] {s}: {s}", .{ title, message });
+        };
     }
 
     fn showUnixNotification(self: *NotifierPlugin, title: []const u8, message: []const u8) !void {
-        _ = self;
-        // Use notify-send or similar on Unix systems
-        const full_message = try std.fmt.allocPrint(std.heap.page_allocator, "[NOTIFICATION] {s}: {s}", .{ title, message });
-        defer std.heap.page_allocator.free(full_message);
-        std.log.info("{s}", .{full_message});
+        if (!self.notification_enabled) return;
+
+        const notifier = detectNotifier();
+        switch (notifier) {
+            .notify_send => {
+                const urgency = urgencyFromSeverity(self.current_severity);
+                var child = std.process.Child.init(&[_][]const u8{
+                    "notify-send",
+                    "-u", urgency,
+                    "-t", "5000",
+                    title,
+                    message,
+                }, self.allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+                _ = child.spawnAndWait() catch |err| {
+                    std.log.warn("notify-send failed: {}", .{err});
+                    return;
+                };
+            },
+            .osascript => {
+                const script = try std.fmt.allocPrint(self.allocator,
+                    "display notification \"{s}\" with title \"{s}\" sound name \"default\"",
+                    .{ message, title },
+                );
+                defer self.allocator.free(script);
+                var child = std.process.Child.init(&[_][]const u8{
+                    "osascript", "-e", script,
+                }, self.allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+                _ = child.spawnAndWait() catch |err| {
+                    std.log.warn("osascript notification failed: {}", .{err});
+                    return;
+                };
+            },
+            .terminal_notifier => {
+                var child = std.process.Child.init(&[_][]const u8{
+                    "terminal-notifier",
+                    "-title", title,
+                    "-message", message,
+                }, self.allocator);
+                child.stdin_behavior = .Ignore;
+                child.stdout_behavior = .Ignore;
+                child.stderr_behavior = .Ignore;
+                _ = child.spawnAndWait() catch return;
+            },
+            .none => {
+                // Fallback: just log
+                std.log.info("[Notification] {s}: {s}", .{ title, message });
+            },
+        }
     }
 
     fn playSound(self: *NotifierPlugin, sound_type: []const u8) !void {

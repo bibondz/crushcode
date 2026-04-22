@@ -178,6 +178,7 @@ pub fn build(b: *std.Build) !void {
     const todo_mod = simpleMod(b, "src/tools/todo.zig", target, optimize);
     const apply_patch_mod = simpleMod(b, "src/tools/apply_patch.zig", target, optimize);
     const question_mod = simpleMod(b, "src/tools/question.zig", target, optimize);
+    const subagent_mod = simpleMod(b, "src/tools/subagent.zig", target, optimize);
     const fork_mod = createMod(b, "src/session/fork.zig", target, optimize, &.{
         imp("session", session_mod),
     });
@@ -553,6 +554,18 @@ pub fn build(b: *std.Build) !void {
     const doctor_mod = createMod(b, "src/commands/doctor.zig", target, optimize, &.{imp("shell", shell_mod)});
     const review_mod = createMod(b, "src/commands/review.zig", target, optimize, &.{imp("shell", shell_mod)});
     const commit_mod = createMod(b, "src/commands/commit.zig", target, optimize, &.{imp("shell", shell_mod)});
+    const recipe_mod = createMod(b, "src/recipes/recipe.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+    });
+    const recipe_loader_mod = createMod(b, "src/recipes/loader.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("recipe", recipe_mod),
+    });
+    const recipe_runner_mod = createMod(b, "src/recipes/runner.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("recipe", recipe_mod),
+        imp("loader", recipe_loader_mod),
+    });
     const worker_mod = simpleMod(b, "src/agent/worker.zig", target, optimize);
     const worker_runner_mod = createMod(b, "src/agent/worker_runner.zig", target, optimize, &.{
         imp("worker", worker_mod),
@@ -565,6 +578,7 @@ pub fn build(b: *std.Build) !void {
     const user_model_mod = simpleMod(b, "src/agent/user_model.zig", target, optimize);
     const feedback_mod = simpleMod(b, "src/agent/feedback.zig", target, optimize);
     const delegate_mod = simpleMod(b, "src/agent/delegate.zig", target, optimize);
+    addImports(subagent_mod, &.{imp("delegate", delegate_mod)});
     const moa_mod = simpleMod(b, "src/agent/moa.zig", target, optimize);
     const team_coordinator_mod = createMod(b, "src/agent/team_coordinator.zig", target, optimize, &.{
         imp("registry", registry_mod),
@@ -708,7 +722,7 @@ pub fn build(b: *std.Build) !void {
         imp("orchestration", orchestration_mod),
     });
     addImports(tui_mod, &.{ imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod), imp("parallel", parallel_mod), imp("memory", memory_mod), imp("usage_budget", usage_budget_mod), imp("chat_tool_executors", chat_tool_executors_mod), imp("mcp_bridge", mcp_bridge_mod), imp("mcp_client", mcp_client_mod), imp("compaction", compaction_mod), imp("lifecycle_hooks", lifecycle_hooks_mod), imp("hybrid_bridge", hybrid_bridge_mod), imp("plugin_manager", plugin_manager_mod), imp("guardian", guardian_mod), imp("cognition", cognition_mod), imp("autopilot", autopilot_mod), imp("crush_mode", crush_mode_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod), imp("slash_commands", slash_commands_mod), imp("user_model", user_model_mod), imp("auto_gen", auto_gen_mod), imp("feedback", feedback_mod), imp("plan_handler", plan_handler_mod), imp("delegate", delegate_mod), imp("session_db", session_db_mod), imp("cost_dashboard", cost_dashboard_mod), imp("fork", fork_mod) });
-    addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod), imp("semantic_compressor", semantic_compressor_mod), imp("doctor", doctor_mod), imp("review", review_mod), imp("commit", commit_mod)});
+    addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod), imp("semantic_compressor", semantic_compressor_mod), imp("doctor", doctor_mod), imp("review", review_mod), imp("commit", commit_mod), imp("recipe", recipe_mod), imp("loader", recipe_loader_mod), imp("runner", recipe_runner_mod)});
     addImports(tui_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod)});
     addImports(tui_mod, &.{imp("hooks_registry", hooks_registry_mod), imp("hooks_config", hooks_config_mod)});
     addImports(chat_tool_executors_mod, &.{
@@ -717,7 +731,7 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_tool_executors_mod, &.{imp("myers", myers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("file_tracker", file_tracker_mod)});
-    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod), imp("edit_batch", edit_batch_mod), imp("lsp_tools", lsp_tools_mod), imp("todo", todo_mod), imp("apply_patch", apply_patch_mod), imp("question", question_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("web_fetch", web_fetch_mod), imp("web_search", web_search_mod), imp("image_display", image_display_mod), imp("edit_batch", edit_batch_mod), imp("lsp_tools", lsp_tools_mod), imp("todo", todo_mod), imp("apply_patch", apply_patch_mod), imp("question", question_mod), imp("subagent", subagent_mod)});
     addImports(todo_mod, &.{imp("core_api", core_api_mod)});
     addImports(apply_patch_mod, &.{imp("core_api", core_api_mod)});
     addImports(question_mod, &.{imp("core_api", core_api_mod), imp("file_compat", compat_file_mod)});
@@ -783,12 +797,16 @@ pub fn build(b: *std.Build) !void {
         todo_mod,
         apply_patch_mod,
         question_mod,
+        subagent_mod,
         auto_classifier_mod,
         hooks_registry_mod,
         hooks_config_mod,
         doctor_mod,
         review_mod,
         commit_mod,
+        recipe_mod,
+        recipe_loader_mod,
+        recipe_runner_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -900,11 +918,15 @@ pub fn build(b: *std.Build) !void {
         todo_mod,
         apply_patch_mod,
         question_mod,
+        subagent_mod,
         hooks_registry_mod,
         hooks_config_mod,
         doctor_mod,
         review_mod,
         commit_mod,
+        recipe_mod,
+        recipe_loader_mod,
+        recipe_runner_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
