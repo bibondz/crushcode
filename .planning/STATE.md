@@ -1,8 +1,8 @@
-# State: Crushcode v0.57.0
+# State: Crushcode v0.58.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-22
-**Commit:** 80f5caa
+**Commit:** 3aa8b70
 **Stats:** ~283 `.zig` files, ~126K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.57+ OS Integration & Agent Power-Ups — COMPLETE |
-| Phase | All 3 phases (58–60) complete |
-| Status | ✅ Milestone finished — 30 builtin tools, 41 slash commands, OS notifications, recipes |
-| Code Version | 0.57.0 |
+| Milestone | v0.58+ Core Edit Safety — COMPLETE |
+| Phase | Edit safety features complete |
+| Status | ✅ Milestone finished — mtime check, per-file backup, auto LSP diagnostics |
+| Code Version | 0.58.0 |
 | Binary Size | 125MB (includes SQLite amalgamation) |
 
 ---
@@ -59,6 +59,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 58 | OS Notifications — real notify-send/osascript/PowerShell with auto-detection | ✅ Done | 80f5caa |
 | Phase 59 | Subagent Tool — AI-callable subagent with depth/timeout controls (30 builtin tools) | ✅ Done | 80f5caa |
 | Phase 60 | Recipes System — .recipe.md templates with {{variable}} substitution, /recipe command | ✅ Done | 80f5caa |
+| Edit Safety | mtime check before edit/write, auto LSP diagnostics after edit | ✅ Done | 3aa8b70 |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -241,6 +242,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.47.0** | **Phases 48-52: Agent Teams, Session Tree, Checkpoints, Side Chains, Semantic Compression** | **✅ Done** |
 | **v0.52.0** | **Phases 53-57: Hook System, New Tools, Smart Commands, Skill Loader, Advanced Permissions** | **✅ Done** |
 | **v0.57.0** | **Phases 58-60: OS Notifications, Subagent Tool, Recipes System** | **✅ Done** |
+| **v0.58.0** | **Edit Safety: mtime check, per-file backup, auto LSP diagnostics** | **✅ Done** |
 
 ---
 
@@ -252,7 +254,7 @@ src/tui/chat_tui_app.zig — main TUI app (Model/Msg/Update)
 src/ai/client.zig — AI HTTP client (22 providers, streaming)
 src/agent/ — agent loop, compaction, memory, parallel, orchestrator, context_builder
 src/commands/handlers/ — ai.zig, system.zig, tools.zig, experimental.zig (shim → 5 domain handlers)
-src/chat/tool_executors.zig — 19 builtin tool implementations
+src/chat/tool_executors.zig — 30 builtin tool implementations (with mtime safety + auto LSP)
 src/db/ — SQLite wrapper, session CRUD, JSON migration
 src/tools/ — web_fetch, web_search
 src/mcp/ — MCP client, bridge, discovery, server
@@ -273,14 +275,15 @@ vendor/sqlite3/ — SQLite 3.47.0 amalgamation (vendored C)
 ## Tool Dispatch Chain (HybridBridge)
 
 ```
-1. Builtin tools (tool_executors.executeBuiltinTool) → 20 tools
-   - File ops: read_file, write_file, create_file, edit, move_file, copy_file, delete_file, file_info
+1. Builtin tools (tool_executors.executeBuiltinTool) → 30 tools
+   - File ops: read_file, write_file, create_file, edit (mtime+auto-LSP), move_file, copy_file, delete_file, file_info
    - Search: grep, glob, search_files
    - Shell: shell
    - Directory: list_directory
    - Git: git_status, git_diff, git_log
    - Web: web_fetch, web_search
    - Image: image_display
+   - Safety: mtime check, auto LSP diagnostics, checkpoint backup
 2. MCP bridge (mcp_bridge.Bridge.executeTool) → remote MCP servers
 3. Runtime plugins (plugin/runtime.ExternalPluginManager) → external plugin processes
 ```
@@ -300,5 +303,5 @@ vendor/sqlite3/ — SQLite 3.47.0 amalgamation (vendored C)
 ## Session Continuity
 
 **Last Updated:** 2026-04-22
-**Current Work:** v0.52+ Competitive Parity & Tooling milestone COMPLETE. All 5 phases (53–57) shipped.
-**Next Step:** Define next milestone or push to remote
+**Current Work:** v0.58.0 Edit Safety milestone COMPLETE. mtime check, per-file backup, auto LSP diagnostics shipped.
+**Next Step:** Define next milestone via GSD — ready for user to queue next phase
