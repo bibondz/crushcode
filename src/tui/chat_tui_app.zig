@@ -77,6 +77,9 @@ const session_time_mod = @import("model/session_time.zig");
 const mcp_status_mod = @import("model/mcp_status.zig");
 const notifications_mod = @import("model/notifications.zig");
 const token_tracking_mod = @import("model/token_tracking.zig");
+const session_mgmt = @import("model/session_mgmt.zig");
+const status_mod = @import("model/status.zig");
+const streaming = @import("model/streaming.zig");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -98,8 +101,6 @@ const session_row_display_max = widget_types.session_row_display_max;
 const recent_file_tool_names = widget_types.recent_file_tool_names;
 const context_source_files = widget_types.context_source_files;
 const builtin_tool_schemas = widget_types.builtin_tool_schemas;
-
-threadlocal var active_stream_model: ?*Model = null;
 
 // Widgets from widget_messages
 const RoleLabelWidget = widget_messages.RoleLabelWidget;
@@ -604,7 +605,7 @@ pub const Model = struct {
             model.memory.load() catch {}; // non-fatal
         }
 
-        try model.prepareStartupSessionState();
+        try session_mgmt.prepareStartupSessionState(model);
         if (model.setup_phase != 0) {
             const selected_provider = setup_provider_data[model.setup_provider_index];
             if (model.provider_name.len == 0) {
@@ -665,7 +666,7 @@ pub const Model = struct {
         if (self.status_message.len > 0) self.allocator.free(self.status_message);
         if (self.setup_feedback.len > 0) self.allocator.free(self.setup_feedback);
         if (self.current_session) |*session| session_mod.deinitSession(self.allocator, session);
-        self.clearSessionListOwned();
+        session_mgmt.clearSessionListOwned(self);
         if (self.resume_prompt_session) |*session| session_mod.deinitSession(self.allocator, session);
         if (self.resume_prompt_path) |path| self.allocator.free(path);
         if (self.session_path.len > 0) self.allocator.free(self.session_path);
@@ -750,145 +751,13 @@ pub const Model = struct {
         try self.app.run(self.widget(), .{ .framerate = 30 });
     }
 
-    fn prepareStartupSessionState(self: *Model) !void {
-        const interrupted = try self.findInterruptedSessionCandidate();
-        errdefer if (interrupted) |candidate| {
-            var session = candidate.session;
-            session_mod.deinitSession(self.allocator, &session);
-            self.allocator.free(candidate.path);
-        };
-
-        try self.beginNewSessionUnlocked();
-        if (interrupted) |candidate| {
-            self.resume_prompt_session = candidate.session;
-            self.resume_prompt_path = candidate.path;
-        }
-    }
-
-    fn beginNewSessionUnlocked(self: *Model) !void {
-        const now = std.time.timestamp();
-        var session = session_mod.Session{
-            .id = try session_mod.generateSessionId(self.allocator),
-            .created_at = now,
-            .updated_at = now,
-            .title = try self.allocator.dupe(u8, "New session"),
-            .messages = try self.allocator.alloc(session_mod.Message, 0),
-            .model = try self.allocator.dupe(u8, self.model_name),
-            .provider = try self.allocator.dupe(u8, self.provider_name),
-            .total_tokens = 0,
-            .total_cost = 0,
-            .turn_count = 0,
-            .duration_seconds = 0,
-        };
-        errdefer session_mod.deinitSession(self.allocator, &session);
-
-        const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session.id);
-        errdefer self.allocator.free(path);
-
-        try session_mod.saveSession(self.allocator, self.session_dir, &session);
-
-        if (self.current_session) |*existing| session_mod.deinitSession(self.allocator, existing);
-        self.current_session = session;
-        if (self.session_path.len > 0) self.allocator.free(self.session_path);
-        self.session_path = path;
-        self.session_start = std.time.nanoTimestamp();
-    }
-
-    fn findInterruptedSessionCandidate(self: *Model) !?InterruptedSessionCandidate {
-        const sessions = try session_mod.listSessions(self.allocator, self.session_dir);
-        defer self.allocator.free(sessions);
-
-        const now = std.time.timestamp();
-        for (sessions, 0..) |session, index| {
-            if (session.updated_at + 300 >= now) continue;
-            if (!session_mod.isInterrupted(&session)) continue;
-
-            const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session.id);
-            for (sessions, 0..) |*other, other_index| {
-                if (other_index == index) continue;
-                session_mod.deinitSession(self.allocator, other);
-            }
-            return .{ .session = session, .path = path };
-        }
-
-        for (sessions) |*session| session_mod.deinitSession(self.allocator, session);
-        return null;
-    }
-
-    fn clearRecentFilesUnlocked(self: *Model) void {
-        for (self.recent_files.items) |file| self.allocator.free(file);
-        self.recent_files.clearRetainingCapacity();
-    }
-
-    fn clearSessionListOwned(self: *Model) void {
-        if (self.session_list.len == 0) {
-            self.session_list = &.{};
-            self.session_list_selected = 0;
-            self.show_session_list = false;
-            return;
-        }
-        for (self.session_list) |*session| session_mod.deinitSession(self.allocator, session);
-        self.allocator.free(self.session_list);
-        self.session_list = &.{};
-        self.session_list_selected = 0;
-        self.show_session_list = false;
-    }
-
-    fn clearResumePromptOwned(self: *Model) void {
-        if (self.resume_prompt_session) |*session| {
-            session_mod.deinitSession(self.allocator, session);
-            self.resume_prompt_session = null;
-        }
-        if (self.resume_prompt_path) |path| {
-            self.allocator.free(path);
-            self.resume_prompt_path = null;
-        }
-    }
-
-    fn saveSessionSnapshotUnlocked(self: *Model) !void {
-        const current = self.current_session orelse return;
-        var snapshot = session_mod.Session{
-            .id = try self.allocator.dupe(u8, current.id),
-            .created_at = current.created_at,
-            .updated_at = std.time.timestamp(),
-            .title = try self.allocator.dupe(u8, current.title),
-            .messages = try self.buildSessionMessagesUnlocked(),
-            .model = try self.allocator.dupe(u8, self.model_name),
-            .provider = try self.allocator.dupe(u8, self.provider_name),
-            .total_tokens = self.total_input_tokens + self.total_output_tokens,
-            .total_cost = token_tracking_mod.estimatedCostUsd(self),
-            .turn_count = self.request_count,
-            .duration_seconds = @intCast(@min(session_time_mod.sessionElapsedSeconds(self), std.math.maxInt(u32))),
-        };
-        errdefer session_mod.deinitSession(self.allocator, &snapshot);
-
-        try session_mod.saveSession(self.allocator, self.session_dir, &snapshot);
-        if (self.current_session) |*existing| session_mod.deinitSession(self.allocator, existing);
-        self.current_session = snapshot;
-    }
-
-    fn buildSessionMessagesUnlocked(self: *Model) ![]session_mod.Message {
-        const copied = try self.allocator.alloc(session_mod.Message, self.messages.items.len);
-        errdefer self.allocator.free(copied);
-
-        for (self.messages.items, 0..) |message, index| {
-            copied[index] = .{
-                .role = try self.allocator.dupe(u8, message.role),
-                .content = try self.allocator.dupe(u8, message.content),
-                .tool_call_id = if (message.tool_call_id) |tool_call_id| try self.allocator.dupe(u8, tool_call_id) else null,
-                .tool_calls = try cloneToolCallInfos(self.allocator, message.tool_calls),
-            };
-        }
-        return copied;
-    }
-
     fn restoreSessionUnlocked(self: *Model, session: session_mod.Session, path: []const u8) !void {
         var owned_session = session;
         errdefer session_mod.deinitSession(self.allocator, &owned_session);
 
         history_mod.clearMessagesUnlocked(self);
         history_mod.clearHistoryUnlocked(self);
-        self.clearRecentFilesUnlocked();
+        session_mgmt.clearRecentFilesUnlocked(self);
         self.assistant_stream_index = null;
         self.awaiting_first_token = false;
         self.request_active = false;
@@ -930,7 +799,7 @@ pub const Model = struct {
 
         const status = try std.fmt.allocPrint(self.allocator, "Resumed session {s}", .{owned_session.id});
         defer self.allocator.free(status);
-        try self.setStatusMessageUnlocked(status);
+        try status_mod.setStatusMessageUnlocked(self, status);
     }
 
     fn refreshClientForSessionResumeUnlocked(self: *Model) !void {
@@ -962,11 +831,11 @@ pub const Model = struct {
         }
 
         const provider = self.registry.getProvider(self.provider_name) orelse {
-            try self.setStatusMessageUnlocked("Resumed session provider is not registered.");
+            try status_mod.setStatusMessageUnlocked(self, "Resumed session provider is not registered.");
             return;
         };
         if (self.api_key.len == 0 and !provider.config.is_local) {
-            try self.setStatusMessageUnlocked("Missing API key for resumed session provider.");
+            try status_mod.setStatusMessageUnlocked(self, "Missing API key for resumed session provider.");
             return;
         }
 
@@ -985,47 +854,15 @@ pub const Model = struct {
         self.client = client;
     }
 
-    fn openSessionList(self: *Model, ctx: *vxfw.EventContext) !void {
-        self.clearSessionListOwned();
-        const loaded = try session_mod.listSessions(self.allocator, self.session_dir);
-        if (loaded.len == 0) {
-            self.allocator.free(loaded);
-            self.session_list = &.{};
-        } else {
-            self.session_list = loaded;
-        }
-        self.show_session_list = true;
-        self.session_list_selected = 0;
-        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
-        ctx.redraw = true;
-    }
-
-    fn closeSessionList(self: *Model, ctx: *vxfw.EventContext) !void {
-        self.clearSessionListOwned();
-        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
-        ctx.redraw = true;
-    }
-
-    fn moveSessionListSelection(self: *Model, delta: isize) void {
-        if (self.session_list.len == 0) {
-            self.session_list_selected = 0;
-            return;
-        }
-        const current: isize = @intCast(self.session_list_selected);
-        const max_index: isize = @intCast(self.session_list.len - 1);
-        const next = std.math.clamp(current + delta, 0, max_index);
-        self.session_list_selected = @intCast(next);
-    }
-
     fn executeSessionSelection(self: *Model, ctx: *vxfw.EventContext) !void {
         if (self.session_list.len == 0) {
-            try self.closeSessionList(ctx);
+            try session_mgmt.closeSessionList(self, ctx);
             return;
         }
 
         const session_id = try self.allocator.dupe(u8, self.session_list[self.session_list_selected].id);
         defer self.allocator.free(session_id);
-        try self.closeSessionList(ctx);
+        try session_mgmt.closeSessionList(self, ctx);
         try self.resumeSessionByIdUnlocked(session_id);
         ctx.redraw = true;
     }
@@ -1036,7 +873,7 @@ pub const Model = struct {
             return;
         }
 
-        try self.saveSessionSnapshotUnlocked();
+        try session_mgmt.saveSessionSnapshotUnlocked(self);
 
         const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session_id);
         defer self.allocator.free(path);
@@ -1044,35 +881,12 @@ pub const Model = struct {
         try self.restoreSessionUnlocked(loaded, path);
     }
 
-    fn deleteSessionByIdUnlocked(self: *Model, session_id: []const u8) !void {
-        const path = try session_mod.sessionFilePath(self.allocator, self.session_dir, session_id);
-        defer self.allocator.free(path);
-
-        const deleting_current = if (self.current_session) |session|
-            std.mem.eql(u8, session.id, session_id)
-        else
-            false;
-
-        try session_mod.deleteSession(self.allocator, path);
-        if (deleting_current) {
-            history_mod.clearMessagesUnlocked(self);
-            history_mod.clearHistoryUnlocked(self);
-            self.clearRecentFilesUnlocked();
-            self.total_input_tokens = 0;
-            self.total_output_tokens = 0;
-            self.request_count = 0;
-            self.assistant_stream_index = null;
-            self.awaiting_first_token = false;
-            try self.beginNewSessionUnlocked();
-        }
-    }
-
     fn handleResumePromptDecision(self: *Model, should_resume: bool) !void {
         if (!should_resume) {
             if (self.resume_prompt_path) |path| {
                 session_mod.deleteSession(self.allocator, path) catch {};
             }
-            self.clearResumePromptOwned();
+            session_mgmt.clearResumePromptOwned(self);
             return;
         }
 
@@ -1099,7 +913,7 @@ pub const Model = struct {
         return self.initializeClientFor(self.provider_name, self.model_name, self.api_key, self.override_url);
     }
 
-    fn initializeClientFor(self: *Model, provider_name: []const u8, model_name: []const u8, api_key: []const u8, override_url: ?[]const u8) !void {
+    pub fn initializeClientFor(self: *Model, provider_name: []const u8, model_name: []const u8, api_key: []const u8, override_url: ?[]const u8) !void {
         if (provider_name.len == 0) {
             try history_mod.addMessageUnlocked(self, "error", "No provider configured. Set one in ~/.crushcode/config.toml or use a profile.");
             return;
@@ -1204,7 +1018,7 @@ pub const Model = struct {
     /// Refresh codebase context filtered by query relevance.
     /// Uses the KnowledgePipeline scoring chain when available,
     /// falls back to the raw KnowledgeGraph otherwise.
-    fn refreshContextForQuery(self: *Model, query: []const u8) void {
+    pub fn refreshContextForQuery(self: *Model, query: []const u8) void {
         if (query.len == 0) return;
         if (query.len < 3) return;
 
@@ -1475,24 +1289,6 @@ pub const Model = struct {
     }
 
 
-    fn setStatusMessage(self: *Model, text: []const u8) !void {
-        self.lock.lock();
-        defer self.lock.unlock();
-        try self.setStatusMessageUnlocked(text);
-    }
-
-    fn setStatusMessageUnlocked(self: *Model, text: []const u8) !void {
-        if (self.status_message.len > 0) self.allocator.free(self.status_message);
-        self.status_message = if (text.len == 0) "" else try self.allocator.dupe(u8, text);
-    }
-
-    fn clearStatusMessage(self: *Model) void {
-        self.lock.lock();
-        defer self.lock.unlock();
-        if (self.status_message.len > 0) self.allocator.free(self.status_message);
-        self.status_message = "";
-    }
-
     fn applyThemeStyles(self: *Model) void {
         self.input.style = .{ .fg = self.current_theme.header_fg };
         self.input.prompt = "❯ ";
@@ -1527,7 +1323,7 @@ pub const Model = struct {
     }
 
     fn handleEvent(self: *Model, ctx: *vxfw.EventContext, event: vxfw.Event) anyerror!void {
-        self.reapWorkerIfDone();
+        streaming.reapWorkerIfDone(self);
 
         switch (event) {
             .init => {
@@ -1554,7 +1350,7 @@ pub const Model = struct {
 
                 // Diff preview mode: intercept all keys
                 if (self.diff_preview_active) {
-                    _ = self.handleDiffPreviewKey(key);
+                    _ = streaming.handleDiffPreviewKey(self, key);
                     ctx.consumeEvent();
                     ctx.redraw = true;
                     return;
@@ -1585,11 +1381,11 @@ pub const Model = struct {
 
                 if (self.show_session_list) {
                     if (key.matches(vaxis.Key.escape, .{})) {
-                        try self.closeSessionList(ctx);
+                        try session_mgmt.closeSessionList(self, ctx);
                     } else if (key.matches(vaxis.Key.up, .{})) {
-                        self.moveSessionListSelection(-1);
+                        session_mgmt.moveSessionListSelection(self,-1);
                     } else if (key.matches(vaxis.Key.down, .{})) {
-                        self.moveSessionListSelection(1);
+                        session_mgmt.moveSessionListSelection(self,1);
                     } else if (key.matches(vaxis.Key.enter, .{})) {
                         try self.executeSessionSelection(ctx);
                     }
@@ -1816,7 +1612,7 @@ pub const Model = struct {
     }
 
     fn draw(self: *Model, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
-        self.reapWorkerIfDone();
+        streaming.reapWorkerIfDone(self);
 
         // Tick spinner each frame for animation
         if (self.spinner) |*spinner| {
@@ -2239,7 +2035,7 @@ pub const Model = struct {
     }
 
     fn handleSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
-        self.reapWorkerIfDone();
+        streaming.reapWorkerIfDone(self);
 
         // Reset scroll state on any user input submission
         self.scroll_mode = false;
@@ -2294,10 +2090,10 @@ pub const Model = struct {
         self.request_active = true;
         self.request_done = false;
         self.awaiting_first_token = true;
-        try self.saveSessionSnapshotUnlocked();
+        try session_mgmt.saveSessionSnapshotUnlocked(self);
 
         input_handling.resetInputField(self);
-        self.worker = try std.Thread.spawn(.{}, requestThreadMain, .{self});
+        self.worker = try std.Thread.spawn(.{}, streaming.requestThreadMain, .{self});
         ctx.redraw = true;
     }
 
@@ -2422,19 +2218,19 @@ pub const Model = struct {
             if (self.request_active) {
                 try history_mod.addMessageUnlocked(self, "error", "Cannot clear the chat while a response is still streaming.");
             } else {
-                try self.saveSessionSnapshotUnlocked();
+                try session_mgmt.saveSessionSnapshotUnlocked(self);
                 history_mod.clearMessagesUnlocked(self);
                 history_mod.clearHistoryUnlocked(self);
-                self.clearRecentFilesUnlocked();
+                session_mgmt.clearRecentFilesUnlocked(self);
                 self.total_input_tokens = 0;
                 self.total_output_tokens = 0;
                 self.request_count = 0;
                 self.assistant_stream_index = null;
                 self.awaiting_first_token = false;
-                try self.beginNewSessionUnlocked();
+                try session_mgmt.beginNewSessionUnlocked(self);
             }
         } else if (std.mem.eql(u8, name, "/sessions") or std.mem.eql(u8, name, "/ls")) {
-            try self.openSessionList(ctx);
+            try session_mgmt.openSessionList(self, ctx);
             return;
         } else if (std.mem.startsWith(u8, name, "/resume")) {
             const session_id = std.mem.trim(u8, name[7..], " \t\r\n");
@@ -2448,7 +2244,7 @@ pub const Model = struct {
             if (session_id.len == 0) {
                 try history_mod.addMessageUnlocked(self, "assistant", "Usage: /delete <id>");
             } else {
-                try self.deleteSessionByIdUnlocked(session_id);
+                try session_mgmt.deleteSessionByIdUnlocked(self, session_id);
                 const text = try std.fmt.allocPrint(self.allocator, "Deleted session {s}", .{session_id});
                 defer self.allocator.free(text);
                 try history_mod.addMessageUnlocked(self, "assistant", text);
@@ -2493,7 +2289,7 @@ pub const Model = struct {
                         self.plan_mode.exit();
                         self.refreshEffectiveSystemPrompt() catch {};
                         // Execute the tool calls outside plan mode
-                        try self.executeToolCalls(tc_list.items);
+                        try streaming.executeToolCalls(self, tc_list.items);
                     } else {
                         self.allocator.free(approved);
                     }
@@ -3751,745 +3547,6 @@ pub const Model = struct {
         return true;
     }
 
-    fn reapWorkerIfDone(self: *Model) void {
-        var thread_to_join: ?std.Thread = null;
-        self.lock.lock();
-        if (self.request_done and self.worker != null) {
-            thread_to_join = self.worker;
-            self.worker = null;
-            self.request_done = false;
-        }
-        self.lock.unlock();
-
-        if (thread_to_join) |thread| {
-            thread.join();
-        }
-    }
-
-
-    fn requestThreadMain(self: *Model) void {
-        active_stream_model = self;
-        defer active_stream_model = null;
-
-        // Set checkpoint threadlocals for this request thread
-        const session_id = if (self.current_session) |sess| sess.id else "";
-        tool_executors.setCheckpointSessionId(session_id);
-        if (session_id.len > 0) {
-            if (session_mod.getSessionDb(self.allocator)) |db| {
-                tool_executors.setSessionDbForCheckpoint(db);
-                // The CheckpointManager is lightweight — create on stack
-                var cp_mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
-                tool_executors.setCheckpointManager(&cp_mgr);
-            } else |_| {}
-        }
-        defer {
-            tool_executors.setCheckpointManager(null);
-            tool_executors.setSessionDbForCheckpoint(null);
-            tool_executors.setCheckpointSessionId("");
-        }
-
-        self.runStreamingRequest() catch |err| {
-            self.finishRequestWithCaughtError(err);
-        };
-    }
-
-    fn runStreamingRequest(self: *Model) !void {
-        self.budget_mgr.checkAndResetPeriods();
-        if (self.budget_mgr.isOverBudget()) {
-            self.finishRequestWithErrorText("Budget limit reached. Increase limits or start a new session.");
-            return;
-        }
-
-        // Refresh context based on user's latest message (relevance-filtered)
-        if (self.history.items.len > 0) {
-            const last_msg = self.history.items[self.history.items.len - 1];
-            if (std.mem.eql(u8, last_msg.role, "user")) {
-                const user_content = last_msg.content orelse "";
-                if (user_content.len > 0) {
-                    self.refreshContextForQuery(user_content);
-
-                    // Update the AI client with the refreshed system prompt
-                    if (self.client) |*client| {
-                        if (self.effective_system_prompt) |prompt| {
-                            client.setSystemPrompt(prompt);
-                        }
-                    }
-                }
-            }
-        }
-
-        var total_input_tokens: u64 = 0;
-        var total_output_tokens: u64 = 0;
-        var iteration: u32 = 0;
-
-        while (iteration < self.max_iterations) : (iteration += 1) {
-            total_input_tokens += estimateMessageTokens(self.history.items);
-
-            // Execute pre_request lifecycle hook
-            {
-                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                defer hook_ctx.deinit();
-                hook_ctx.phase = .pre_request;
-                hook_ctx.provider = self.provider_name;
-                hook_ctx.model = self.model_name;
-                hook_ctx.token_count = @intCast(estimateMessageTokens(self.history.items));
-                self.lifecycle_hooks.execute(.pre_request, &hook_ctx) catch {};
-            }
-
-            var response = try self.sendChatStreamingWithFallback();
-            defer freeChatResponse(self.allocator, &response);
-
-            if (response.choices.len == 0) {
-                // Execute on_error lifecycle hook
-                {
-                    var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                    defer hook_ctx.deinit();
-                    hook_ctx.phase = .on_error;
-                    hook_ctx.error_message = "No response received from provider";
-                    self.lifecycle_hooks.execute(.on_error, &hook_ctx) catch {};
-                }
-                self.finishRequestWithErrorText("No response received from provider");
-                return;
-            }
-
-            const content = response.choices[0].message.content orelse "";
-            const tool_calls = response.choices[0].message.tool_calls;
-            if (content.len == 0 and tool_calls == null) {
-                // Execute on_error lifecycle hook
-                {
-                    var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                    defer hook_ctx.deinit();
-                    hook_ctx.phase = .on_error;
-                    hook_ctx.error_message = "No response received from provider";
-                    self.lifecycle_hooks.execute(.on_error, &hook_ctx) catch {};
-                }
-                self.finishRequestWithErrorText("No response received from provider");
-                return;
-            }
-
-            total_output_tokens += estimateResponseOutputTokens(content, tool_calls);
-            try self.applyAssistantResponse(content, tool_calls);
-
-            // Execute post_request lifecycle hook
-            {
-                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                defer hook_ctx.deinit();
-                hook_ctx.phase = .post_request;
-                hook_ctx.token_count = @intCast(total_input_tokens + total_output_tokens);
-                self.lifecycle_hooks.execute(.post_request, &hook_ctx) catch {};
-            }
-
-            if (tool_calls) |calls| {
-                try self.executeToolCalls(calls);
-                if (iteration + 1 >= self.max_iterations) {
-                    self.finishRequestWithErrorText("Stopped after reaching max tool iterations.");
-                    return;
-                }
-                try self.startNextAssistantPlaceholder();
-                continue;
-            }
-
-            self.finishRequestSuccess(total_input_tokens, total_output_tokens);
-            return;
-        }
-
-        self.finishRequestWithErrorText("Stopped after reaching max tool iterations.");
-    }
-
-    fn activateFallbackProvider(self: *Model, index: usize) !void {
-        const provider = self.fallback_providers.items[index];
-
-        self.lock.lock();
-        defer self.lock.unlock();
-        try input_handling.replaceOwnedString(self,&self.provider_name, provider.provider_name);
-        try input_handling.replaceOwnedString(self,&self.model_name, provider.model_name);
-        try input_handling.replaceOwnedString(self,&self.api_key, provider.api_key);
-        if (self.override_url) |current_override_url| self.allocator.free(current_override_url);
-        self.override_url = if (provider.override_url) |override_url| try self.allocator.dupe(u8, override_url) else null;
-        self.active_provider_index = index;
-        try self.initializeClientFor(self.provider_name, self.model_name, self.api_key, self.override_url);
-    }
-
-    fn sendChatStreamingWithFallback(self: *Model) !core.ChatResponse {
-        var index = self.active_provider_index;
-        while (index < self.fallback_providers.items.len) : (index += 1) {
-            try self.activateFallbackProvider(index);
-            const response = self.client.?.sendChatStreaming(self.history.items, streamCallback) catch |err| {
-                if (!isRetryableProviderError(err) or index + 1 >= self.fallback_providers.items.len) {
-                    return err;
-                }
-                const next_provider = self.fallback_providers.items[index + 1];
-                const status_text = try std.fmt.allocPrint(self.allocator, "⚠ {s} failed, trying {s}/{s}...", .{
-                    self.fallback_providers.items[index].provider_name,
-                    next_provider.provider_name,
-                    next_provider.model_name,
-                });
-                defer self.allocator.free(status_text);
-                try self.setStatusMessage(status_text);
-                try self.resetActiveAssistantPlaceholderForRetry();
-                continue;
-            };
-            self.clearStatusMessage();
-            return response;
-        }
-        return error.NetworkError;
-    }
-
-    fn resetActiveAssistantPlaceholderForRetry(self: *Model) !void {
-        self.lock.lock();
-        defer self.lock.unlock();
-        if (self.assistant_stream_index) |index| {
-            try history_mod.replaceMessageUnlocked(self, index, "assistant", "Thinking...", null, null);
-        }
-        self.awaiting_first_token = true;
-    }
-
-    fn applyAssistantResponse(self: *Model, content: []const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
-        self.lock.lock();
-        defer self.lock.unlock();
-
-        if (tool_calls) |_| {
-            try history_mod.trackToolCallFilesUnlocked(self, tool_calls);
-        }
-
-        if (self.awaiting_first_token) {
-            if (self.assistant_stream_index) |index| {
-                try history_mod.replaceMessageUnlocked(self, index, "assistant", content, null, tool_calls);
-            } else {
-                try history_mod.addMessageWithToolsUnlocked(self, "assistant", content, null, tool_calls);
-                self.assistant_stream_index = self.messages.items.len - 1;
-            }
-            self.awaiting_first_token = false;
-        } else if (self.assistant_stream_index) |index| {
-            try history_mod.replaceMessageUnlocked(self, index, "assistant", content, null, tool_calls);
-        }
-
-        try history_mod.appendHistoryMessageWithToolsUnlocked(self, "assistant", content, null, tool_calls);
-        // Persist to cross-session memory
-        self.memory.addMessage("assistant", content) catch {};
-        self.memory.save() catch {};
-        try self.saveSessionSnapshotUnlocked();
-
-        self.context_tokens = token_tracking_mod.estimateContextTokens(self);
-        if (self.compactor.needsCompaction(self.context_tokens)) {
-            self.performCompactionAuto() catch {};
-        }
-    }
-
-    fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallInfo) !void {
-        // Plan mode: capture tool calls as plan steps instead of executing
-        if (self.plan_mode.active) {
-            if (self.plan_mode.current_plan == null) {
-                _ = self.plan_mode.createPlan("Proposed changes") catch return;
-            }
-            if (self.plan_mode.current_plan) |*plan| {
-                for (tool_calls) |tc| {
-                    const risk = plan_mod.assessRisk(tc.name, tc.arguments);
-                    const action = plan_mod.extractAction(self.allocator, tc.name, tc.arguments) catch "Unknown action";
-                    const target = plan_mod.extractTargetFile(tc.arguments);
-                    plan.addStep(action, target, risk, "", tc.name, tc.arguments) catch {};
-                    self.allocator.free(action);
-                }
-                const formatted = plan.format() catch return;
-                defer self.allocator.free(formatted);
-                self.lock.lock();
-                try history_mod.addMessageUnlocked(self, "assistant", formatted);
-                self.lock.unlock();
-            }
-            return;
-        }
-
-        // Delegation mode: batch multiple tool calls through sub-agent
-        if (self.delegate_mode and tool_calls.len > 1) {
-            var task_buf = array_list_compat.ArrayList(u8).init(self.allocator);
-            defer task_buf.deinit();
-            const writer = task_buf.writer();
-            writer.print("Execute {d} tool calls: ", .{tool_calls.len}) catch {};
-            for (tool_calls, 0..) |tc, i| {
-                if (i > 0) writer.print(", ", .{}) catch {};
-                writer.print("{s}", .{tc.name}) catch {};
-            }
-            const task_desc = task_buf.items;
-
-            if (self.delegator.canDelegate(0)) {
-                var result = self.delegator.delegate(0, task_desc, .general) catch |err| {
-                    const err_msg = std.fmt.allocPrint(self.allocator, "error: delegation failed: {s}", .{@errorName(err)}) catch "error: delegation failed";
-                    self.lock.lock();
-                    try history_mod.addMessageUnlocked(self, "tool", err_msg);
-                    self.lock.unlock();
-                    return;
-                };
-                defer result.deinit(self.allocator);
-                self.lock.lock();
-                try history_mod.addMessageUnlocked(self, "assistant", result.output);
-                self.lock.unlock();
-                return;
-            }
-        }
-
-        for (tool_calls) |tool_call| {
-            // Execute pre_tool lifecycle hook
-            {
-                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                defer hook_ctx.deinit();
-                hook_ctx.phase = .pre_tool;
-                hook_ctx.tool_name = tool_call.name;
-                self.lifecycle_hooks.execute(.pre_tool, &hook_ctx) catch {};
-            }
-
-            // Compute diff preview for edit/write_file tools
-            var preview_diff: ?[]const u8 = null;
-            var diff_preview_activated = false;
-
-            if (std.mem.eql(u8, tool_call.name, "edit") or std.mem.eql(u8, tool_call.name, "write_file")) {
-                preview_diff = self.computeEditPreview(tool_call) catch null;
-
-                // Try interactive diff preview for multi-hunk changes
-                const file_path = extractToolFilePath(tool_call.arguments) orelse "";
-                if (file_path.len > 0) {
-                    const original_content = std.fs.cwd().readFileAlloc(self.allocator, file_path, 100 * 1024 * 1024) catch null;
-                    if (original_content) |orig| {
-                        var new_content_opt: ?[]const u8 = null;
-                        var new_content_owned = false;
-
-                        if (std.mem.eql(u8, tool_call.name, "edit")) {
-                            const parsed = std.json.parseFromSlice(
-                                struct { file_path: ?[]const u8 = null, path: ?[]const u8 = null, old_string: ?[]const u8 = null, new_string: ?[]const u8 = null },
-                                self.allocator, tool_call.arguments, .{ .ignore_unknown_fields = true },
-                            ) catch null;
-                            if (parsed) |p| {
-                                defer p.deinit();
-                                const old_s = p.value.old_string orelse "";
-                                const new_s = p.value.new_string orelse "";
-                                if (std.mem.indexOf(u8, orig, old_s)) |pos| {
-                                    const after = pos + old_s.len;
-                                    var buf = std.ArrayList(u8).empty;
-                                    defer if (!new_content_owned) buf.deinit(self.allocator);
-                                    buf.appendSlice(self.allocator, orig[0..pos]) catch {};
-                                    buf.appendSlice(self.allocator, new_s) catch {};
-                                    buf.appendSlice(self.allocator, orig[after..]) catch {};
-                                    new_content_opt = buf.toOwnedSlice(self.allocator) catch null;
-                                    new_content_owned = true;
-                                }
-                            }
-                        } else {
-                            const parsed = std.json.parseFromSlice(
-                                struct { path: ?[]const u8 = null, file_path: ?[]const u8 = null, content: ?[]const u8 = null },
-                                self.allocator, tool_call.arguments, .{ .ignore_unknown_fields = true },
-                            ) catch null;
-                            if (parsed) |p| {
-                                defer p.deinit();
-                                new_content_opt = p.value.content;
-                            }
-                        }
-
-                        if (new_content_opt) |new_cont| {
-                            var diff_result = myers.MyersDiff.diff(self.allocator, orig, new_cont) catch null;
-                            if (diff_result) |*dr| {
-                                if (dr.hunks.len >= 2) {
-                                    // Multi-hunk: activate diff preview
-                                    const decisions = self.allocator.alloc(widget_diff_preview.HunkDecision, dr.hunks.len) catch null;
-                                    if (decisions) |decs| {
-                                        @memset(decs, .pending);
-                                        self.lock.lock();
-                                        self.diff_preview_active = true;
-                                        self.diff_preview_hunks = dr.hunks;
-                                        self.diff_preview_current = 0;
-                                        self.diff_preview_file_path = file_path;
-                                        self.diff_preview_original = orig;
-                                        self.diff_preview_new_content = new_cont;
-                                        self.diff_preview_tool_call_id = tool_call.id;
-                                        self.diff_preview_tool_name = tool_call.name;
-                                        self.diff_preview_tool_arguments = tool_call.arguments;
-                                        self.diff_preview_decisions = decs;
-                                        self.lock.unlock();
-                                        diff_preview_activated = true;
-                                        if (preview_diff) |d| self.allocator.free(d);
-                                        // Don't free orig — referenced by hunks
-                                        // Don't free dr — hunks reference its data
-                                    }
-                                }
-                                if (!diff_preview_activated) dr.deinit();
-                            }
-                        }
-                        if (!diff_preview_activated) {
-                            self.allocator.free(orig);
-                        }
-                    }
-                }
-            }
-
-            if (diff_preview_activated) continue;
-
-            const allowed = try permissions_mod.requestToolPermission(self, tool_call.name, tool_call.arguments, preview_diff);
-            if (preview_diff) |d| self.allocator.free(d);
-            const result_text = if (!allowed)
-                try self.allocator.dupe(u8, "error: tool execution denied by user")
-            else blk: {
-                // Use HybridBridge for unified tool dispatch (builtin + MCP)
-                const parsed_tool_call = core.ParsedToolCall{
-                    .id = tool_call.id,
-                    .name = tool_call.name,
-                    .arguments = tool_call.arguments,
-                };
-                if (self.hybrid_bridge) |hb| {
-                    if (hb.executeTool(parsed_tool_call)) |result|
-                        break :blk result
-                    else |_|
-                        break :blk try std.fmt.allocPrint(self.allocator, "error: unsupported tool '{s}'", .{tool_call.name});
-                }
-                break :blk try self.allocator.dupe(u8, "error: tool dispatch unavailable");
-            };
-            defer self.allocator.free(result_text);
-
-            // Execute post_tool lifecycle hook
-            {
-                var hook_ctx = lifecycle_mod.HookContext.init(self.allocator);
-                defer hook_ctx.deinit();
-                hook_ctx.phase = .post_tool;
-                hook_ctx.tool_name = tool_call.name;
-                self.lifecycle_hooks.execute(.post_tool, &hook_ctx) catch {};
-            }
-
-            // Record tool call for auto-skill pattern detection (non-fatal)
-            if (self.auto_gen) |*ag| {
-                const is_success = !std.mem.startsWith(u8, result_text, "error:");
-                const args_trimmed = if (tool_call.arguments.len > 80) tool_call.arguments[0..80] else tool_call.arguments;
-                ag.recordToolCall(tool_call.name, args_trimmed, is_success) catch {};
-                _ = ag.analyzePatterns() catch {};
-            }
-
-            // Record tool outcome for feedback learning (non-fatal)
-            if (self.feedback) |*fb| {
-                const fb_success = !std.mem.startsWith(u8, result_text, "error:");
-                const fb_outcome: feedback_mod.TaskOutcome = if (fb_success) .success else .failure;
-                const fb_err: []const u8 = if (fb_success) "" else result_text;
-                var fb_tools = [_][]const u8{tool_call.name};
-                fb.record("tool_execution", &fb_tools, fb_outcome, 0.8, fb_err) catch {};
-            }
-
-            // Update LSP diagnostics after file edits (non-fatal)
-            if (std.mem.eql(u8, tool_call.name, "write_file") or std.mem.eql(u8, tool_call.name, "edit")) {
-                // Extract file path from tool arguments
-                const file_path = extractToolFilePath(tool_call.arguments);
-                if (file_path) |fp| {
-                    self.lsp_manager.onFileOpened(fp);
-                }
-            }
-
-            self.lock.lock();
-            errdefer self.lock.unlock();
-            try history_mod.addMessageWithToolsUnlocked(self, "tool", result_text, tool_call.id, null);
-            try history_mod.appendHistoryMessageWithToolsUnlocked(self, "tool", result_text, tool_call.id, null);
-            try self.saveSessionSnapshotUnlocked();
-            self.lock.unlock();
-        }
-    }
-
-    /// Compute a unified diff preview for edit/write_file tool calls without applying them.
-    fn computeEditPreview(self: *Model, tool_call: core.client.ToolCallInfo) !?[]const u8 {
-        if (std.mem.eql(u8, tool_call.name, "edit")) {
-            const parsed = std.json.parseFromSlice(
-                struct { file_path: ?[]const u8 = null, path: ?[]const u8 = null, old_string: ?[]const u8 = null, new_string: ?[]const u8 = null },
-                self.allocator,
-                tool_call.arguments,
-                .{ .ignore_unknown_fields = true },
-            ) catch return null;
-            defer parsed.deinit();
-            const fp = parsed.value.file_path orelse parsed.value.path orelse return null;
-            const old_s = parsed.value.old_string orelse return null;
-            const new_s = parsed.value.new_string orelse "";
-            return try tool_executors.previewEditDiff(self.allocator, fp, old_s, new_s);
-        }
-
-        if (std.mem.eql(u8, tool_call.name, "write_file")) {
-            const parsed = std.json.parseFromSlice(
-                struct { path: ?[]const u8 = null, file_path: ?[]const u8 = null, content: ?[]const u8 = null },
-                self.allocator,
-                tool_call.arguments,
-                .{ .ignore_unknown_fields = true },
-            ) catch return null;
-            defer parsed.deinit();
-            const fp = parsed.value.path orelse parsed.value.file_path orelse return null;
-            const content = parsed.value.content orelse return null;
-            return try tool_executors.previewWriteDiff(self.allocator, fp, content);
-        }
-
-        return null;
-    }
-
-    /// Handle key input during diff preview mode. Returns true if key was consumed.
-    pub fn handleDiffPreviewKey(self: *Model, key: vaxis.Key) bool {
-        if (!self.diff_preview_active) return false;
-        if (self.diff_preview_decisions.len == 0) return false;
-
-        const current = self.diff_preview_current;
-
-        if (key.matches('y', .{})) {
-            if (current < self.diff_preview_decisions.len) {
-                self.diff_preview_decisions[current] = .applied;
-                if (current + 1 < self.diff_preview_decisions.len) {
-                    self.diff_preview_current = current + 1;
-                } else {
-                    self.finishDiffPreview();
-                }
-            }
-            return true;
-        }
-        if (key.matches('n', .{})) {
-            if (current < self.diff_preview_decisions.len) {
-                self.diff_preview_decisions[current] = .rejected;
-                if (current + 1 < self.diff_preview_decisions.len) {
-                    self.diff_preview_current = current + 1;
-                } else {
-                    self.finishDiffPreview();
-                }
-            }
-            return true;
-        }
-        if (key.matches('a', .{})) {
-            for (self.diff_preview_decisions[current..]) |*d| {
-                d.* = .applied;
-            }
-            self.finishDiffPreview();
-            return true;
-        }
-        if (key.matches('q', .{}) or key.matches(vaxis.Key.escape, .{})) {
-            for (self.diff_preview_decisions[current..]) |*d| {
-                d.* = .rejected;
-            }
-            self.finishDiffPreview();
-            return true;
-        }
-        if (key.matches('j', .{})) {
-            if (current + 1 < self.diff_preview_decisions.len) {
-                self.diff_preview_current = current + 1;
-            }
-            return true;
-        }
-        if (key.matches('k', .{})) {
-            if (current > 0) {
-                self.diff_preview_current = current - 1;
-            }
-            return true;
-        }
-
-        return true; // Consume all keys while diff preview is active
-    }
-
-    /// Finish diff preview: compute resulting text with selected hunks applied
-    fn finishDiffPreview(self: *Model) void {
-        self.diff_preview_active = false;
-
-        // Apply selected hunks: build output by walking through original lines
-        // and substituting hunk content for applied hunks
-        var result_buf = std.ArrayList(u8).empty;
-        defer result_buf.deinit(self.allocator);
-
-        var orig_lines = std.ArrayList([]const u8).empty;
-        defer orig_lines.deinit(self.allocator);
-        if (self.diff_preview_original.len > 0) {
-            var iter = std.mem.splitScalar(u8, self.diff_preview_original, '\n');
-            while (iter.next()) |line| {
-                orig_lines.append(self.allocator, line) catch {};
-            }
-            // Remove trailing empty element from trailing newline
-            if (self.diff_preview_original[self.diff_preview_original.len - 1] == '\n') {
-                if (orig_lines.items.len > 0 and orig_lines.items[orig_lines.items.len - 1].len == 0) {
-                    orig_lines.items.len -= 1;
-                }
-            }
-        }
-
-        var cur_line: usize = 0;
-        var hunk_idx: usize = 0;
-        while (hunk_idx < self.diff_preview_hunks.len) : (hunk_idx += 1) {
-            const hunk = self.diff_preview_hunks[hunk_idx];
-            const decision = if (hunk_idx < self.diff_preview_decisions.len) self.diff_preview_decisions[hunk_idx] else .rejected;
-
-            // Copy unchanged lines before this hunk (old_start is 1-based)
-            const hunk_start_0: usize = if (hunk.old_start > 0) hunk.old_start - 1 else 0;
-            while (cur_line < hunk_start_0 and cur_line < orig_lines.items.len) : (cur_line += 1) {
-                result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
-                result_buf.append(self.allocator, '\n') catch {};
-            }
-
-            if (decision == .applied) {
-                // Apply hunk: use new content from hunk lines
-                for (hunk.lines) |line| {
-                    if (line.kind == .insert) {
-                        result_buf.appendSlice(self.allocator, line.content) catch {};
-                        result_buf.append(self.allocator, '\n') catch {};
-                    } else if (line.kind == .equal) {
-                        result_buf.appendSlice(self.allocator, line.content) catch {};
-                        result_buf.append(self.allocator, '\n') catch {};
-                    }
-                    // Skip .delete lines
-                }
-            } else {
-                // Reject hunk: keep original lines
-                var count: usize = 0;
-                while (count < hunk.old_count and cur_line < orig_lines.items.len) : ({
-                    count += 1;
-                    cur_line += 1;
-                }) {
-                    result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
-                    result_buf.append(self.allocator, '\n') catch {};
-                }
-            }
-            cur_line = hunk_start_0 + hunk.old_count;
-        }
-
-        // Copy remaining unchanged lines after last hunk
-        while (cur_line < orig_lines.items.len) : (cur_line += 1) {
-            result_buf.appendSlice(self.allocator, orig_lines.items[cur_line]) catch {};
-            result_buf.append(self.allocator, '\n') catch {};
-        }
-
-        const result_text = result_buf.toOwnedSlice(self.allocator) catch "error: failed to apply hunks";
-        defer if (!std.mem.startsWith(u8, result_text, "error:")) self.allocator.free(result_text);
-
-        // Write the result to file
-        if (self.diff_preview_file_path.len > 0 and !std.mem.startsWith(u8, result_text, "error:")) {
-            if (std.fs.cwd().createFile(self.diff_preview_file_path, .{})) |file| {
-                file.writeAll(result_text) catch {};
-                file.close();
-            } else |_| {}
-        }
-
-        // Count applied hunks
-        var applied_count: usize = 0;
-        for (self.diff_preview_decisions) |d| {
-            if (d == .applied) applied_count += 1;
-        }
-
-        const tool_result = if (applied_count > 0)
-            std.fmt.allocPrint(self.allocator, "Applied {d} of {d} hunks to {s}", .{
-                applied_count, self.diff_preview_decisions.len, self.diff_preview_file_path,
-            }) catch "Applied selected hunks"
-        else
-            self.allocator.dupe(u8, "error: all hunks rejected by user") catch "error: rejected";
-
-        self.lock.lock();
-        history_mod.addMessageWithToolsUnlocked(self, "tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
-        history_mod.appendHistoryMessageWithToolsUnlocked(self, "tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
-        self.saveSessionSnapshotUnlocked() catch {};
-        self.lock.unlock();
-        self.allocator.free(tool_result);
-
-        // Clean up diff preview state
-        self.allocator.free(self.diff_preview_original);
-        self.allocator.free(self.diff_preview_decisions);
-        self.diff_preview_hunks = &.{};
-        self.diff_preview_decisions = &.{};
-    }
-
-    fn startNextAssistantPlaceholder(self: *Model) !void {
-        self.lock.lock();
-        defer self.lock.unlock();
-        try history_mod.addMessageUnlocked(self, "assistant", "Thinking...");
-        self.assistant_stream_index = self.messages.items.len - 1;
-        self.awaiting_first_token = true;
-        try self.saveSessionSnapshotUnlocked();
-    }
-
-    fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64) void {
-        self.lock.lock();
-        defer self.lock.unlock();
-        self.total_input_tokens += input_tokens;
-        self.total_output_tokens += output_tokens;
-        self.request_count += 1;
-        const cost = self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), @intCast(@min(input_tokens, std.math.maxInt(u32))), @intCast(@min(output_tokens, std.math.maxInt(u32))));
-        self.budget_mgr.recordCost(cost);
-        if (self.budget_mgr.shouldAlert()) {
-            const status = self.budget_mgr.checkBudget();
-            const severity: widget_toast.Severity = if (status.isOverBudget()) .err else .warning;
-            const message = if (status.isOverBudget())
-                std.fmt.allocPrint(self.allocator, "Budget exceeded: ${d:.2}", .{self.budget_mgr.session_spent}) catch "Budget exceeded"
-            else
-                std.fmt.allocPrint(self.allocator, "Budget alert: ${d:.2} ({d:.0}% used)", .{ self.budget_mgr.session_spent, status.percent_used * 100.0 }) catch "Budget alert";
-            self.toast_stack.push(message, severity) catch {};
-        }
-        self.request_active = false;
-        self.request_done = true;
-        self.spinner = null;
-        // Keep typewriter alive so animation can finish naturally
-        self.saveSessionSnapshotUnlocked() catch {};
-    }
-
-    fn finishRequestWithCaughtError(self: *Model, err: anyerror) void {
-        switch (err) {
-            error.AuthenticationError => self.finishRequestWithErrorText("No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml"),
-            error.NetworkError => self.finishRequestWithErrorText("Network error while contacting provider. Check your connection and try again."),
-            error.TimeoutError => self.finishRequestWithErrorText("Request timed out. Please try again."),
-            error.ServerError => self.finishRequestWithErrorText("Provider returned an error. Please try again in a moment."),
-            error.InvalidResponse => self.finishRequestWithErrorText("Provider returned an invalid response."),
-            error.ConfigurationError => self.finishRequestWithErrorText("Chat client is not configured correctly. Run crushcode setup or edit ~/.crushcode/config.toml"),
-            else => {
-                const text = std.fmt.allocPrint(self.allocator, "Request failed: {s}", .{@errorName(err)}) catch return;
-                defer self.allocator.free(text);
-                self.finishRequestWithErrorText(text);
-            },
-        }
-    }
-
-
-    fn finishRequestWithErrorText(self: *Model, text: []const u8) void {
-        self.lock.lock();
-        defer self.lock.unlock();
-
-        if (self.awaiting_first_token) {
-            if (self.assistant_stream_index) |index| {
-                history_mod.replaceMessageUnlocked(self, index, "error", text, null, null) catch {
-                    history_mod.addMessageUnlocked(self, "error", text) catch {};
-                };
-            } else {
-                history_mod.addMessageUnlocked(self, "error", text) catch {};
-            }
-            self.awaiting_first_token = false;
-        } else {
-            history_mod.addMessageUnlocked(self, "error", text) catch {};
-        }
-
-        self.request_active = false;
-        self.request_done = true;
-        self.spinner = null;
-        // Reveal typewriter immediately on error so the error text is fully visible
-        if (self.typewriter) |*tw| {
-            tw.revealAll();
-        }
-        self.saveSessionSnapshotUnlocked() catch {};
-    }
-
-    fn handleStreamToken(self: *Model, token: []const u8, done: bool) void {
-        _ = done;
-        if (token.len == 0) {
-            return;
-        }
-
-        // Feed token to spinner for animation + stalled detection
-        if (self.spinner) |*spinner| {
-            spinner.feedToken();
-        }
-
-        self.lock.lock();
-        defer self.lock.unlock();
-
-        const index = self.assistant_stream_index orelse return;
-        if (self.awaiting_first_token) {
-            history_mod.replaceMessageUnlocked(self, index, "assistant", token, null, null) catch {};
-            self.awaiting_first_token = false;
-        } else {
-            history_mod.appendToMessageUnlocked(self, index, token) catch {};
-        }
-
-        // Feed updated text to typewriter for progressive reveal
-        if (self.typewriter) |*tw| {
-            const msg = &self.messages.items[index];
-            tw.updateText(msg.content);
-        }
-    }
-
 
     fn performCompaction(self: *Model) !void {
         if (self.history.items.len <= self.compactor.recent_window) {
@@ -4539,7 +3596,7 @@ pub const Model = struct {
         try history_mod.addMessageUnlocked(self, "assistant", text);
     }
 
-    fn performCompactionAuto(self: *Model) !void {
+    pub fn performCompactionAuto(self: *Model) !void {
         if (self.history.items.len <= self.compactor.recent_window) return;
 
         const compact_messages = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
@@ -4614,11 +3671,6 @@ fn onPaletteSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []cons
 
     // If no text was typed (user navigated with arrows and pressed Enter), execute selection
     try model.executePaletteSelection(ctx);
-}
-
-fn streamCallback(token: []const u8, done: bool) void {
-    const model = active_stream_model orelse return;
-    model.handleStreamToken(token, done);
 }
 
 fn shouldRenderMessageContent(message: *const Message) bool {
