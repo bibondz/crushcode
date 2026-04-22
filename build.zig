@@ -165,7 +165,9 @@ pub fn build(b: *std.Build) !void {
     const skills_loader_mod = createMod(b, "src/skills/loader.zig", target, optimize, &.{
         imp("skills_resolver", skills_resolver_mod),
     });
+    const collections_mod = simpleMod(b, "src/core/collections.zig", target, optimize);
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
+    addImports(skill_pipeline_mod, &.{imp("collections", collections_mod)});
     const skill_sync_mod = simpleMod(b, "src/skills/sync.zig", target, optimize);
     const tools_mod = simpleMod(b, "src/tools/registry.zig", target, optimize);
     const json_helpers_mod = simpleMod(b, "src/core/json_helpers.zig", target, optimize);
@@ -496,7 +498,7 @@ pub fn build(b: *std.Build) !void {
     const fallback_mod = simpleMod(b, "src/ai/fallback.zig", target, optimize);
     const parallel_mod = simpleMod(b, "src/agent/parallel.zig", target, optimize);
     const task_mod = simpleMod(b, "src/agent/task.zig", target, optimize);
-    addImports(parallel_mod, &.{ imp("task", task_mod), imp("core_api", core_api_mod), imp("registry", registry_mod) });
+    addImports(parallel_mod, &.{ imp("task", task_mod), imp("core_api", core_api_mod), imp("registry", registry_mod), imp("collections", collections_mod) });
     const memory_mod = simpleMod(b, "src/agent/memory.zig", target, optimize);
     const skill_import_mod = simpleMod(b, "src/skills/import.zig", target, optimize);
     const worktree_mod = createMod(b, "src/agent/worktree.zig", target, optimize, &.{imp("shell", shell_mod)});
@@ -578,6 +580,7 @@ pub fn build(b: *std.Build) !void {
         imp("loader", recipe_loader_mod),
     });
     const worker_mod = simpleMod(b, "src/agent/worker.zig", target, optimize);
+    addImports(worker_mod, &.{imp("collections", collections_mod)});
     const worker_runner_mod = createMod(b, "src/agent/worker_runner.zig", target, optimize, &.{
         imp("worker", worker_mod),
     });
@@ -595,6 +598,7 @@ pub fn build(b: *std.Build) !void {
         imp("registry", registry_mod),
         imp("core_api", core_api_mod),
     });
+    addImports(team_coordinator_mod, &.{imp("collections", collections_mod)});
     const auto_gen_mod = simpleMod(b, "src/skills/auto_gen.zig", target, optimize);
     const phase_runner_mod = createMod(b, "src/execution/phase_runner.zig", target, optimize, &.{
         imp("workflow", workflow_mod),

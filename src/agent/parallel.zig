@@ -1,6 +1,7 @@
 const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
+const collections = @import("collections");
 const task = @import("task");
 const core = @import("core_api");
 const registry = @import("registry");
@@ -210,11 +211,7 @@ pub const ParallelExecutor = struct {
 
     /// Get count of tasks by status
     pub fn countByStatus(self: *const ParallelExecutor, status: task.RunState) u32 {
-        var count: u32 = 0;
-        for (self.tasks.items) |parallel_task| {
-            if (parallel_task.status == status) count += 1;
-        }
-        return count;
+        return collections.countMatching(self.tasks.items, "status", status);
     }
 
     /// Get count of running tasks

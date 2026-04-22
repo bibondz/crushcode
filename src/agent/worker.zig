@@ -1,6 +1,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
+const collections = @import("collections");
 
 const Allocator = std.mem.Allocator;
 
@@ -404,11 +405,7 @@ pub const WorkerPool = struct {
 
     /// Get count of workers by status.
     pub fn countByStatus(self: *const WorkerPool, status: WorkerStatus) u32 {
-        var count: u32 = 0;
-        for (self.workers.items) |worker| {
-            if (worker.status == status) count += 1;
-        }
-        return count;
+        return collections.countMatching(self.workers.items, "status", status);
     }
 
     /// Print pool status to stdout.

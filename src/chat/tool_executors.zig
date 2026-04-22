@@ -163,6 +163,16 @@ fn buildValidationError(allocator: std.mem.Allocator, tool_name: []const u8, mes
     };
 }
 
+/// Validates that a string field is non-empty. Returns buildValidationError result via
+/// optional — use as: `if (try requireField(allocator, "tool", "msg", value)) |r| return r;`
+/// Collapses the 3-line `if (len==0) { return buildValidationError(...); }` pattern to 1 line.
+fn requireField(allocator: std.mem.Allocator, tool_name: []const u8, message: []const u8, value: []const u8) !?ToolExecution {
+    if (value.len == 0) {
+        return try buildValidationError(allocator, tool_name, message);
+    }
+    return null;
+}
+
 fn isSystemPath(path: []const u8) bool {
     const prefixes = [_][]const u8{ "/etc/", "/proc/", "/sys/" };
     for (prefixes) |prefix| {
@@ -552,9 +562,7 @@ fn executeReadFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     var parsed = try std.json.parseFromSlice(ReadFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.path.len == 0) {
-        return buildValidationError(allocator, "read_file", "read_file requires a 'path' parameter. Provide the file path to read.");
-    }
+    if (try requireField(allocator, "read_file", "read_file requires a 'path' parameter. Provide the file path to read.", parsed.value.path)) |r| return r;
     if (isSystemPath(parsed.value.path)) {
         const msg = try std.fmt.allocPrint(allocator, "Reading system files is not allowed. Path: {s}", .{parsed.value.path});
         defer allocator.free(msg);
@@ -614,9 +622,7 @@ fn executeShellTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall
     var parsed = try std.json.parseFromSlice(ShellArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.command.len == 0) {
-        return buildValidationError(allocator, "shell", "shell requires a 'command' parameter. Provide the shell command to execute.");
-    }
+    if (try requireField(allocator, "shell", "shell requires a 'command' parameter. Provide the shell command to execute.", parsed.value.command)) |r| return r;
     if (parsed.value.command.len >= 10000) {
         const msg = try std.fmt.allocPrint(allocator, "Command too long ({d} chars). Maximum is 10000 characters.", .{parsed.value.command.len});
         defer allocator.free(msg);
@@ -673,12 +679,8 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
     var parsed = try std.json.parseFromSlice(WriteFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.path.len == 0) {
-        return buildValidationError(allocator, "write_file", "write_file requires a 'path' parameter.");
-    }
-    if (parsed.value.content.len == 0) {
-        return buildValidationError(allocator, "write_file", "write_file requires 'content' to write.");
-    }
+    if (try requireField(allocator, "write_file", "write_file requires a 'path' parameter.", parsed.value.path)) |r| return r;
+    if (try requireField(allocator, "write_file", "write_file requires 'content' to write.", parsed.value.content)) |r| return r;
     if (isSystemPath(parsed.value.path)) {
         const msg = try std.fmt.allocPrint(allocator, "Writing to system files is not allowed. Path: {s}", .{parsed.value.path});
         defer allocator.free(msg);
@@ -727,9 +729,7 @@ fn executeGlobTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     var parsed = try std.json.parseFromSlice(GlobArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.pattern.len == 0) {
-        return buildValidationError(allocator, "glob", "glob requires a 'pattern' parameter (e.g., '**/*.zig').");
-    }
+    if (try requireField(allocator, "glob", "glob requires a 'pattern' parameter (e.g., '**/*.zig').", parsed.value.pattern)) |r| return r;
 
     const max = parsed.value.max_results orelse 50;
     const find_cmd = try std.fmt.allocPrint(allocator, "find . -name '{s}' -type f 2>/dev/null | head -{d}", .{ parsed.value.pattern, max });
@@ -889,9 +889,7 @@ fn executeGrepTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     var parsed = try std.json.parseFromSlice(GrepArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.pattern.len == 0) {
-        return buildValidationError(allocator, "grep", "grep requires a 'pattern' parameter to search for.");
-    }
+    if (try requireField(allocator, "grep", "grep requires a 'pattern' parameter to search for.", parsed.value.pattern)) |r| return r;
 
     const search_path = parsed.value.path orelse ".";
     const include = parsed.value.include;
@@ -915,12 +913,8 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     var parsed = try std.json.parseFromSlice(EditArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.file_path.len == 0) {
-        return buildValidationError(allocator, "edit", "edit requires 'file_path' parameter.");
-    }
-    if (parsed.value.old_string.len == 0) {
-        return buildValidationError(allocator, "edit", "edit requires 'old_string' to find in the file.");
-    }
+    if (try requireField(allocator, "edit", "edit requires 'file_path' parameter.", parsed.value.file_path)) |r| return r;
+    if (try requireField(allocator, "edit", "edit requires 'old_string' to find in the file.", parsed.value.old_string)) |r| return r;
     if (std.mem.eql(u8, parsed.value.old_string, parsed.value.new_string)) {
         return buildValidationError(allocator, "edit", "old_string and new_string are identical. No change needed.");
     }
@@ -1158,9 +1152,7 @@ fn executeSearchFilesTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     var parsed = try std.json.parseFromSlice(SearchFilesArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.pattern.len == 0) {
-        return buildValidationError(allocator, "search_files", "search_files requires a 'pattern' parameter (e.g., '*.zig').");
-    }
+    if (try requireField(allocator, "search_files", "search_files requires a 'pattern' parameter (e.g., '*.zig').", parsed.value.pattern)) |r| return r;
 
     const directory = parsed.value.directory orelse ".";
     const max_results = parsed.value.max_results orelse 50;
@@ -1285,9 +1277,7 @@ fn executeCreateFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToo
     var parsed = try std.json.parseFromSlice(CreateFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.path.len == 0) {
-        return buildValidationError(allocator, "create_file", "create_file requires a 'path' parameter.");
-    }
+    if (try requireField(allocator, "create_file", "create_file requires a 'path' parameter.", parsed.value.path)) |r| return r;
 
     // Check if file already exists
     if (std.fs.cwd().openFile(parsed.value.path, .{})) |_| {
@@ -1332,12 +1322,8 @@ fn executeMoveFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     var parsed = try std.json.parseFromSlice(MoveFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.source.len == 0) {
-        return buildValidationError(allocator, "move_file", "move_file requires a 'source' parameter.");
-    }
-    if (parsed.value.destination.len == 0) {
-        return buildValidationError(allocator, "move_file", "move_file requires a 'destination' parameter.");
-    }
+    if (try requireField(allocator, "move_file", "move_file requires a 'source' parameter.", parsed.value.source)) |r| return r;
+    if (try requireField(allocator, "move_file", "move_file requires a 'destination' parameter.", parsed.value.destination)) |r| return r;
 
     // Create parent directories for destination if needed
     if (std.fs.path.dirname(parsed.value.destination)) |dir_part| {
@@ -1384,12 +1370,8 @@ fn executeCopyFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     var parsed = try std.json.parseFromSlice(CopyFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.source.len == 0) {
-        return buildValidationError(allocator, "copy_file", "copy_file requires a 'source' parameter.");
-    }
-    if (parsed.value.destination.len == 0) {
-        return buildValidationError(allocator, "copy_file", "copy_file requires a 'destination' parameter.");
-    }
+    if (try requireField(allocator, "copy_file", "copy_file requires a 'source' parameter.", parsed.value.source)) |r| return r;
+    if (try requireField(allocator, "copy_file", "copy_file requires a 'destination' parameter.", parsed.value.destination)) |r| return r;
 
     const src_file = try std.fs.cwd().openFile(parsed.value.source, .{});
     defer src_file.close();
@@ -1433,9 +1415,7 @@ fn executeDeleteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToo
     var parsed = try std.json.parseFromSlice(DeleteFileArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.path.len == 0) {
-        return buildValidationError(allocator, "delete_file", "delete_file requires a 'path' parameter.");
-    }
+    if (try requireField(allocator, "delete_file", "delete_file requires a 'path' parameter.", parsed.value.path)) |r| return r;
 
     // Safety: block paths containing wildcard or parent traversal
     if (std.mem.indexOf(u8, parsed.value.path, "*") != null) {
@@ -1489,9 +1469,7 @@ fn executeFileInfoTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     var parsed = try std.json.parseFromSlice(FileInfoArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
     defer parsed.deinit();
 
-    if (parsed.value.path.len == 0) {
-        return buildValidationError(allocator, "file_info", "file_info requires a 'path' parameter.");
-    }
+    if (try requireField(allocator, "file_info", "file_info requires a 'path' parameter.", parsed.value.path)) |r| return r;
 
     const stat = try std.fs.cwd().statFile(parsed.value.path);
 

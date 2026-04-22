@@ -8,6 +8,7 @@
 
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const collections = @import("collections");
 
 const Allocator = std.mem.Allocator;
 
@@ -328,11 +329,7 @@ pub const LiveAgentTeam = struct {
 
     /// Get count of agents by status.
     pub fn countByStatus(self: *const LiveAgentTeam, status: AgentStatus) u32 {
-        var count: u32 = 0;
-        for (self.agents.items) |agent| {
-            if (agent.status == status) count += 1;
-        }
-        return count;
+        return collections.countMatching(self.agents.items, "status", status);
     }
 };
 

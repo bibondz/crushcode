@@ -5,6 +5,7 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const file_compat = @import("file_compat");
+const collections = @import("collections");
 
 const Allocator = std.mem.Allocator;
 
@@ -274,11 +275,7 @@ pub const SkillPipeline = struct {
 
     /// Count steps by status.
     pub fn countByStatus(self: *const SkillPipeline, target: PhaseStatus) u32 {
-        var count: u32 = 0;
-        for (self.steps.items) |step| {
-            if (step.status == target) count += 1;
-        }
-        return count;
+        return collections.countMatching(self.steps.items, "status", target);
     }
 
     /// Total duration in milliseconds.
