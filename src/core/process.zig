@@ -38,3 +38,43 @@ pub fn runShellCommand(allocator: std.mem.Allocator, command: []const u8) !Proce
         .exit_code = exit_code,
     };
 }
+
+test "runShellCommand - echo hello" {
+    const result = try runShellCommand(std.testing.allocator, "echo hello");
+    defer {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    }
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stdout, "hello") != null);
+}
+
+test "runShellCommand - exit code" {
+    const result = try runShellCommand(std.testing.allocator, "exit 42");
+    defer {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    }
+    try std.testing.expectEqual(@as(u8, 42), result.exit_code);
+}
+
+test "runShellCommand - stderr capture" {
+    const result = try runShellCommand(std.testing.allocator, "echo error_msg >&2");
+    defer {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    }
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expect(std.mem.indexOf(u8, result.stderr, "error_msg") != null);
+}
+
+test "runShellCommand - empty output" {
+    const result = try runShellCommand(std.testing.allocator, "true");
+    defer {
+        std.testing.allocator.free(result.stdout);
+        std.testing.allocator.free(result.stderr);
+    }
+    try std.testing.expectEqual(@as(u8, 0), result.exit_code);
+    try std.testing.expectEqual(@as(usize, 0), result.stdout.len);
+    try std.testing.expectEqual(@as(usize, 0), result.stderr.len);
+}

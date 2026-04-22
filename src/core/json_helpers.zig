@@ -34,3 +34,41 @@ pub fn extractJsonStringField(json: []const u8, field_name: []const u8) ?[]const
 
     return rest[value_start..i];
 }
+
+test "extractJsonStringField - basic extraction" {
+    const json = "{\"name\":\"Alice\",\"age\":30}";
+    const result = extractJsonStringField(json, "name");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("Alice", result.?);
+}
+
+test "extractJsonStringField - missing field returns null" {
+    const json = "{\"name\":\"Alice\"}";
+    const result = extractJsonStringField(json, "missing");
+    try std.testing.expect(result == null);
+}
+
+test "extractJsonStringField - handles escaped quotes" {
+    const json = "{\"msg\":\"hello \\\"world\\\"\"}";
+    const result = extractJsonStringField(json, "msg");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("hello \\\"world\\\"", result.?);
+}
+
+test "extractJsonStringField - handles whitespace around colon" {
+    const json = "{\"key\"  :  \"value\"}";
+    const result = extractJsonStringField(json, "key");
+    try std.testing.expect(result != null);
+    try std.testing.expectEqualStrings("value", result.?);
+}
+
+test "extractJsonStringField - empty string returns null" {
+    const result = extractJsonStringField("", "field");
+    try std.testing.expect(result == null);
+}
+
+test "extractJsonStringField - number field returns null (not a string)" {
+    const json = "{\"count\":42}";
+    const result = extractJsonStringField(json, "count");
+    try std.testing.expect(result == null);
+}
