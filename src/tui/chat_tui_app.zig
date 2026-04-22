@@ -67,6 +67,16 @@ const review_mod = @import("review");
 const commit_mod = @import("commit");
 const hooks_mod = @import("hooks_registry");
 const hooks_config_mod = @import("hooks_config");
+const model_palette = @import("model/palette.zig");
+const input_handling = @import("model/input_handling.zig");
+const navigation = @import("model/navigation.zig");
+const model_fallback = @import("model/fallback.zig");
+const permissions_mod = @import("model/permissions.zig");
+const history_mod = @import("model/history.zig");
+const session_time_mod = @import("model/session_time.zig");
+const mcp_status_mod = @import("model/mcp_status.zig");
+const notifications_mod = @import("model/notifications.zig");
+const token_tracking_mod = @import("model/token_tracking.zig");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -584,7 +594,7 @@ pub const Model = struct {
 
         try model.registry.registerAllProviders();
         try model.buildCodebaseContext();
-        try model.loadFallbackProviders();
+        try model_fallback.loadFallbackProviders(model);
         try std.fs.cwd().makePath(model.session_dir);
 
         // Initialize cross-session memory with proper path
@@ -602,7 +612,7 @@ pub const Model = struct {
                 model.provider_name = try model.allocator.dupe(u8, selected_provider);
             }
         } else {
-            try model.addMessageUnlocked("assistant", "TUI chat ready. Type a message and press Enter.");
+            try history_mod.addMessageUnlocked(model, "assistant", "TUI chat ready. Type a message and press Enter.");
             try model.initializeClient();
         }
         return model;
@@ -616,7 +626,7 @@ pub const Model = struct {
         if (self.feedback) |*fb| fb.deinit();
         if (self.guardian) |*g| g.deinit();
 
-        self.resolvePendingPermission(.no);
+        permissions_mod.resolvePendingPermission(self, .no);
         if (self.worker) |thread| {
             thread.join();
             self.worker = null;
@@ -846,9 +856,9 @@ pub const Model = struct {
             .model = try self.allocator.dupe(u8, self.model_name),
             .provider = try self.allocator.dupe(u8, self.provider_name),
             .total_tokens = self.total_input_tokens + self.total_output_tokens,
-            .total_cost = self.estimatedCostUsd(),
+            .total_cost = token_tracking_mod.estimatedCostUsd(self),
             .turn_count = self.request_count,
-            .duration_seconds = @intCast(@min(self.sessionElapsedSeconds(), std.math.maxInt(u32))),
+            .duration_seconds = @intCast(@min(session_time_mod.sessionElapsedSeconds(self), std.math.maxInt(u32))),
         };
         errdefer session_mod.deinitSession(self.allocator, &snapshot);
 
@@ -876,8 +886,8 @@ pub const Model = struct {
         var owned_session = session;
         errdefer session_mod.deinitSession(self.allocator, &owned_session);
 
-        self.clearMessagesUnlocked();
-        self.clearHistoryUnlocked();
+        history_mod.clearMessagesUnlocked(self);
+        history_mod.clearHistoryUnlocked(self);
         self.clearRecentFilesUnlocked();
         self.assistant_stream_index = null;
         self.awaiting_first_token = false;
@@ -898,14 +908,14 @@ pub const Model = struct {
                 .tool_calls = try cloneToolCallInfos(self.allocator, message.tool_calls),
             });
             if (message.tool_calls) |tool_calls| {
-                try self.trackToolCallFilesUnlocked(tool_calls);
+                try history_mod.trackToolCallFilesUnlocked(self, tool_calls);
             }
         }
 
-        try self.replaceOwnedString(&self.provider_name, owned_session.provider);
-        try self.replaceOwnedString(&self.model_name, owned_session.model);
-        self.resetFallbackProviders();
-        try self.loadFallbackProviders();
+        try input_handling.replaceOwnedString(self,&self.provider_name, owned_session.provider);
+        try input_handling.replaceOwnedString(self,&self.model_name, owned_session.model);
+        model_fallback.resetFallbackProviders(self);
+        try model_fallback.loadFallbackProviders(self);
         try self.refreshClientForSessionResumeUnlocked();
 
         self.total_input_tokens = owned_session.total_tokens;
@@ -933,9 +943,9 @@ pub const Model = struct {
         };
 
         if (config.getApiKey(self.provider_name)) |api_key| {
-            try self.replaceOwnedString(&self.api_key, api_key);
+            try input_handling.replaceOwnedString(self,&self.api_key, api_key);
         } else if (setupProviderAllowsEmptyKey(self.provider_name)) {
-            try self.replaceOwnedString(&self.api_key, "");
+            try input_handling.replaceOwnedString(self,&self.api_key, "");
         }
 
         if (self.override_url) |override_url| {
@@ -1022,7 +1032,7 @@ pub const Model = struct {
 
     fn resumeSessionByIdUnlocked(self: *Model, session_id: []const u8) !void {
         if (self.request_active) {
-            try self.addMessageUnlocked("error", "Cannot resume a session while a response is still streaming.");
+            try history_mod.addMessageUnlocked(self, "error", "Cannot resume a session while a response is still streaming.");
             return;
         }
 
@@ -1045,8 +1055,8 @@ pub const Model = struct {
 
         try session_mod.deleteSession(self.allocator, path);
         if (deleting_current) {
-            self.clearMessagesUnlocked();
-            self.clearHistoryUnlocked();
+            history_mod.clearMessagesUnlocked(self);
+            history_mod.clearHistoryUnlocked(self);
             self.clearRecentFilesUnlocked();
             self.total_input_tokens = 0;
             self.total_output_tokens = 0;
@@ -1091,19 +1101,19 @@ pub const Model = struct {
 
     fn initializeClientFor(self: *Model, provider_name: []const u8, model_name: []const u8, api_key: []const u8, override_url: ?[]const u8) !void {
         if (provider_name.len == 0) {
-            try self.addMessageUnlocked("error", "No provider configured. Set one in ~/.crushcode/config.toml or use a profile.");
+            try history_mod.addMessageUnlocked(self, "error", "No provider configured. Set one in ~/.crushcode/config.toml or use a profile.");
             return;
         }
 
         const provider = self.registry.getProvider(provider_name) orelse {
             const text = try std.fmt.allocPrint(self.allocator, "Provider '{s}' is not registered. Run 'crushcode list --providers' to see available providers.", .{provider_name});
             defer self.allocator.free(text);
-            try self.addMessageUnlocked("error", text);
+            try history_mod.addMessageUnlocked(self, "error", text);
             return;
         };
 
         if (api_key.len == 0 and !provider.config.is_local) {
-            try self.addMessageUnlocked("error", "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml");
+            try history_mod.addMessageUnlocked(self, "error", "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml");
             return;
         }
 
@@ -1464,85 +1474,6 @@ pub const Model = struct {
         self.effective_system_prompt = try self.allocator.dupe(u8, final_base);
     }
 
-    fn loadFallbackProviders(self: *Model) !void {
-        var config = config_mod.Config.init(self.allocator);
-        defer config.deinit();
-
-        config.loadDefault() catch |err| switch (err) {
-            error.ConfigNotFound, error.FileNotFound => {},
-            else => return err,
-        };
-
-        try self.appendFallbackProvider(self.provider_name, self.api_key, self.model_name, self.override_url);
-
-        for (setup_provider_data) |provider_name| {
-            if (std.mem.eql(u8, provider_name, self.provider_name)) continue;
-            const provider = self.registry.getProvider(provider_name) orelse continue;
-            const api_key = config.getApiKey(provider_name) orelse "";
-            if (api_key.len == 0 and !provider.config.is_local) continue;
-            const model_name = self.fallbackModelForProvider(provider_name);
-            try self.appendFallbackProvider(provider_name, api_key, model_name, config.getProviderOverrideUrl(provider_name));
-        }
-
-        self.active_provider_index = self.findFallbackProviderIndex(self.provider_name) orelse 0;
-    }
-
-    fn resetFallbackProviders(self: *Model) void {
-        self.fallback_chain.deinit();
-        self.fallback_chain = fallback_mod.FallbackChain.init(self.allocator);
-        for (self.fallback_providers.items) |provider| self.freeFallbackProvider(provider);
-        self.fallback_providers.clearRetainingCapacity();
-        self.active_provider_index = 0;
-    }
-
-    fn appendFallbackProvider(self: *Model, provider_name: []const u8, api_key: []const u8, model_name: []const u8, override_url: ?[]const u8) !void {
-        if (self.findFallbackProviderIndex(provider_name) != null) return;
-
-        try self.fallback_chain.addEntry(provider_name, model_name);
-        try self.fallback_providers.append(self.allocator, .{
-            .provider_name = try self.allocator.dupe(u8, provider_name),
-            .api_key = try self.allocator.dupe(u8, api_key),
-            .model_name = try self.allocator.dupe(u8, model_name),
-            .override_url = if (override_url) |url| try self.allocator.dupe(u8, url) else null,
-        });
-    }
-
-    fn fallbackModelForProvider(self: *const Model, provider_name: []const u8) []const u8 {
-        if (std.mem.eql(u8, provider_name, self.provider_name)) return self.model_name;
-        if (std.mem.indexOfScalar(u8, self.model_name, '/') == null) return self.model_name;
-        return setupDefaultModel(provider_name);
-    }
-
-    fn findFallbackProviderIndex(self: *const Model, provider_name: []const u8) ?usize {
-        for (self.fallback_providers.items, 0..) |provider, index| {
-            if (std.mem.eql(u8, provider.provider_name, provider_name)) return index;
-        }
-        return null;
-    }
-
-    fn freeFallbackProvider(self: *Model, provider: FallbackProvider) void {
-        self.allocator.free(provider.provider_name);
-        self.allocator.free(provider.api_key);
-        self.allocator.free(provider.model_name);
-        if (provider.override_url) |override_url| self.allocator.free(override_url);
-    }
-
-    fn freePendingPermission(self: *Model, pending: ToolPermission) void {
-        self.allocator.free(pending.tool_name);
-        self.allocator.free(pending.arguments);
-        if (pending.preview_diff) |d| self.allocator.free(d);
-    }
-
-    fn classifyToolTier(tool_name: []const u8) []const u8 {
-        const read_tools = [_][]const u8{ "read_file", "glob", "grep", "list_directory", "file_info", "git_status", "git_diff", "git_log", "search_files" };
-        const write_tools = [_][]const u8{ "write_file", "create_file", "edit", "move_file", "copy_file" };
-        const destructive_tools = [_][]const u8{ "delete_file", "shell" };
-
-        for (read_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "READ";
-        for (write_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "WRITE";
-        for (destructive_tools) |t| if (std.mem.eql(u8, tool_name, t)) return "DESTRUCTIVE";
-        return "unknown";
-    }
 
     fn setStatusMessage(self: *Model, text: []const u8) !void {
         self.lock.lock();
@@ -1576,65 +1507,6 @@ pub const Model = struct {
         };
     }
 
-    fn resolvePendingPermission(self: *Model, decision: PermissionDecision) void {
-        self.permission_mutex.lock();
-        self.permission_decision = decision;
-        self.permission_condition.signal();
-        self.permission_mutex.unlock();
-    }
-
-    fn needsPermission(self: *const Model, tool_name: []const u8) bool {
-        _ = self;
-        if (std.mem.eql(u8, tool_name, "shell")) return true;
-        if (std.mem.eql(u8, tool_name, "write_file")) return true;
-        if (std.mem.eql(u8, tool_name, "edit")) return true;
-        return false;
-    }
-
-    fn isAlwaysAllowed(self: *const Model, tool_name: []const u8) bool {
-        for (self.always_allow_tools.items) |allowed_tool| {
-            if (std.mem.eql(u8, allowed_tool, tool_name)) return true;
-        }
-        return false;
-    }
-
-    fn requestToolPermission(self: *Model, tool_name: []const u8, arguments: []const u8, preview_diff: ?[]const u8) !bool {
-        if (self.permission_mode == .auto or !self.needsPermission(tool_name) or self.isAlwaysAllowed(tool_name)) {
-            return true;
-        }
-
-        self.permission_mutex.lock();
-        defer self.permission_mutex.unlock();
-        self.permission_decision = null;
-
-        self.lock.lock();
-        if (self.pending_permission) |pending| self.freePendingPermission(pending);
-        self.pending_permission = .{
-            .tool_name = try self.allocator.dupe(u8, tool_name),
-            .arguments = try self.allocator.dupe(u8, arguments),
-            .preview_diff = if (preview_diff) |d| try self.allocator.dupe(u8, d) else null,
-            .tool_tier = classifyToolTier(tool_name),
-        };
-        self.lock.unlock();
-
-        while (self.permission_decision == null) {
-            self.permission_condition.wait(&self.permission_mutex);
-        }
-
-        const decision = self.permission_decision.?;
-        self.permission_decision = null;
-
-        self.lock.lock();
-        defer self.lock.unlock();
-        if (decision == .always and !self.isAlwaysAllowed(tool_name)) {
-            self.always_allow_tools.append(self.allocator, try self.allocator.dupe(u8, tool_name)) catch {};
-        }
-        if (self.pending_permission) |pending| {
-            self.freePendingPermission(pending);
-            self.pending_permission = null;
-        }
-        return decision != .no;
-    }
 
     fn widget(self: *Model) vxfw.Widget {
         return .{
@@ -1690,19 +1562,19 @@ pub const Model = struct {
 
                 if (self.pending_permission != null) {
                     if (key.matches('y', .{}) or key.matches('Y', .{})) {
-                        self.resolvePendingPermission(.yes);
+                        permissions_mod.resolvePendingPermission(self, .yes);
                         ctx.consumeEvent();
                         ctx.redraw = true;
                         return;
                     }
                     if (key.matches('n', .{}) or key.matches('N', .{}) or key.matches(vaxis.Key.escape, .{})) {
-                        self.resolvePendingPermission(.no);
+                        permissions_mod.resolvePendingPermission(self, .no);
                         ctx.consumeEvent();
                         ctx.redraw = true;
                         return;
                     }
                     if (key.matches('a', .{}) or key.matches('A', .{})) {
-                        self.resolvePendingPermission(.always);
+                        permissions_mod.resolvePendingPermission(self, .always);
                         ctx.consumeEvent();
                         ctx.redraw = true;
                         return;
@@ -1727,7 +1599,7 @@ pub const Model = struct {
                 }
 
                 if (key.matches('c', .{ .ctrl = true }) or key.matches('q', .{})) {
-                    self.resolvePendingPermission(.no);
+                    permissions_mod.resolvePendingPermission(self, .no);
                     self.should_quit = true;
                     ctx.quit = true;
                     ctx.consumeEvent();
@@ -1740,9 +1612,9 @@ pub const Model = struct {
                         return;
                     }
                     if (self.show_palette) {
-                        try self.closePalette(ctx);
+                        try model_palette.closePalette(self, ctx);
                     } else {
-                        try self.openPalette(ctx);
+                        try model_palette.openPalette(self, ctx);
                     }
                     ctx.consumeEvent();
                     return;
@@ -1854,22 +1726,22 @@ pub const Model = struct {
                     }
                     // Enter — select/deselect message under cursor
                     if (key.matches(vaxis.Key.enter, .{})) {
-                        try self.selectMessageAtCursor(ctx);
+                        try navigation.selectMessageAtCursor(self, ctx);
                         return;
                     }
                     // y — yank (copy with role label) to clipboard
                     if (key.matches('y', .{})) {
-                        try self.copySelectedMessage(ctx, false);
+                        try navigation.copySelectedMessage(self, ctx, false);
                         return;
                     }
                     // c — copy content only to clipboard
                     if (key.matches('c', .{})) {
-                        try self.copySelectedMessage(ctx, true);
+                        try navigation.copySelectedMessage(self, ctx, true);
                         return;
                     }
                     // e — edit: copy message to input field
                     if (key.matches('e', .{})) {
-                        try self.editSelectedMessage(ctx);
+                        try navigation.editSelectedMessage(self, ctx);
                         return;
                     }
                 }
@@ -1889,17 +1761,17 @@ pub const Model = struct {
 
                 if (self.show_palette) {
                     if (key.matches(vaxis.Key.escape, .{})) {
-                        try self.closePalette(ctx);
+                        try model_palette.closePalette(self, ctx);
                         ctx.consumeEvent();
                         return;
                     }
                     if (key.matches(vaxis.Key.up, .{})) {
-                        self.movePaletteSelection(-1);
+                        model_palette.movePaletteSelection(self, -1);
                         ctx.consumeEvent();
                         return;
                     }
                     if (key.matches(vaxis.Key.down, .{})) {
-                        self.movePaletteSelection(1);
+                        model_palette.movePaletteSelection(self, 1);
                         ctx.consumeEvent();
                         return;
                     }
@@ -1992,10 +1864,10 @@ pub const Model = struct {
                 self.model_name,
                 if (self.thinking) "on" else "off",
                 ctx_label,
-                self.contextPercent(),
+                token_tracking_mod.contextPercent(self),
             });
 
-        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme, .context_pct = self.contextPercent(), .file_count = self.context_file_count, .scored_count = self.context_scored_files, .total_count = self.context_total_files };
+        const header = HeaderWidget{ .title = full_title, .theme = self.current_theme, .context_pct = token_tracking_mod.contextPercent(self), .file_count = self.context_file_count, .scored_count = self.context_scored_files, .total_count = self.context_total_files };
         const header_surface = try header.draw(ctx.withConstraints(
             .{ .width = main_width, .height = header_height },
             .{ .width = main_width, .height = header_height },
@@ -2082,20 +1954,20 @@ pub const Model = struct {
                 self.status_message,
                 self.total_input_tokens,
                 self.total_output_tokens,
-                self.estimatedCostUsd(),
+                token_tracking_mod.estimatedCostUsd(self),
                 self.request_count,
-                self.sessionMinutes(),
-                self.sessionSecondsPart(),
+                session_time_mod.sessionMinutes(self),
+                session_time_mod.sessionSecondsPart(self),
                 scroll_indicator,
             })
         else
             try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}", .{
                 self.total_input_tokens,
                 self.total_output_tokens,
-                self.estimatedCostUsd(),
+                token_tracking_mod.estimatedCostUsd(self),
                 self.request_count,
-                self.sessionMinutes(),
-                self.sessionSecondsPart(),
+                session_time_mod.sessionMinutes(self),
+                session_time_mod.sessionSecondsPart(self),
                 scroll_indicator,
             });
         const status_widget = vxfw.Text{
@@ -2113,7 +1985,7 @@ pub const Model = struct {
             .{ .width = main_width, .height = status_height },
         ));
 
-        const ml_input_widget = MultiLineInputWidget{ .prompt = self.currentInputPrompt(), .state = &self.input, .theme = self.current_theme };
+        const ml_input_widget = MultiLineInputWidget{ .prompt = input_handling.currentInputPrompt(self), .state = &self.input, .theme = self.current_theme };
         const input_surface = try ml_input_widget.draw(ctx.withConstraints(
             .{ .width = max.width, .height = input_height },
             .{ .width = max.width, .height = input_height },
@@ -2131,7 +2003,7 @@ pub const Model = struct {
         if (self.sidebar_visible) {
             // Refresh LSP diagnostics before displaying (non-blocking drain)
             self.lsp_manager.refreshDiagnostics();
-            const mcp_status = self.getMCPServerStatus(ctx.arena);
+            const mcp_status = mcp_status_mod.getMCPServerStatus(self, ctx.arena);
             const diag = self.lsp_manager.getDiagnostics();
             var diag_errors: u32 = 0;
             var diag_warnings: u32 = 0;
@@ -2144,9 +2016,9 @@ pub const Model = struct {
                 .request_count = self.request_count,
                 .total_input_tokens = self.total_input_tokens,
                 .total_output_tokens = self.total_output_tokens,
-                .estimated_cost_usd = self.estimatedCostUsd(),
-                .session_minutes = @intCast(self.sessionMinutes()),
-                .session_seconds_part = @intCast(self.sessionSecondsPart()),
+                .estimated_cost_usd = token_tracking_mod.estimatedCostUsd(self),
+                .session_minutes = @intCast(session_time_mod.sessionMinutes(self)),
+                .session_seconds_part = @intCast(session_time_mod.sessionSecondsPart(self)),
                 .workers = self.workers.items,
                 .theme_name = self.current_theme.name,
                 .current_theme = self.current_theme,
@@ -2366,79 +2238,6 @@ pub const Model = struct {
         };
     }
 
-    /// Map the scroll_view cursor position to the actual message index in
-    /// self.messages. The scroll children list interleaves MessageWidget,
-    /// MessageGapWidget, SeparatorWidget — only every 3rd slot (at indices
-    /// 0, 3, 6, …) is a MessageWidget. The last visible message has no
-    /// trailing gap/sep. Returns null if cursor is not on a MessageWidget or
-    /// the index is out of range.
-    fn scrollCursorToMessageIndex(self: *const Model) ?usize {
-        const cursor = self.scroll_view.cursor;
-        // Only cursor positions divisible by 3 point at a MessageWidget
-        if (cursor % 3 != 0) return null;
-        const visible_idx = cursor / 3;
-
-        const messages = self.messages.items;
-        var count: usize = 0;
-        for (messages, 0..) |message, idx| {
-            if (message.tool_call_id != null and findToolCallBefore(messages, idx, message.tool_call_id.?) != null) continue;
-            if (count == visible_idx) return idx;
-            count += 1;
-        }
-        return null;
-    }
-
-    /// Select the message currently under the scroll cursor.
-    fn selectMessageAtCursor(self: *Model, ctx: *vxfw.EventContext) !void {
-        if (self.scrollCursorToMessageIndex()) |msg_idx| {
-            if (self.selected_message_index) |prev| {
-                if (prev == msg_idx) {
-                    // Toggle off if already selected
-                    self.selected_message_index = null;
-                    ctx.consumeAndRedraw();
-                    return;
-                }
-            }
-            self.selected_message_index = msg_idx;
-        }
-        ctx.consumeAndRedraw();
-    }
-
-    /// Copy selected message content to system clipboard.
-    fn copySelectedMessage(self: *Model, ctx: *vxfw.EventContext, content_only: bool) !void {
-        const msg_idx = self.selected_message_index orelse return;
-        if (msg_idx >= self.messages.items.len) return;
-
-        const message = self.messages.items[msg_idx];
-        const text = if (content_only)
-            message.content
-        else
-            try std.fmt.allocPrint(self.allocator, "[{s}]\n{s}", .{ message.role, message.content });
-
-        try ctx.copyToClipboard(text);
-        if (!content_only) self.allocator.free(text);
-
-        self.toast_stack.push("Copied to clipboard", .success) catch {};
-        ctx.consumeAndRedraw();
-    }
-
-    /// Copy selected message content into the input field for re-editing.
-    fn editSelectedMessage(self: *Model, ctx: *vxfw.EventContext) !void {
-        const msg_idx = self.selected_message_index orelse return;
-        if (msg_idx >= self.messages.items.len) return;
-
-        const content = self.messages.items[msg_idx].content;
-        try self.input.insertSliceAtCursor(content);
-
-        // Exit scroll mode and focus the input
-        self.scroll_mode = false;
-        self.auto_scroll = true;
-        self.selected_message_index = null;
-        self.toast_stack.push("Message copied to input", .info) catch {};
-        // NOTE: No requestFocus — Model stays focused, keys forwarded manually
-        ctx.consumeAndRedraw();
-    }
-
     fn handleSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
         self.reapWorkerIfDone();
 
@@ -2454,7 +2253,7 @@ pub const Model = struct {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         if (trimmed.len == 0) return;
         if (std.mem.eql(u8, trimmed, "/exit")) {
-            self.resolvePendingPermission(.no);
+            permissions_mod.resolvePendingPermission(self, .no);
             self.should_quit = true;
             ctx.quit = true;
             return;
@@ -2468,7 +2267,7 @@ pub const Model = struct {
         defer self.lock.unlock();
 
         if (self.request_active) {
-            try self.addMessageUnlocked("error", "Still waiting for the current response. Please wait for it to finish.");
+            try history_mod.addMessageUnlocked(self, "error", "Still waiting for the current response. Please wait for it to finish.");
             ctx.redraw = true;
             return;
         }
@@ -2478,17 +2277,17 @@ pub const Model = struct {
                 "No API key configured. Run crushcode setup or edit ~/.crushcode/config.toml"
             else
                 "Chat client is not ready. Fix the configuration shown above and restart the TUI.";
-            try self.addMessageUnlocked("error", text);
+            try history_mod.addMessageUnlocked(self, "error", text);
             ctx.redraw = true;
             return;
         }
 
-        try self.addMessageUnlocked("user", trimmed);
-        try self.appendHistoryMessageUnlocked("user", trimmed);
+        try history_mod.addMessageUnlocked(self, "user", trimmed);
+        try history_mod.appendHistoryMessageUnlocked(self, "user", trimmed);
         // Persist to cross-session memory
         self.memory.addMessage("user", trimmed) catch {};
         self.memory.save() catch {};
-        try self.addMessageUnlocked("assistant", "Thinking...");
+        try history_mod.addMessageUnlocked(self, "assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
         self.spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
         self.typewriter = widget_typewriter.TypewriterState.init(self.current_theme);
@@ -2497,29 +2296,9 @@ pub const Model = struct {
         self.awaiting_first_token = true;
         try self.saveSessionSnapshotUnlocked();
 
-        self.resetInputField();
+        input_handling.resetInputField(self);
         self.worker = try std.Thread.spawn(.{}, requestThreadMain, .{self});
         ctx.redraw = true;
-    }
-
-    fn resetInputField(self: *Model) void {
-        self.input.deinit();
-        self.input = widget_input.MultiLineInputState.init(self.allocator);
-        self.input.style = .{ .fg = self.current_theme.header_fg };
-        self.input.userdata = self;
-        self.input.onSubmit = onSubmit;
-        self.input.prompt = "❯ ";
-        self.input.suggestion_list = &slash_command_names;
-    }
-
-    fn currentInputPrompt(self: *const Model) []const u8 {
-        return switch (self.setup_phase) {
-            1 => "Select: ",
-            2 => "API key: ",
-            3 => "Model: ",
-            4 => "Continue: ",
-            else => "❯ ",
-        };
     }
 
     fn moveSetupProviderSelection(self: *Model, delta: isize) void {
@@ -2545,20 +2324,14 @@ pub const Model = struct {
         self.setup_feedback_is_error = false;
     }
 
-    fn replaceOwnedString(self: *Model, slot: *[]const u8, value: []const u8) !void {
-        const updated = try self.allocator.dupe(u8, value);
-        self.allocator.free(slot.*);
-        slot.* = updated;
-    }
-
     fn handleSetupSubmit(self: *Model, value: []const u8, ctx: *vxfw.EventContext) !void {
         const trimmed = std.mem.trim(u8, value, " \t\r\n");
         switch (self.setup_phase) {
             1 => {
-                try self.replaceOwnedString(&self.provider_name, setup_provider_data[self.setup_provider_index]);
+                try input_handling.replaceOwnedString(self,&self.provider_name, setup_provider_data[self.setup_provider_index]);
                 self.clearSetupFeedback();
                 self.setup_phase = 2;
-                self.resetInputField();
+                input_handling.resetInputField(self);
             },
             2 => {
                 if (trimmed.len == 0 and !setupProviderAllowsEmptyKey(self.provider_name)) {
@@ -2566,27 +2339,27 @@ pub const Model = struct {
                     ctx.redraw = true;
                     return;
                 }
-                try self.replaceOwnedString(&self.api_key, trimmed);
+                try input_handling.replaceOwnedString(self,&self.api_key, trimmed);
                 self.clearSetupFeedback();
                 self.setup_phase = 3;
-                self.resetInputField();
+                input_handling.resetInputField(self);
             },
             3 => {
                 const resolved_model = if (trimmed.len > 0) trimmed else setupDefaultModel(self.provider_name);
-                try self.replaceOwnedString(&self.model_name, resolved_model);
+                try input_handling.replaceOwnedString(self,&self.model_name, resolved_model);
                 try self.saveSetupConfig();
-                self.resetFallbackProviders();
-                try self.loadFallbackProviders();
+                model_fallback.resetFallbackProviders(self);
+                try model_fallback.loadFallbackProviders(self);
                 try self.initializeClient();
                 self.clearSetupFeedback();
                 self.setup_phase = 4;
-                self.resetInputField();
+                input_handling.resetInputField(self);
             },
             4 => {
                 self.clearSetupFeedback();
                 self.setup_phase = 0;
-                try self.addMessageUnlocked("assistant", "TUI chat ready. Type a message and press Enter.");
-                self.resetInputField();
+                try history_mod.addMessageUnlocked(self, "assistant", "TUI chat ready. Type a message and press Enter.");
+                input_handling.resetInputField(self);
             },
             else => {},
         }
@@ -2617,80 +2390,6 @@ pub const Model = struct {
         try file.writeAll(content);
     }
 
-    fn resetPaletteInputField(self: *Model) void {
-        // Clear text content WITHOUT destroying the TextField widget.
-        // deinit+reinit breaks vaxis focus path tracking: the new widget
-        // instance won't be found in the surface tree, causing
-        //   assert(path.len > 0)  in App.zig FocusHandler.handleEvent
-        const alloc = self.palette_input.buf.allocator;
-        if (self.palette_input.previous_val.len > 0) {
-            alloc.free(self.palette_input.previous_val);
-        }
-        self.palette_input.previous_val = "";
-        self.palette_input.buf.clearAndFree();
-        self.palette_input.reset();
-    }
-
-    fn clearPaletteFilter(self: *Model) void {
-        if (self.palette_filter.len > 0) {
-            self.allocator.free(self.palette_filter);
-        }
-        self.palette_filter = "";
-        self.palette_selected = 0;
-    }
-
-    fn setPaletteFilter(self: *Model, value: []const u8) !void {
-        if (self.palette_filter.len > 0) {
-            self.allocator.free(self.palette_filter);
-        }
-        self.palette_filter = if (value.len == 0) "" else try self.allocator.dupe(u8, value);
-        self.clampPaletteSelection();
-    }
-
-    fn openPalette(self: *Model, ctx: *vxfw.EventContext) !void {
-        self.show_palette = true;
-        self.clearPaletteFilter();
-        self.resetPaletteInputField();
-        // NOTE: Do NOT requestFocus on palette_input — it's buried inside
-        // FlexRow → InputWidget → CommandPaletteWidget, so vaxis focus path
-        // tracking can never find it. Instead, we forward key events manually
-        // in handleEvent when show_palette is true.
-        ctx.redraw = true;
-    }
-
-    fn closePalette(self: *Model, ctx: *vxfw.EventContext) !void {
-        self.show_palette = false;
-        self.clearPaletteFilter();
-        self.resetPaletteInputField();
-        ctx.redraw = true;
-    }
-
-    fn clampPaletteSelection(self: *Model) void {
-        var filtered_indices: [palette_command_data.len]usize = undefined;
-        const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
-        if (filtered_count == 0) {
-            self.palette_selected = 0;
-            return;
-        }
-        if (self.palette_selected >= filtered_count) {
-            self.palette_selected = filtered_count - 1;
-        }
-    }
-
-    fn movePaletteSelection(self: *Model, delta: isize) void {
-        var filtered_indices: [palette_command_data.len]usize = undefined;
-        const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
-        if (filtered_count == 0) {
-            self.palette_selected = 0;
-            return;
-        }
-
-        const current: isize = @intCast(self.palette_selected);
-        const max_index: isize = @intCast(filtered_count - 1);
-        const next = std.math.clamp(current + delta, 0, max_index);
-        self.palette_selected = @intCast(next);
-    }
-
     fn executePaletteSelection(self: *Model, ctx: *vxfw.EventContext) !void {
         var filtered_indices: [palette_command_data.len]usize = undefined;
         const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
@@ -2699,7 +2398,7 @@ pub const Model = struct {
         }
 
         const command = self.palette_commands[filtered_indices[self.palette_selected]];
-        try self.closePalette(ctx);
+        try model_palette.closePalette(self, ctx);
         try self.executePaletteCommand(command.name, ctx);
     }
 
@@ -2721,11 +2420,11 @@ pub const Model = struct {
 
         if (std.mem.eql(u8, name, "/clear")) {
             if (self.request_active) {
-                try self.addMessageUnlocked("error", "Cannot clear the chat while a response is still streaming.");
+                try history_mod.addMessageUnlocked(self, "error", "Cannot clear the chat while a response is still streaming.");
             } else {
                 try self.saveSessionSnapshotUnlocked();
-                self.clearMessagesUnlocked();
-                self.clearHistoryUnlocked();
+                history_mod.clearMessagesUnlocked(self);
+                history_mod.clearHistoryUnlocked(self);
                 self.clearRecentFilesUnlocked();
                 self.total_input_tokens = 0;
                 self.total_output_tokens = 0;
@@ -2740,19 +2439,19 @@ pub const Model = struct {
         } else if (std.mem.startsWith(u8, name, "/resume")) {
             const session_id = std.mem.trim(u8, name[7..], " \t\r\n");
             if (session_id.len == 0) {
-                try self.addMessageUnlocked("assistant", "Usage: /resume <id>");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /resume <id>");
             } else {
                 try self.resumeSessionByIdUnlocked(session_id);
             }
         } else if (std.mem.startsWith(u8, name, "/delete")) {
             const session_id = std.mem.trim(u8, name[7..], " \t\r\n");
             if (session_id.len == 0) {
-                try self.addMessageUnlocked("assistant", "Usage: /delete <id>");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /delete <id>");
             } else {
                 try self.deleteSessionByIdUnlocked(session_id);
                 const text = try std.fmt.allocPrint(self.allocator, "Deleted session {s}", .{session_id});
                 defer self.allocator.free(text);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.startsWith(u8, name, "/plan")) {
             const plan_sub = std.mem.trim(u8, name[5..], " ");
@@ -2760,21 +2459,21 @@ pub const Model = struct {
                 // /plan or /plan status — show current plan mode status
                 const summary = self.plan_mode.statusSummary() catch "Plan mode: error";
                 defer self.allocator.free(summary);
-                try self.addMessageUnlocked("assistant", summary);
+                try history_mod.addMessageUnlocked(self, "assistant", summary);
             } else if (std.mem.eql(u8, plan_sub, "on")) {
                 self.plan_mode.enter();
-                try self.addMessageUnlocked("assistant", "Plan mode enabled. AI will propose changes before executing.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Plan mode enabled. AI will propose changes before executing.");
                 self.refreshEffectiveSystemPrompt() catch {};
             } else if (std.mem.eql(u8, plan_sub, "off")) {
                 self.plan_mode.exit();
-                try self.addMessageUnlocked("assistant", "Plan mode disabled. Changes will be executed directly.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Plan mode disabled. Changes will be executed directly.");
                 self.refreshEffectiveSystemPrompt() catch {};
             } else if (std.mem.eql(u8, plan_sub, "approve")) {
                 if (self.plan_mode.current_plan) |*plan| {
                     plan.approveAll();
                     const formatted = plan.format() catch "Plan approved.";
                     defer self.allocator.free(formatted);
-                    try self.addMessageUnlocked("assistant", formatted);
+                    try history_mod.addMessageUnlocked(self, "assistant", formatted);
                     // Execute approved steps
                     const approved = plan.getApprovedSteps() catch &.{};
                     if (approved.len > 0) {
@@ -2801,15 +2500,15 @@ pub const Model = struct {
                     // Clear the plan after execution
                     self.plan_mode.cancelPlan();
                 } else {
-                    try self.addMessageUnlocked("assistant", "No plan to approve. Ask the AI to propose changes first.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No plan to approve. Ask the AI to propose changes first.");
                 }
             } else if (std.mem.eql(u8, plan_sub, "cancel")) {
                 self.plan_mode.cancelPlan();
                 self.plan_mode.exit();
-                try self.addMessageUnlocked("assistant", "Plan cancelled and discarded.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Plan cancelled and discarded.");
                 self.refreshEffectiveSystemPrompt() catch {};
             } else {
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Plan Mode Commands:
                     \\  /plan         — Show plan mode status
                     \\  /plan on      — Enable plan mode (AI proposes instead of executing)
@@ -2820,7 +2519,7 @@ pub const Model = struct {
             }
         } else if (std.mem.eql(u8, name, "/cognition")) {
             if (!self.pipeline_initialized) {
-                try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
             } else if (self.pipeline) |*p| {
                 const s = p.stats();
                 const text = try std.fmt.allocPrint(self.allocator,
@@ -2835,19 +2534,19 @@ pub const Model = struct {
                     \\  Source tokens:   {d}
                 , .{ s.files_indexed, s.graph_nodes, s.graph_edges, s.communities, s.vault_nodes, s.memory_entries, s.insights_count, s.total_source_tokens });
                 defer self.allocator.free(text);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/user")) {
             if (self.user_model) |*um| {
                 const prefs = um.toPromptSection() catch null;
                 if (prefs) |p| {
                     defer self.allocator.free(p);
-                    try self.addMessageUnlocked("assistant", p);
+                    try history_mod.addMessageUnlocked(self, "assistant", p);
                 } else {
-                    try self.addMessageUnlocked("assistant", "No user preferences recorded yet.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No user preferences recorded yet.");
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "User model not initialized.");
+                try history_mod.addMessageUnlocked(self, "assistant", "User model not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/feedback") or std.mem.startsWith(u8, name, "/feedback ")) {
             const fb_sub = std.mem.trim(u8, name["/feedback".len..], " ");
@@ -2856,11 +2555,11 @@ pub const Model = struct {
                     // Show stats
                     const stats = fb.formatStats() catch "Error getting feedback stats";
                     defer self.allocator.free(stats);
-                    try self.addMessageUnlocked("assistant", stats);
+                    try history_mod.addMessageUnlocked(self, "assistant", stats);
                 } else if (std.mem.eql(u8, fb_sub, "recent")) {
                     const recent = fb.formatRecent(10) catch "Error getting recent feedback";
                     defer self.allocator.free(recent);
-                    try self.addMessageUnlocked("assistant", recent);
+                    try history_mod.addMessageUnlocked(self, "assistant", recent);
                 } else if (std.mem.startsWith(u8, fb_sub, "rate ")) {
                     // /feedback rate <task_id> <1-5>
                     const rate_args = std.mem.trim(u8, fb_sub["rate ".len..], " ");
@@ -2870,25 +2569,25 @@ pub const Model = struct {
                         const tid = rate_args[0..si];
                         const rating_str = std.mem.trim(u8, rate_args[si + 1 ..], " ");
                         const rating = std.fmt.parseInt(u8, rating_str, 10) catch {
-                            try self.addMessageUnlocked("assistant", "Invalid rating. Use a number 1-5.");
+                            try history_mod.addMessageUnlocked(self, "assistant", "Invalid rating. Use a number 1-5.");
                             ctx.redraw = true;
                             return;
                         };
                         fb.rateTask(tid, rating) catch |err| {
                             const err_text = std.fmt.allocPrint(self.allocator, "Failed to rate task: {}", .{err}) catch "Error";
                             defer self.allocator.free(err_text);
-                            try self.addMessageUnlocked("assistant", err_text);
+                            try history_mod.addMessageUnlocked(self, "assistant", err_text);
                             ctx.redraw = true;
                             return;
                         };
                         const success_text = std.fmt.allocPrint(self.allocator, "Rated task {s} as {d}/5", .{ tid, rating }) catch "Rated";
                         defer self.allocator.free(success_text);
-                        try self.addMessageUnlocked("assistant", success_text);
+                        try history_mod.addMessageUnlocked(self, "assistant", success_text);
                     } else {
-                        try self.addMessageUnlocked("assistant", "Usage: /feedback rate <task_id> <1-5>");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Usage: /feedback rate <task_id> <1-5>");
                     }
                 } else {
-                    try self.addMessageUnlocked("assistant",
+                    try history_mod.addMessageUnlocked(self, "assistant",
                         \\Feedback Commands:
                         \\  /feedback              — show statistics
                         \\  /feedback recent       — show last 10 entries
@@ -2896,7 +2595,7 @@ pub const Model = struct {
                     );
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "Feedback store not initialized.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Feedback store not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/delegate") or std.mem.startsWith(u8, name, "/delegate ")) {
             const del_sub = std.mem.trim(u8, name["/delegate".len..], " ");
@@ -2906,15 +2605,15 @@ pub const Model = struct {
                 const mode_str: []const u8 = if (self.delegate_mode) "ON" else "OFF";
                 const text = try std.fmt.allocPrint(self.allocator, "{s}\n  Delegate mode: {s}", .{ stats, mode_str });
                 defer self.allocator.free(text);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else if (std.mem.eql(u8, del_sub, "on")) {
                 self.delegate_mode = true;
-                try self.addMessageUnlocked("assistant", "Delegate mode enabled. Multiple tool calls will be batched through sub-agents.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Delegate mode enabled. Multiple tool calls will be batched through sub-agents.");
             } else if (std.mem.eql(u8, del_sub, "off")) {
                 self.delegate_mode = false;
-                try self.addMessageUnlocked("assistant", "Delegate mode disabled. Tool calls execute sequentially.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Delegate mode disabled. Tool calls execute sequentially.");
             } else {
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Delegate Commands:
                     \\  /delegate          — show delegation stats and mode
                     \\  /delegate on       — enable delegation mode (batch tool calls)
@@ -2924,7 +2623,7 @@ pub const Model = struct {
         } else if (std.mem.eql(u8, name, "/autopilot") or std.mem.startsWith(u8, name, "/autopilot ")) {
             const auto_sub = std.mem.trim(u8, name["/autopilot".len..], " ");
             if (auto_sub.len == 0) {
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Autopilot Engine:
                     \\  /autopilot run <agent-id>  — run a specific agent
                     \\  /autopilot status [agent]  — show agent status
@@ -2934,13 +2633,13 @@ pub const Model = struct {
             } else if (std.mem.startsWith(u8, auto_sub, "run ")) {
                 const agent_id = std.mem.trim(u8, auto_sub["run ".len..], " ");
                 if (agent_id.len == 0) {
-                    try self.addMessageUnlocked("assistant", "Usage: /autopilot run <agent-id>");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Usage: /autopilot run <agent-id>");
                 } else if (!self.pipeline_initialized) {
-                    try self.addMessageUnlocked("assistant", "Pipeline not initialized — cannot run autopilot.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized — cannot run autopilot.");
                 } else if (self.pipeline) |*p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
-                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
                         ctx.redraw = true;
                         return;
                     };
@@ -2948,7 +2647,7 @@ pub const Model = struct {
                     const result = engine.runAgentWork(agent_id) catch |err| {
                         const err_text = try std.fmt.allocPrint(self.allocator, "Agent '{s}' failed: {}", .{ agent_id, err });
                         defer self.allocator.free(err_text);
-                        try self.addMessageUnlocked("assistant", err_text);
+                        try history_mod.addMessageUnlocked(self, "assistant", err_text);
                         ctx.redraw = true;
                         return;
                     };
@@ -2969,16 +2668,16 @@ pub const Model = struct {
                         result.graph_nodes,
                     });
                     defer self.allocator.free(text);
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 }
             } else if (std.mem.startsWith(u8, auto_sub, "status")) {
                 const status_arg = std.mem.trim(u8, auto_sub["status".len..], " ");
                 if (!self.pipeline_initialized) {
-                    try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
                 } else if (self.pipeline) |*p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
-                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
                         ctx.redraw = true;
                         return;
                     };
@@ -2987,56 +2686,56 @@ pub const Model = struct {
                         const status_text = engine.getAgentStatus(status_arg);
                         if (status_text) |stext| {
                             defer self.allocator.free(stext);
-                            try self.addMessageUnlocked("assistant", stext);
+                            try history_mod.addMessageUnlocked(self, "assistant", stext);
                         } else {
                             const not_found = try std.fmt.allocPrint(self.allocator, "Agent '{s}' not found.", .{status_arg});
                             defer self.allocator.free(not_found);
-                            try self.addMessageUnlocked("assistant", not_found);
+                            try history_mod.addMessageUnlocked(self, "assistant", not_found);
                         }
                     } else {
                         engine.printStats();
-                        try self.addMessageUnlocked("assistant", "Autopilot stats printed to log.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Autopilot stats printed to log.");
                     }
                 }
             } else if (std.mem.eql(u8, auto_sub, "schedule")) {
                 if (!self.pipeline_initialized) {
-                    try self.addMessageUnlocked("assistant", "Pipeline not initialized — cannot run schedule.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized — cannot run schedule.");
                 } else if (self.pipeline) |*p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
-                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
                         ctx.redraw = true;
                         return;
                     };
                     defer engine.deinit();
                     engine.runScheduledWork() catch {};
                     engine.printStats();
-                    try self.addMessageUnlocked("assistant", "Scheduled agents executed. Stats printed to log.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Scheduled agents executed. Stats printed to log.");
                 }
             } else if (std.mem.eql(u8, auto_sub, "list")) {
                 if (!self.pipeline_initialized) {
-                    try self.addMessageUnlocked("assistant", "Pipeline not initialized.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
                 } else if (self.pipeline) |*p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
-                        try self.addMessageUnlocked("assistant", "Failed to initialize autopilot engine.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
                         ctx.redraw = true;
                         return;
                     };
                     defer engine.deinit();
                     const listing = engine.listAgents(self.allocator) catch "(failed to list agents)";
                     defer self.allocator.free(listing);
-                    try self.addMessageUnlocked("assistant", listing);
+                    try history_mod.addMessageUnlocked(self, "assistant", listing);
                 }
             } else {
                 const err_text = try std.fmt.allocPrint(self.allocator, "Unknown autopilot subcommand: {s}\nUse: run, status, schedule, list", .{auto_sub});
                 defer self.allocator.free(err_text);
-                try self.addMessageUnlocked("assistant", err_text);
+                try history_mod.addMessageUnlocked(self, "assistant", err_text);
             }
         } else if (std.mem.eql(u8, name, "/crush") or std.mem.startsWith(u8, name, "/crush ")) {
             const crush_task = std.mem.trim(u8, name["/crush".len..], " ");
             if (crush_task.len == 0) {
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Crush Mode — auto-agentic execution
                     \\
                     \\Usage: /crush <task description>
@@ -3070,19 +2769,19 @@ pub const Model = struct {
             defer msg_buf.deinit();
             msg_buf.writer().print("🤖 **Crush Mode Activated**\n\n**Task:** {s}\n\n{s}", .{ crush_task, progress }) catch {};
             const msg = try msg_buf.toOwnedSlice();
-            try self.addMessageUnlocked("assistant", msg);
+            try history_mod.addMessageUnlocked(self, "assistant", msg);
 
             // Note: Full execution requires AI provider loop integration.
             // For now, show the plan state and mark as requiring provider connection.
             self.crush_progress = "Ready — awaiting provider connection for execution";
-            try self.addMessageUnlocked("system", "Crush Mode plan generated. Full auto-execution requires streaming AI response — use `/crush <task>` with an active provider.");
+            try history_mod.addMessageUnlocked(self, "system", "Crush Mode plan generated. Full auto-execution requires streaming AI response — use `/crush <task>` with an active provider.");
             self.crush_active = false;
         } else if (std.mem.startsWith(u8, name, "/team")) {
             // /team subcommands: create, add, run, status, results, cancel
             if (std.mem.startsWith(u8, name, "/team create ")) {
                 const team_name = std.mem.trim(u8, name["/team create ".len..], " ");
                 if (team_name.len == 0) {
-                    try self.addMessageUnlocked("assistant", "Usage: /team create <name>");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Usage: /team create <name>");
                 } else {
                     // Clean up existing team if any
                     if (self.live_team != null) {
@@ -3091,38 +2790,38 @@ pub const Model = struct {
                     }
                     var team = team_coordinator_lib.LiveAgentTeam.init(self.allocator);
                     team.createTeam(team_name, 4, 500000) catch {
-                        try self.addMessageUnlocked("assistant", "Error: failed to create team.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to create team.");
                         ctx.redraw = true;
                         return;
                     };
                     self.live_team = team;
                     const text = try std.fmt.allocPrint(self.allocator, "Team '{s}' created.\nMax parallel: 4 agents\nBudget: 500,000 tokens\nUse /team add <task> to assign tasks.", .{team_name});
                     defer self.allocator.free(text);
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 }
             } else if (std.mem.startsWith(u8, name, "/team add ")) {
                 const task_prompt = std.mem.trim(u8, name["/team add ".len..], " ");
                 if (task_prompt.len == 0) {
-                    try self.addMessageUnlocked("assistant", "Usage: /team add <task description>");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Usage: /team add <task description>");
                 } else if (self.live_team == null) {
-                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No team created. Use /team create <name> first.");
                 } else {
                     const agent_id = self.live_team.?.assignTask(task_prompt, null, "") catch {
-                        try self.addMessageUnlocked("assistant", "Error: failed to assign task.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to assign task.");
                         ctx.redraw = true;
                         return;
                     };
                     const text = try std.fmt.allocPrint(self.allocator, "Task assigned to agent-{d}.\nUse /team run to execute all tasks.", .{agent_id});
                     defer self.allocator.free(text);
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 }
             } else if (std.mem.eql(u8, name, "/team run")) {
                 if (self.live_team == null) {
-                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No team created. Use /team create <name> first.");
                 } else {
                     const idle_count = self.live_team.?.countByStatus(.idle);
                     if (idle_count == 0) {
-                        try self.addMessageUnlocked("assistant", "No idle tasks to run. Use /team add <task> to assign tasks.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "No idle tasks to run. Use /team add <task> to assign tasks.");
                     } else {
                         // Resolve base URL from registry or override
                         const base_url: []const u8 = if (self.override_url) |url| url else blk: {
@@ -3130,16 +2829,16 @@ pub const Model = struct {
                             break :blk provider.config.base_url;
                         };
                         if (base_url.len == 0) {
-                            try self.addMessageUnlocked("assistant", "Error: no provider base URL available. Initialize a provider first.");
+                            try history_mod.addMessageUnlocked(self, "assistant", "Error: no provider base URL available. Initialize a provider first.");
                         } else {
-                            try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Executing {d} task(s)...", .{idle_count}));
+                            try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Executing {d} task(s)...", .{idle_count}));
                             self.live_team.?.executeAll(
                                 self.provider_name,
                                 base_url,
                                 self.api_key,
                                 self.model_name,
                             ) catch {
-                                try self.addMessageUnlocked("assistant", "Error: team execution failed.");
+                                try history_mod.addMessageUnlocked(self, "assistant", "Error: team execution failed.");
                                 ctx.redraw = true;
                                 return;
                             };
@@ -3147,28 +2846,28 @@ pub const Model = struct {
                             const failed = self.live_team.?.countByStatus(.failed);
                             const text = try std.fmt.allocPrint(self.allocator, "Team execution complete.\nCompleted: {d}\nFailed: {d}\nUse /team results to see outputs.", .{ done, failed });
                             defer self.allocator.free(text);
-                            try self.addMessageUnlocked("assistant", text);
+                            try history_mod.addMessageUnlocked(self, "assistant", text);
                         }
                     }
                 }
             } else if (std.mem.eql(u8, name, "/team status")) {
                 if (self.live_team == null) {
-                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No team created. Use /team create <name> first.");
                 } else {
                     const status_json = self.live_team.?.getStatus() catch {
-                        try self.addMessageUnlocked("assistant", "Error: failed to get team status.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to get team status.");
                         ctx.redraw = true;
                         return;
                     };
                     defer self.allocator.free(status_json);
-                    try self.addMessageUnlocked("assistant", status_json);
+                    try history_mod.addMessageUnlocked(self, "assistant", status_json);
                 }
             } else if (std.mem.eql(u8, name, "/team results")) {
                 if (self.live_team == null) {
-                    try self.addMessageUnlocked("assistant", "No team created. Use /team create <name> first.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No team created. Use /team create <name> first.");
                 } else {
                     const results = self.live_team.?.getResults() catch {
-                        try self.addMessageUnlocked("assistant", "Error: failed to get results.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to get results.");
                         ctx.redraw = true;
                         return;
                     };
@@ -3177,7 +2876,7 @@ pub const Model = struct {
                         self.allocator.free(results);
                     }
                     if (results.len == 0) {
-                        try self.addMessageUnlocked("assistant", "No completed results yet. Use /team run to execute tasks.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "No completed results yet. Use /team run to execute tasks.");
                     } else {
                         var buf = array_list_compat.ArrayList(u8).init(self.allocator);
                         defer buf.deinit();
@@ -3194,20 +2893,20 @@ pub const Model = struct {
                             writer.print("  Output: {s:.200}\n", .{r.output}) catch {};
                             writer.print("  Tokens: {d} | Cost: ${d:.4}\n", .{ r.token_usage, r.cost }) catch {};
                         }
-                        try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+                        try history_mod.addMessageUnlocked(self, "assistant", try buf.toOwnedSlice());
                     }
                 }
             } else if (std.mem.eql(u8, name, "/team cancel")) {
                 if (self.live_team == null) {
-                    try self.addMessageUnlocked("assistant", "No team to cancel.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No team to cancel.");
                 } else {
                     self.live_team.?.cancelAll();
-                    try self.addMessageUnlocked("assistant", "All running agents cancelled.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "All running agents cancelled.");
                 }
             } else {
                 // Default /team or /team help — show orchestration stats + usage help
                 var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
-                    try self.addMessageUnlocked("assistant",
+                    try history_mod.addMessageUnlocked(self, "assistant",
                         \\Team Commands:
                         \\  /team create <name>    — create a new agent team
                         \\  /team add <task>       — add a task to the team
@@ -3221,7 +2920,7 @@ pub const Model = struct {
                 };
                 defer engine.deinit();
                 engine.printStats();
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Team orchestration stats printed to log.
                     \\
                     \\Team Commands:
@@ -3236,16 +2935,16 @@ pub const Model = struct {
         } else if (std.mem.startsWith(u8, name, "/spawn ")) {
             const spawn_desc = std.mem.trim(u8, name["/spawn ".len..], " ");
             if (spawn_desc.len == 0) {
-                try self.addMessageUnlocked("assistant", "Usage: /spawn <task description>");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /spawn <task description>");
             } else {
                 var engine = orchestration_mod.OrchestrationEngine.init(self.allocator) catch {
-                    try self.addMessageUnlocked("assistant", "Error: failed to initialize orchestration engine.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to initialize orchestration engine.");
                     ctx.redraw = true;
                     return;
                 };
                 defer engine.deinit();
                 const result = engine.spawnTeam(spawn_desc, 3) catch {
-                    try self.addMessageUnlocked("assistant", "Error: failed to spawn team.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error: failed to spawn team.");
                     ctx.redraw = true;
                     return;
                 };
@@ -3287,12 +2986,12 @@ pub const Model = struct {
                 }
 
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/phase-run") or std.mem.startsWith(u8, name, "/phase-run ")) {
             const phase_arg = std.mem.trim(u8, name["/phase-run".len..], " ");
             if (phase_arg.len == 0) {
-                try self.addMessageUnlocked("assistant",
+                try history_mod.addMessageUnlocked(self, "assistant",
                     \\Phase Runner:
                     \\  /phase-run <name>  — run a simple 2-phase workflow
                     \\  /phase-run status  — show phase runner info
@@ -3306,14 +3005,14 @@ pub const Model = struct {
                     \\  Guardian: {s}
                 , .{ pipeline_status, guardian_status });
                 defer self.allocator.free(text);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else {
                 var runner = phase_runner_mod.PhaseRunner.init(self.allocator, .{
                     .name = phase_arg,
                     .use_adversarial_gates = false,
                     .verbose = false,
                 }) catch {
-                    try self.addMessageUnlocked("assistant", "Failed to initialize phase runner.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize phase runner.");
                     ctx.redraw = true;
                     return;
                 };
@@ -3321,19 +3020,19 @@ pub const Model = struct {
 
                 const discuss_tasks = [_][]const u8{ "Gather requirements", "Clarify scope" };
                 runner.addPhase(1, "discuss", "Gather requirements and clarify scope for the user goal objective", &discuss_tasks) catch {
-                    try self.addMessageUnlocked("assistant", "Failed to add discuss phase.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Failed to add discuss phase.");
                     ctx.redraw = true;
                     return;
                 };
                 const plan_tasks = [_][]const u8{ "Create implementation plan", "Define tasks and steps to build" };
                 runner.addPhase(2, "plan", "Create implementation plan with tasks steps build create write add fix update", &plan_tasks) catch {
-                    try self.addMessageUnlocked("assistant", "Failed to add plan phase.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Failed to add plan phase.");
                     ctx.redraw = true;
                     return;
                 };
 
                 var result = runner.run() catch {
-                    try self.addMessageUnlocked("assistant", "Phase run failed.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Phase run failed.");
                     ctx.redraw = true;
                     return;
                 };
@@ -3355,7 +3054,7 @@ pub const Model = struct {
                     result.duration_ms,
                 });
                 defer self.allocator.free(text);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/skills/auto") or std.mem.startsWith(u8, name, "/skills/auto ")) {
             const auto_sub = std.mem.trim(u8, name["/skills/auto".len..], " ");
@@ -3364,15 +3063,15 @@ pub const Model = struct {
                     // Show status
                     const stats = ag.statsSummary() catch "Error getting auto-skill stats";
                     defer self.allocator.free(stats);
-                    try self.addMessageUnlocked("assistant", stats);
+                    try history_mod.addMessageUnlocked(self, "assistant", stats);
                 } else if (std.mem.eql(u8, auto_sub, "propose")) {
                     const proposable = ag.formatProposableSkills() catch "Error listing proposable skills";
                     defer self.allocator.free(proposable);
-                    try self.addMessageUnlocked("assistant", proposable);
+                    try history_mod.addMessageUnlocked(self, "assistant", proposable);
                 } else if (std.mem.startsWith(u8, auto_sub, "generate ")) {
                     const pattern_name = std.mem.trim(u8, auto_sub["generate ".len..], " ");
                     if (pattern_name.len == 0) {
-                        try self.addMessageUnlocked("assistant", "Usage: /skills/auto generate <pattern-name>");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Usage: /skills/auto generate <pattern-name>");
                     } else {
                         // Find the pattern by name
                         var found_pattern: ?*auto_gen_mod.TaskPattern = null;
@@ -3386,22 +3085,22 @@ pub const Model = struct {
                             const path = ag.generateSkill(p) catch |err| {
                                 const err_text = try std.fmt.allocPrint(self.allocator, "Failed to generate skill: {}", .{err});
                                 defer self.allocator.free(err_text);
-                                try self.addMessageUnlocked("assistant", err_text);
+                                try history_mod.addMessageUnlocked(self, "assistant", err_text);
                                 ctx.redraw = true;
                                 return;
                             };
                             defer self.allocator.free(path);
                             const success_text = try std.fmt.allocPrint(self.allocator, "Skill generated: {s}", .{path});
                             defer self.allocator.free(success_text);
-                            try self.addMessageUnlocked("assistant", success_text);
+                            try history_mod.addMessageUnlocked(self, "assistant", success_text);
                         } else {
                             const err_text = try std.fmt.allocPrint(self.allocator, "Pattern '{s}' not found. Use /skills/auto propose to list available patterns.", .{pattern_name});
                             defer self.allocator.free(err_text);
-                            try self.addMessageUnlocked("assistant", err_text);
+                            try history_mod.addMessageUnlocked(self, "assistant", err_text);
                         }
                     }
                 } else {
-                    try self.addMessageUnlocked("assistant",
+                    try history_mod.addMessageUnlocked(self, "assistant",
                         \\Auto-Skill Generator:
                         \\  /skills/auto              — show status and detected patterns
                         \\  /skills/auto propose      — list proposable skills
@@ -3409,30 +3108,30 @@ pub const Model = struct {
                     );
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "Auto-skill generator not initialized.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Auto-skill generator not initialized.");
             }
         } else if (std.mem.eql(u8, name, "/help")) {
-            try self.addMessageUnlocked("assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/tree [refresh] — Show session tree hierarchy\n/compress [status|run] — Semantic context compression\n/help — Show available commands");
+            try history_mod.addMessageUnlocked(self, "assistant", "/clear — Clear conversation history\n/sessions — Browse saved sessions\n/ls — Alias for /sessions\n/resume <id> — Resume a saved session\n/delete <id> — Delete a saved session\n/exit — Exit crushcode\n/model — Show current model\n/thinking — Toggle thinking mode\n/compact — Compact conversation context\n/theme dark — Switch to dark theme\n/theme light — Switch to light theme\n/theme mono — Switch to monochrome theme\n/workers — List active workers\n/kill <id> — Cancel a worker\n/memory — Show cross-session memory stats\n/plugins — List loaded runtime plugins\n/guardian — Show guardian security stats\n/cognition — Show cognition pipeline stats\n/user — Show user preference profile\n/autopilot [run|status|schedule|list] — Background agent control\n/team — Show orchestration engine stats\n/spawn <desc> — Spawn a multi-agent team\n/phase-run [name|status] — Run phase-based workflow\n/skills/auto [propose|generate] — Auto-skill pattern detection\n/cost [total|today|model|session] — Cost analytics dashboard\n/tree [refresh] — Show session tree hierarchy\n/compress [status|run] — Semantic context compression\n/help — Show available commands");
         } else if (std.mem.eql(u8, name, "/compact")) {
             try self.performCompaction();
         } else if (std.mem.eql(u8, name, "/model")) {
             const text = try std.fmt.allocPrint(self.allocator, "Current model: {s}/{s}", .{ self.provider_name, self.model_name });
             defer self.allocator.free(text);
-            try self.addMessageUnlocked("assistant", text);
+            try history_mod.addMessageUnlocked(self, "assistant", text);
         } else if (std.mem.startsWith(u8, name, "/cost")) {
             const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
             const db = session_mod.getSessionDb(self.allocator) catch |err| {
-                try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
                 return;
             };
             var dashboard = cost_dashboard_mod.CostDashboard.init(self.allocator, db);
             if (sub.len == 0 or std.mem.eql(u8, sub, "total")) {
                 const total = dashboard.getTotalCost() catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
                     return;
                 };
                 const today = dashboard.getTodayCost() catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
                     return;
                 };
                 const by_provider_raw = dashboard.getCostByProvider() catch &[_]cost_dashboard_mod.ProviderCost{};
@@ -3442,7 +3141,7 @@ pub const Model = struct {
                     self.allocator.free(by_provider);
                 }
                 const report = cost_dashboard_mod.formatTotalReport(self.allocator, total, today, by_provider) catch "Error formatting report";
-                try self.addMessageUnlocked("assistant", report);
+                try history_mod.addMessageUnlocked(self, "assistant", report);
             } else if (std.mem.eql(u8, sub, "model")) {
                 const by_model_raw = dashboard.getCostByModel() catch &[_]cost_dashboard_mod.ModelCost{};
                 const by_model: []cost_dashboard_mod.ModelCost = @constCast(by_model_raw);
@@ -3451,14 +3150,14 @@ pub const Model = struct {
                     self.allocator.free(by_model);
                 }
                 const report = cost_dashboard_mod.formatByModelReport(self.allocator, by_model) catch "Error formatting report";
-                try self.addMessageUnlocked("assistant", report);
+                try history_mod.addMessageUnlocked(self, "assistant", report);
             } else if (std.mem.eql(u8, sub, "today")) {
                 const today = dashboard.getTodayCost() catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Error: {s}", .{@errorName(err)}));
                     return;
                 };
                 const text = try std.fmt.allocPrint(self.allocator, "Today's Cost\n-------------\nCost: ${d:.4}\nTokens: {d}\nSessions: {d}", .{ today.cost, today.tokens, today.session_count });
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else if (std.mem.eql(u8, sub, "session")) {
                 const top_raw = dashboard.getTopSessions() catch &[_]session_db_mod.SessionRow{};
                 const top: []session_db_mod.SessionRow = @constCast(top_raw);
@@ -3477,9 +3176,9 @@ pub const Model = struct {
                 for (top) |s| {
                     try buf.writer().print("* {s}\n  ${d:.4} * {d} tokens * {d} turns\n  Model: {s}/{s}\n\n", .{ s.title, s.total_cost, s.total_tokens, s.turn_count, s.provider, s.model });
                 }
-                try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+                try history_mod.addMessageUnlocked(self, "assistant", try buf.toOwnedSlice());
             } else {
-                try self.addMessageUnlocked("assistant", "Usage: /cost [total|model|today|session]");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /cost [total|model|today|session]");
             }
         } else if (std.mem.startsWith(u8, name, "/fork")) {
             const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
@@ -3506,12 +3205,12 @@ pub const Model = struct {
                 defer self.allocator.free(current_session.id);
                 var fm = fork_mod.ForkManager.init(self.allocator, self.session_dir);
                 const result = fm.forkSession(&current_session, fork_point) catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Fork error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Fork error: {s}", .{@errorName(err)}));
                     return;
                 };
                 defer result.deinit(self.allocator);
                 const text = try std.fmt.allocPrint(self.allocator, "Session forked!\nNew session: {s}\nMessages: {d}\nUse /sessions to switch.", .{ result.new_session_id, result.message_count });
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else if (std.mem.eql(u8, sub, "list")) {
                 var fm = fork_mod.ForkManager.init(self.allocator, self.session_dir);
                 const forks = fm.listAllForks() catch &[_]fork_mod.ForkInfo{};
@@ -3524,7 +3223,7 @@ pub const Model = struct {
                     self.allocator.free(forks);
                 }
                 if (forks.len == 0) {
-                    try self.addMessageUnlocked("assistant", "No forks found.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No forks found.");
                 } else {
                     var buf = array_list_compat.ArrayList(u8).init(self.allocator);
                     defer buf.deinit();
@@ -3532,46 +3231,46 @@ pub const Model = struct {
                     for (forks) |f| {
                         try buf.writer().print("* {s}\n  Parent: {s} (at message {d})\n\n", .{ f.title, f.parent_session_id, f.fork_point });
                     }
-                    try self.addMessageUnlocked("assistant", try buf.toOwnedSlice());
+                    try history_mod.addMessageUnlocked(self, "assistant", try buf.toOwnedSlice());
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "Usage: /fork [list]\n  /fork        - Fork current session\n  /fork list   - List all forks");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /fork [list]\n  /fork        - Fork current session\n  /fork list   - List all forks");
             }
         } else if (std.mem.startsWith(u8, name, "/tree")) {
             const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
             if (sub.len > 0 and std.mem.eql(u8, sub, "refresh")) {
                 // Force reload from database
                 const db = session_mod.getSessionDb(self.allocator) catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
                     return;
                 };
                 self.session_tree.loadFromDb(db) catch |err| {
-                    try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
+                    try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
                     return;
                 };
                 const rendered = self.session_tree.renderToString(self.allocator) catch "Error rendering tree";
-                try self.addMessageUnlocked("assistant", rendered);
+                try history_mod.addMessageUnlocked(self, "assistant", rendered);
             } else {
                 // Toggle or show tree
                 if (self.session_tree.root_nodes.items.len == 0) {
                     // Load for the first time
                     const db = session_mod.getSessionDb(self.allocator) catch |err| {
-                        try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
+                        try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Session DB error: {s}", .{@errorName(err)}));
                         return;
                     };
                     self.session_tree.loadFromDb(db) catch |err| {
-                        try self.addMessageUnlocked("assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
+                        try history_mod.addMessageUnlocked(self, "assistant", try std.fmt.allocPrint(self.allocator, "Tree load error: {s}", .{@errorName(err)}));
                         return;
                     };
                 }
                 const rendered = self.session_tree.renderToString(self.allocator) catch "Error rendering tree";
-                try self.addMessageUnlocked("assistant", rendered);
+                try history_mod.addMessageUnlocked(self, "assistant", rendered);
             }
         } else if (std.mem.eql(u8, name, "/workers")) {
             self.parallel_executor.reapCompleted();
             const parallel_running = self.parallel_executor.runningCount();
             if (self.workers.items.len == 0 and parallel_running == 0) {
-                try self.addMessageUnlocked("assistant", "No active workers.");
+                try history_mod.addMessageUnlocked(self, "assistant", "No active workers.");
             } else {
                 var buf: [1024]u8 = undefined;
                 var offset: usize = 0;
@@ -3600,13 +3299,13 @@ pub const Model = struct {
                     } else |_| {}
                 }
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/diag")) {
             // Show LSP diagnostics
             const diagnostics = self.lsp_manager.getDiagnostics();
             if (diagnostics.len == 0) {
-                try self.addMessageUnlocked("assistant", "No LSP diagnostics. Open a file to see diagnostics.");
+                try history_mod.addMessageUnlocked(self, "assistant", "No LSP diagnostics. Open a file to see diagnostics.");
             } else {
                 var buf: [2048]u8 = undefined;
                 var offset: usize = 0;
@@ -3635,14 +3334,14 @@ pub const Model = struct {
                     }
                 }
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/refs") or std.mem.startsWith(u8, name, "/refs ")) {
             // LSP find-references
             if (!self.lsp_manager.enabled) {
-                try self.addMessageUnlocked("assistant", "LSP is disabled.");
+                try history_mod.addMessageUnlocked(self, "assistant", "LSP is disabled.");
             } else if (self.lsp_manager.file_diagnostics.items.len == 0 and self.recent_files.items.len == 0) {
-                try self.addMessageUnlocked("assistant", "No files tracked. Open a file first, then use /refs <symbol> or /refs <file>:<line>:<col>.");
+                try history_mod.addMessageUnlocked(self, "assistant", "No files tracked. Open a file first, then use /refs <symbol> or /refs <file>:<line>:<col>.");
             } else {
                 const arg = std.mem.trim(u8, name["/refs".len..], " \t\r\n");
                 var target_file: ?[]const u8 = null;
@@ -3688,7 +3387,7 @@ pub const Model = struct {
                     const locations = self.lsp_manager.findReferences(fp, target_line, target_char);
                     if (locations) |locs| {
                         if (locs.len == 0) {
-                            try self.addMessageUnlocked("assistant", "No references found.");
+                            try history_mod.addMessageUnlocked(self, "assistant", "No references found.");
                         } else {
                             var buf: [4096]u8 = undefined;
                             var ref_offset: usize = 0;
@@ -3705,19 +3404,19 @@ pub const Model = struct {
                             for (locs) |loc| self.allocator.free(loc.uri);
                             self.allocator.free(locs);
                             const ref_text = try self.allocator.dupe(u8, buf[0..ref_offset]);
-                            try self.addMessageUnlocked("assistant", ref_text);
+                            try history_mod.addMessageUnlocked(self, "assistant", ref_text);
                         }
                     } else {
-                        try self.addMessageUnlocked("assistant", "LSP references unavailable — no language server for this file or LSP not started.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "LSP references unavailable — no language server for this file or LSP not started.");
                     }
                 } else {
-                    try self.addMessageUnlocked("assistant", "No file to search. Usage: /refs [file:line:col] or /refs <symbol>");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No file to search. Usage: /refs [file:line:col] or /refs <symbol>");
                 }
             }
         } else if (std.mem.startsWith(u8, name, "/kill ")) {
             const id_str = name[6..];
             const id = std.fmt.parseInt(u32, id_str, 10) catch {
-                try self.addMessageUnlocked("assistant", "Invalid worker ID. Usage: /kill <id>");
+                try history_mod.addMessageUnlocked(self, "assistant", "Invalid worker ID. Usage: /kill <id>");
                 ctx.redraw = true;
                 return;
             };
@@ -3726,7 +3425,7 @@ pub const Model = struct {
                 if (w.id == id) {
                     w.status = .cancelled;
                     const text = try std.fmt.allocPrint(self.allocator, "Worker #{d} cancelled.", .{id});
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                     found = true;
                     break;
                 }
@@ -3735,24 +3434,24 @@ pub const Model = struct {
             if (self.parallel_executor.cancel(id_str)) {
                 if (!found) {
                     const text = try std.fmt.allocPrint(self.allocator, "Parallel task {s} cancelled.", .{id_str});
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                     found = true;
                 }
             }
             if (!found) {
                 const text = try std.fmt.allocPrint(self.allocator, "Worker #{d} not found.", .{id});
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/memory")) {
             const count = self.memory.count();
             const tokens = self.memory.estimateTokens();
             const text = try std.fmt.allocPrint(self.allocator, "Memory: {d} messages, ~{d} tokens", .{ count, tokens });
             defer self.allocator.free(text);
-            try self.addMessageUnlocked("assistant", text);
+            try history_mod.addMessageUnlocked(self, "assistant", text);
         } else if (std.mem.eql(u8, name, "/plugins")) {
             const plugin_names = self.plugin_manager.getAllPlugins();
             if (plugin_names.len == 0) {
-                try self.addMessageUnlocked("assistant", "No plugins loaded.");
+                try history_mod.addMessageUnlocked(self, "assistant", "No plugins loaded.");
             } else {
                 var buf: [2048]u8 = undefined;
                 var offset: usize = 0;
@@ -3765,14 +3464,14 @@ pub const Model = struct {
                     } else |_| {}
                 }
                 const text = try self.allocator.dupe(u8, buf[0..offset]);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             }
         } else if (std.mem.eql(u8, name, "/cost") or std.mem.startsWith(u8, name, "/cost ")) {
             const args = if (std.mem.startsWith(u8, name, "/cost ")) name[6..] else "";
             const sub = std.mem.trim(u8, args, &std.ascii.whitespace);
 
             const db_ptr = session_mod.getSessionDb(self.allocator) catch {
-                try self.addMessageUnlocked("assistant", "Failed to open session database.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Failed to open session database.");
                 ctx.redraw = true;
                 return;
             };
@@ -3781,12 +3480,12 @@ pub const Model = struct {
             if (sub.len == 0 or std.mem.eql(u8, sub, "total")) {
                 // Show total + today + by provider
                 const total = dashboard.getTotalCost() catch {
-                    try self.addMessageUnlocked("assistant", "Error querying total cost.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error querying total cost.");
                     ctx.redraw = true;
                     return;
                 };
                 const today = dashboard.getTodayCost() catch {
-                    try self.addMessageUnlocked("assistant", "Error querying today's cost.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error querying today's cost.");
                     ctx.redraw = true;
                     return;
                 };
@@ -3795,29 +3494,29 @@ pub const Model = struct {
                 defer cost_dashboard_mod.freeProviderCosts(self.allocator, by_provider);
 
                 const report = cost_dashboard_mod.formatTotalReport(self.allocator, total, today, by_provider) catch "Error formatting report";
-                try self.addMessageUnlocked("assistant", report);
+                try history_mod.addMessageUnlocked(self, "assistant", report);
             } else if (std.mem.eql(u8, sub, "model") or std.mem.eql(u8, sub, "by-model")) {
                 const by_model = dashboard.getCostByModel() catch
                     @as([]cost_dashboard_mod.ModelCost, &.{});
                 defer cost_dashboard_mod.freeModelCosts(self.allocator, by_model);
 
                 const report = cost_dashboard_mod.formatByModelReport(self.allocator, by_model) catch "Error formatting report";
-                try self.addMessageUnlocked("assistant", report);
+                try history_mod.addMessageUnlocked(self, "assistant", report);
             } else if (std.mem.eql(u8, sub, "today")) {
                 const today = dashboard.getTodayCost() catch {
-                    try self.addMessageUnlocked("assistant", "Error querying today's cost.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error querying today's cost.");
                     ctx.redraw = true;
                     return;
                 };
                 const text = try std.fmt.allocPrint(self.allocator, "\xf0\x9f\x92\xb0 Today's Cost\n\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\xe2\x94\x80\nCost: ${d:.4}\nTokens: {d}\nSessions: {d}", .{ today.cost, today.tokens, today.session_count });
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else if (std.mem.eql(u8, sub, "session") or std.mem.eql(u8, sub, "sessions")) {
                 const top = dashboard.getTopSessions() catch
                     @as([]session_db_mod.SessionRow, &.{});
                 defer session_db_mod.freeSessionRows(self.allocator, top);
 
                 if (top.len == 0) {
-                    try self.addMessageUnlocked("assistant", "No sessions recorded yet.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No sessions recorded yet.");
                 } else {
                     var buf: [4096]u8 = undefined;
                     var poffset: usize = 0;
@@ -3831,37 +3530,37 @@ pub const Model = struct {
                         } else |_| {}
                     }
                     const text = try self.allocator.dupe(u8, buf[0..poffset]);
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "Usage: /cost [total|today|model|session]");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /cost [total|today|model|session]");
             }
         } else if (std.mem.eql(u8, name, "/rewind") or std.mem.startsWith(u8, name, "/rewind ")) {
             const rewind_sub = std.mem.trim(u8, name["/rewind".len..], " ");
             const db_ptr = session_mod.getSessionDb(self.allocator) catch {
-                try self.addMessageUnlocked("assistant", "Failed to open session database for rewind.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Failed to open session database for rewind.");
                 ctx.redraw = true;
                 return;
             };
             const session_id = if (self.current_session) |sess| sess.id else "";
             if (session_id.len == 0) {
-                try self.addMessageUnlocked("assistant", "No active session to rewind.");
+                try history_mod.addMessageUnlocked(self, "assistant", "No active session to rewind.");
             } else if (rewind_sub.len == 0) {
                 // /rewind — list all checkpoints for this session
                 var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
                 const checkpoints = mgr.listCheckpoints(db_ptr, self.allocator, session_id) catch {
-                    try self.addMessageUnlocked("assistant", "Error listing checkpoints.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error listing checkpoints.");
                     ctx.redraw = true;
                     return;
                 };
                 const text = mgr.formatCheckpointList(self.allocator, checkpoints) catch "Error formatting checkpoints";
                 safety_checkpoint_mod.freeCheckpoints(self.allocator, checkpoints);
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else if (std.mem.eql(u8, rewind_sub, "last")) {
                 // /rewind last — restore most recent checkpoint
                 var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
                 const restored = mgr.rewindLast(db_ptr, self.allocator, session_id) catch {
-                    try self.addMessageUnlocked("assistant", "Error rewinding last checkpoint.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error rewinding last checkpoint.");
                     ctx.redraw = true;
                     return;
                 };
@@ -3869,24 +3568,24 @@ pub const Model = struct {
                     const text = std.fmt.allocPrint(self.allocator, "Rewound: restored {s} (checkpoint #{d}, {s})", .{ cp.file_path, cp.id, cp.operation }) catch "Rewound last checkpoint.";
                     var cp_mut = cp;
                     cp_mut.deinit(self.allocator);
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 } else {
-                    try self.addMessageUnlocked("assistant", "No checkpoints to rewind for this session.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No checkpoints to rewind for this session.");
                 }
             } else if (std.mem.eql(u8, rewind_sub, "all")) {
                 // /rewind all — restore ALL checkpoints
                 var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
                 const count = mgr.rewindAll(db_ptr, self.allocator, session_id) catch {
-                    try self.addMessageUnlocked("assistant", "Error rewinding all checkpoints.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error rewinding all checkpoints.");
                     ctx.redraw = true;
                     return;
                 };
                 const text = std.fmt.allocPrint(self.allocator, "Rewound all: restored {d} file(s) to their original state.", .{count}) catch "Rewound all checkpoints.";
-                try self.addMessageUnlocked("assistant", text);
+                try history_mod.addMessageUnlocked(self, "assistant", text);
             } else {
                 // /rewind <N> — restore checkpoint by number (1-indexed)
                 const idx = std.fmt.parseInt(usize, rewind_sub, 10) catch {
-                    try self.addMessageUnlocked("assistant",
+                    try history_mod.addMessageUnlocked(self, "assistant",
                         \\Rewind Commands:
                         \\  /rewind        — list all checkpoints for this session
                         \\  /rewind last   — restore the most recent checkpoint
@@ -3897,18 +3596,18 @@ pub const Model = struct {
                     return;
                 };
                 if (idx == 0) {
-                    try self.addMessageUnlocked("assistant", "Checkpoint numbers start at 1. Use /rewind to list them.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "Checkpoint numbers start at 1. Use /rewind to list them.");
                 } else {
                     var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
                     const checkpoints = mgr.listCheckpoints(db_ptr, self.allocator, session_id) catch {
-                        try self.addMessageUnlocked("assistant", "Error listing checkpoints.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Error listing checkpoints.");
                         ctx.redraw = true;
                         return;
                     };
                     defer safety_checkpoint_mod.freeCheckpoints(self.allocator, checkpoints);
                     if (idx > checkpoints.len) {
                         const err_text = std.fmt.allocPrint(self.allocator, "Checkpoint #{d} not found. Only {d} checkpoint(s) available.", .{ idx, checkpoints.len }) catch "Checkpoint not found.";
-                        try self.addMessageUnlocked("assistant", err_text);
+                        try history_mod.addMessageUnlocked(self, "assistant", err_text);
                     } else {
                         const cp = checkpoints[idx - 1];
                         // Restore this specific checkpoint
@@ -3918,20 +3617,20 @@ pub const Model = struct {
                             }
                         }
                         const file = std.fs.cwd().createFile(cp.file_path, .{ .truncate = true }) catch {
-                            try self.addMessageUnlocked("assistant", "Error writing file during rewind.");
+                            try history_mod.addMessageUnlocked(self, "assistant", "Error writing file during rewind.");
                             ctx.redraw = true;
                             return;
                         };
                         defer file.close();
                         file.writeAll(cp.original_content) catch {
-                            try self.addMessageUnlocked("assistant", "Error writing file content during rewind.");
+                            try history_mod.addMessageUnlocked(self, "assistant", "Error writing file content during rewind.");
                             ctx.redraw = true;
                             return;
                         };
                         // Delete the restored checkpoint
                         db_ptr.deleteCheckpoint(cp.id) catch {};
                         const text = std.fmt.allocPrint(self.allocator, "Rewound: restored {s} (checkpoint #{d}, {s})", .{ cp.file_path, idx, cp.operation }) catch "Rewound checkpoint.";
-                        try self.addMessageUnlocked("assistant", text);
+                        try history_mod.addMessageUnlocked(self, "assistant", text);
                     }
                 }
             }
@@ -3948,9 +3647,9 @@ pub const Model = struct {
                         "Context: {d} files, ~{d} tokens uncompressed\n\nCompression levels:\n  Full (>0.8 score): complete source\n  Signatures (0.5-0.8): fn signatures + types + docs\n  Interface (0.2-0.5): struct fields, type aliases only\n  Summary (<0.2): one-line per file\n\nUse /compress run to apply compression and see report.",
                         .{ file_count, total_tokens },
                     );
-                    try self.addMessageUnlocked("assistant", text);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
                 } else {
-                    try self.addMessageUnlocked("assistant", "No codebase context loaded. Context is built on startup.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No codebase context loaded. Context is built on startup.");
                 }
             } else if (std.mem.eql(u8, sub, "run")) {
                 if (self.codebase_context) |ctx_content| {
@@ -3961,26 +3660,26 @@ pub const Model = struct {
                     };
                     const scores = [_]f64{0.9, 0.6, 0.3, 0.1};
                     const result = compressor.compressContext(&.{file_info}, &scores) catch {
-                        try self.addMessageUnlocked("assistant", "Compression failed.");
+                        try history_mod.addMessageUnlocked(self, "assistant", "Compression failed.");
                         ctx.redraw = true;
                         return;
                     };
                     const report = compressor.formatCompressionReport(result) catch "Error formatting report";
-                    try self.addMessageUnlocked("assistant", report);
+                    try history_mod.addMessageUnlocked(self, "assistant", report);
                 } else {
-                    try self.addMessageUnlocked("assistant", "No codebase context to compress.");
+                    try history_mod.addMessageUnlocked(self, "assistant", "No codebase context to compress.");
                 }
             } else {
-                try self.addMessageUnlocked("assistant", "Usage: /compress [status|run]");
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /compress [status|run]");
             }
         } else if (std.mem.eql(u8, name, "/doctor")) {
             const report = doctor_mod.runDoctorChecks(self.allocator) catch {
-                try self.addMessageUnlocked("assistant", "Doctor checks failed to run.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Doctor checks failed to run.");
                 ctx.redraw = true;
                 return;
             };
             defer self.allocator.free(report);
-            try self.addMessageUnlocked("assistant", report);
+            try history_mod.addMessageUnlocked(self, "assistant", report);
         } else if (std.mem.eql(u8, name, "/review") or std.mem.startsWith(u8, name, "/review ")) {
             const review_sub = std.mem.trim(u8, name["/review".len..], " ");
             const scope: review_mod.ReviewScope = blk: {
@@ -3991,37 +3690,37 @@ pub const Model = struct {
                 break :blk .unstaged;
             };
             const result = review_mod.runReview(self.allocator, scope, null) catch {
-                try self.addMessageUnlocked("assistant", "Review failed. Make sure you are in a git repository.");
+                try history_mod.addMessageUnlocked(self, "assistant", "Review failed. Make sure you are in a git repository.");
                 ctx.redraw = true;
                 return;
             };
             defer self.allocator.free(result);
-            try self.addMessageUnlocked("assistant", result);
+            try history_mod.addMessageUnlocked(self, "assistant", result);
         } else if (std.mem.eql(u8, name, "/commit") or std.mem.startsWith(u8, name, "/commit ")) {
             const commit_args = std.mem.trim(u8, name["/commit".len..], " ");
              const result = commit_mod.runCommit(self.allocator, commit_args) catch {
-                 try self.addMessageUnlocked("assistant", "Commit analysis failed. Make sure you are in a git repository.");
+                 try history_mod.addMessageUnlocked(self, "assistant", "Commit analysis failed. Make sure you are in a git repository.");
                  ctx.redraw = true;
                  return;
              };
              defer self.allocator.free(result);
-             try self.addMessageUnlocked("assistant", result);
+             try history_mod.addMessageUnlocked(self, "assistant", result);
         } else if (std.mem.eql(u8, name, "/recipe") or std.mem.startsWith(u8, name, "/recipe ")) {
             const recipe_args = std.mem.trim(u8, name["/recipe".len..], " ");
             if (recipe_args.len == 0 or std.mem.eql(u8, recipe_args, "list")) {
-                try self.addMessageUnlocked("system", "📋 Recipe commands: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
+                try history_mod.addMessageUnlocked(self, "system", "📋 Recipe commands: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
             } else if (std.mem.startsWith(u8, recipe_args, "show ")) {
                 const recipe_name = recipe_args[5..];
                 const msg = try std.fmt.allocPrint(self.allocator, "📋 Showing recipe: {s}", .{recipe_name});
                 defer self.allocator.free(msg);
-                try self.addMessageUnlocked("system", msg);
+                try history_mod.addMessageUnlocked(self, "system", msg);
             } else if (std.mem.startsWith(u8, recipe_args, "run ")) {
                 const rest = recipe_args[4..];
                 const msg = try std.fmt.allocPrint(self.allocator, "📋 Running recipe: {s}", .{rest});
                 defer self.allocator.free(msg);
-                try self.addMessageUnlocked("assistant", msg);
+                try history_mod.addMessageUnlocked(self, "assistant", msg);
             } else {
-                try self.addMessageUnlocked("system", "📋 Usage: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
+                try history_mod.addMessageUnlocked(self, "system", "📋 Usage: /recipe list | /recipe show <name> | /recipe run <name> [key=val ...]");
             }
          }
 
@@ -4033,7 +3732,7 @@ pub const Model = struct {
 
         const rest = std.mem.trim(u8, name[6..], " \t\r\n");
         if (rest.len == 0) {
-            try self.addMessageUnlocked("system", "Available themes: dark, light, mono");
+            try history_mod.addMessageUnlocked(self, "system", "Available themes: dark, light, mono");
             return true;
         }
 
@@ -4042,13 +3741,13 @@ pub const Model = struct {
             self.applyThemeStyles();
             const text = try std.fmt.allocPrint(self.allocator, "Theme switched to {s}.", .{theme.name});
             defer self.allocator.free(text);
-            try self.addMessageUnlocked("system", text);
+            try history_mod.addMessageUnlocked(self, "system", text);
             return true;
         }
 
         const text = try std.fmt.allocPrint(self.allocator, "Unknown theme: {s}", .{rest});
         defer self.allocator.free(text);
-        try self.addMessageUnlocked("system", text);
+        try history_mod.addMessageUnlocked(self, "system", text);
         return true;
     }
 
@@ -4067,95 +3766,6 @@ pub const Model = struct {
         }
     }
 
-    fn addMessageUnlocked(self: *Model, role: []const u8, content: []const u8) !void {
-        try self.addMessageWithToolsUnlocked(role, content, null, null);
-    }
-
-    fn addMessageWithToolsUnlocked(self: *Model, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
-        try self.messages.append(self.allocator, .{
-            .role = try self.allocator.dupe(u8, role),
-            .content = try self.allocator.dupe(u8, content),
-            .tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null,
-            .tool_calls = try cloneToolCallInfos(self.allocator, tool_calls),
-        });
-    }
-
-    fn clearMessagesUnlocked(self: *Model) void {
-        for (self.messages.items) |message| {
-            freeDisplayMessage(self.allocator, message);
-        }
-        self.messages.clearRetainingCapacity();
-    }
-
-    fn clearHistoryUnlocked(self: *Model) void {
-        for (self.history.items) |message| {
-            freeChatMessage(self.allocator, message);
-        }
-        self.history.clearRetainingCapacity();
-    }
-
-    fn appendHistoryMessageUnlocked(self: *Model, role: []const u8, content: []const u8) !void {
-        try self.appendHistoryMessageWithToolsUnlocked(role, content, null, null);
-    }
-
-    fn appendHistoryMessageWithToolsUnlocked(self: *Model, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
-        try self.history.append(self.allocator, .{
-            .role = try self.allocator.dupe(u8, role),
-            .content = try self.allocator.dupe(u8, content),
-            .tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null,
-            .tool_calls = try cloneToolCallInfos(self.allocator, tool_calls),
-        });
-    }
-
-    fn replaceMessageUnlocked(self: *Model, index: usize, role: []const u8, content: []const u8, tool_call_id: ?[]const u8, tool_calls: ?[]const core.client.ToolCallInfo) !void {
-        var message = &self.messages.items[index];
-        self.allocator.free(message.role);
-        self.allocator.free(message.content);
-        if (message.tool_call_id) |value| self.allocator.free(value);
-        freeToolCallInfos(self.allocator, message.tool_calls);
-        message.role = try self.allocator.dupe(u8, role);
-        message.content = try self.allocator.dupe(u8, content);
-        message.tool_call_id = if (tool_call_id) |value| try self.allocator.dupe(u8, value) else null;
-        message.tool_calls = try cloneToolCallInfos(self.allocator, tool_calls);
-    }
-
-    fn appendToMessageUnlocked(self: *Model, index: usize, suffix: []const u8) !void {
-        var message = &self.messages.items[index];
-        const updated = try self.allocator.alloc(u8, message.content.len + suffix.len);
-        @memcpy(updated[0..message.content.len], message.content);
-        @memcpy(updated[message.content.len..], suffix);
-        self.allocator.free(message.content);
-        message.content = updated;
-    }
-
-    fn trackToolCallFilesUnlocked(self: *Model, tool_calls: ?[]const core.client.ToolCallInfo) !void {
-        const calls = tool_calls orelse return;
-        for (calls) |tool_call| {
-            if (!isRecentFileTool(tool_call.name)) continue;
-            if (extractToolFilePath(tool_call.arguments)) |path| {
-                try self.addRecentFileUnlocked(path);
-            }
-        }
-    }
-
-    fn addRecentFileUnlocked(self: *Model, file_path: []const u8) !void {
-        var found_index: ?usize = null;
-        for (self.recent_files.items, 0..) |existing, idx| {
-            if (std.mem.eql(u8, existing, file_path)) {
-                found_index = idx;
-                break;
-            }
-        }
-        if (found_index) |idx| {
-            self.allocator.free(self.recent_files.items[idx]);
-            _ = self.recent_files.orderedRemove(idx);
-        }
-        const owned = try self.allocator.dupe(u8, file_path);
-        try self.recent_files.append(self.allocator, owned);
-        if (self.recent_files.items.len > recent_files_max) {
-            self.allocator.free(self.recent_files.orderedRemove(0));
-        }
-    }
 
     fn requestThreadMain(self: *Model) void {
         active_stream_model = self;
@@ -4291,9 +3901,9 @@ pub const Model = struct {
 
         self.lock.lock();
         defer self.lock.unlock();
-        try self.replaceOwnedString(&self.provider_name, provider.provider_name);
-        try self.replaceOwnedString(&self.model_name, provider.model_name);
-        try self.replaceOwnedString(&self.api_key, provider.api_key);
+        try input_handling.replaceOwnedString(self,&self.provider_name, provider.provider_name);
+        try input_handling.replaceOwnedString(self,&self.model_name, provider.model_name);
+        try input_handling.replaceOwnedString(self,&self.api_key, provider.api_key);
         if (self.override_url) |current_override_url| self.allocator.free(current_override_url);
         self.override_url = if (provider.override_url) |override_url| try self.allocator.dupe(u8, override_url) else null;
         self.active_provider_index = index;
@@ -4329,7 +3939,7 @@ pub const Model = struct {
         self.lock.lock();
         defer self.lock.unlock();
         if (self.assistant_stream_index) |index| {
-            try self.replaceMessageUnlocked(index, "assistant", "Thinking...", null, null);
+            try history_mod.replaceMessageUnlocked(self, index, "assistant", "Thinking...", null, null);
         }
         self.awaiting_first_token = true;
     }
@@ -4339,28 +3949,28 @@ pub const Model = struct {
         defer self.lock.unlock();
 
         if (tool_calls) |_| {
-            try self.trackToolCallFilesUnlocked(tool_calls);
+            try history_mod.trackToolCallFilesUnlocked(self, tool_calls);
         }
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                try self.replaceMessageUnlocked(index, "assistant", content, null, tool_calls);
+                try history_mod.replaceMessageUnlocked(self, index, "assistant", content, null, tool_calls);
             } else {
-                try self.addMessageWithToolsUnlocked("assistant", content, null, tool_calls);
+                try history_mod.addMessageWithToolsUnlocked(self, "assistant", content, null, tool_calls);
                 self.assistant_stream_index = self.messages.items.len - 1;
             }
             self.awaiting_first_token = false;
         } else if (self.assistant_stream_index) |index| {
-            try self.replaceMessageUnlocked(index, "assistant", content, null, tool_calls);
+            try history_mod.replaceMessageUnlocked(self, index, "assistant", content, null, tool_calls);
         }
 
-        try self.appendHistoryMessageWithToolsUnlocked("assistant", content, null, tool_calls);
+        try history_mod.appendHistoryMessageWithToolsUnlocked(self, "assistant", content, null, tool_calls);
         // Persist to cross-session memory
         self.memory.addMessage("assistant", content) catch {};
         self.memory.save() catch {};
         try self.saveSessionSnapshotUnlocked();
 
-        self.context_tokens = self.estimateContextTokens();
+        self.context_tokens = token_tracking_mod.estimateContextTokens(self);
         if (self.compactor.needsCompaction(self.context_tokens)) {
             self.performCompactionAuto() catch {};
         }
@@ -4383,7 +3993,7 @@ pub const Model = struct {
                 const formatted = plan.format() catch return;
                 defer self.allocator.free(formatted);
                 self.lock.lock();
-                try self.addMessageUnlocked("assistant", formatted);
+                try history_mod.addMessageUnlocked(self, "assistant", formatted);
                 self.lock.unlock();
             }
             return;
@@ -4405,13 +4015,13 @@ pub const Model = struct {
                 var result = self.delegator.delegate(0, task_desc, .general) catch |err| {
                     const err_msg = std.fmt.allocPrint(self.allocator, "error: delegation failed: {s}", .{@errorName(err)}) catch "error: delegation failed";
                     self.lock.lock();
-                    try self.addMessageUnlocked("tool", err_msg);
+                    try history_mod.addMessageUnlocked(self, "tool", err_msg);
                     self.lock.unlock();
                     return;
                 };
                 defer result.deinit(self.allocator);
                 self.lock.lock();
-                try self.addMessageUnlocked("assistant", result.output);
+                try history_mod.addMessageUnlocked(self, "assistant", result.output);
                 self.lock.unlock();
                 return;
             }
@@ -4511,7 +4121,7 @@ pub const Model = struct {
 
             if (diff_preview_activated) continue;
 
-            const allowed = try self.requestToolPermission(tool_call.name, tool_call.arguments, preview_diff);
+            const allowed = try permissions_mod.requestToolPermission(self, tool_call.name, tool_call.arguments, preview_diff);
             if (preview_diff) |d| self.allocator.free(d);
             const result_text = if (!allowed)
                 try self.allocator.dupe(u8, "error: tool execution denied by user")
@@ -4569,8 +4179,8 @@ pub const Model = struct {
 
             self.lock.lock();
             errdefer self.lock.unlock();
-            try self.addMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
-            try self.appendHistoryMessageWithToolsUnlocked("tool", result_text, tool_call.id, null);
+            try history_mod.addMessageWithToolsUnlocked(self, "tool", result_text, tool_call.id, null);
+            try history_mod.appendHistoryMessageWithToolsUnlocked(self, "tool", result_text, tool_call.id, null);
             try self.saveSessionSnapshotUnlocked();
             self.lock.unlock();
         }
@@ -4761,8 +4371,8 @@ pub const Model = struct {
             self.allocator.dupe(u8, "error: all hunks rejected by user") catch "error: rejected";
 
         self.lock.lock();
-        self.addMessageWithToolsUnlocked("tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
-        self.appendHistoryMessageWithToolsUnlocked("tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
+        history_mod.addMessageWithToolsUnlocked(self, "tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
+        history_mod.appendHistoryMessageWithToolsUnlocked(self, "tool", tool_result, self.diff_preview_tool_call_id, null) catch {};
         self.saveSessionSnapshotUnlocked() catch {};
         self.lock.unlock();
         self.allocator.free(tool_result);
@@ -4777,7 +4387,7 @@ pub const Model = struct {
     fn startNextAssistantPlaceholder(self: *Model) !void {
         self.lock.lock();
         defer self.lock.unlock();
-        try self.addMessageUnlocked("assistant", "Thinking...");
+        try history_mod.addMessageUnlocked(self, "assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
         self.awaiting_first_token = true;
         try self.saveSessionSnapshotUnlocked();
@@ -4823,24 +4433,6 @@ pub const Model = struct {
         }
     }
 
-    /// Show a toast notification and fire the Notification hook.
-    fn showNotification(self: *Model, message: []const u8, severity: widget_toast.Severity) void {
-        self.toast_stack.push(message, severity) catch {};
-
-        // Fire Notification hook via hook registry
-        if (self.hook_registry) |registry| {
-            var ctx = hooks_mod.HookContext{
-                .hook_type = .Notification,
-                .result = message,
-                .timestamp = std.time.milliTimestamp(),
-            };
-            const results = registry.executeHooks(&ctx) catch &.{};
-            defer {
-                for (results) |*r| r.deinit(self.allocator);
-                if (results.len > 0) self.allocator.free(results);
-            }
-        }
-    }
 
     fn finishRequestWithErrorText(self: *Model, text: []const u8) void {
         self.lock.lock();
@@ -4848,15 +4440,15 @@ pub const Model = struct {
 
         if (self.awaiting_first_token) {
             if (self.assistant_stream_index) |index| {
-                self.replaceMessageUnlocked(index, "error", text, null, null) catch {
-                    self.addMessageUnlocked("error", text) catch {};
+                history_mod.replaceMessageUnlocked(self, index, "error", text, null, null) catch {
+                    history_mod.addMessageUnlocked(self, "error", text) catch {};
                 };
             } else {
-                self.addMessageUnlocked("error", text) catch {};
+                history_mod.addMessageUnlocked(self, "error", text) catch {};
             }
             self.awaiting_first_token = false;
         } else {
-            self.addMessageUnlocked("error", text) catch {};
+            history_mod.addMessageUnlocked(self, "error", text) catch {};
         }
 
         self.request_active = false;
@@ -4885,10 +4477,10 @@ pub const Model = struct {
 
         const index = self.assistant_stream_index orelse return;
         if (self.awaiting_first_token) {
-            self.replaceMessageUnlocked(index, "assistant", token, null, null) catch {};
+            history_mod.replaceMessageUnlocked(self, index, "assistant", token, null, null) catch {};
             self.awaiting_first_token = false;
         } else {
-            self.appendToMessageUnlocked(index, token) catch {};
+            history_mod.appendToMessageUnlocked(self, index, token) catch {};
         }
 
         // Feed updated text to typewriter for progressive reveal
@@ -4898,28 +4490,10 @@ pub const Model = struct {
         }
     }
 
-    fn estimatedCostUsd(self: *const Model) f64 {
-        const input_tokens: u32 = @intCast(@min(self.total_input_tokens, std.math.maxInt(u32)));
-        const output_tokens: u32 = @intCast(@min(self.total_output_tokens, std.math.maxInt(u32)));
-        return self.pricing_table.estimateCostSimple(self.provider_name, resolvedPricingModel(self), input_tokens, output_tokens);
-    }
-
-    fn estimateContextTokens(self: *const Model) u64 {
-        var total: u64 = 0;
-        if (self.effective_system_prompt) |prompt| {
-            total += compaction_mod.ContextCompactor.estimateTokens(prompt);
-        }
-        for (self.history.items) |msg| {
-            if (msg.content) |content| {
-                total += compaction_mod.ContextCompactor.estimateTokens(content);
-            }
-        }
-        return total;
-    }
 
     fn performCompaction(self: *Model) !void {
         if (self.history.items.len <= self.compactor.recent_window) {
-            try self.addMessageUnlocked("assistant", "Not enough messages to compact (need more than recent window).");
+            try history_mod.addMessageUnlocked(self, "assistant", "Not enough messages to compact (need more than recent window).");
             return;
         }
 
@@ -4938,7 +4512,7 @@ pub const Model = struct {
         defer result.deinit();
 
         if (result.messages_summarized == 0) {
-            try self.addMessageUnlocked("assistant", "No messages were compacted.");
+            try history_mod.addMessageUnlocked(self, "assistant", "No messages were compacted.");
             return;
         }
 
@@ -4955,14 +4529,14 @@ pub const Model = struct {
         std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
         self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
 
-        self.context_tokens = self.estimateContextTokens();
+        self.context_tokens = token_tracking_mod.estimateContextTokens(self);
 
         const text = try std.fmt.allocPrint(self.allocator, "Compacted {d} messages. Saved ~{d} tokens. Context: {d}%", .{
             result.messages_summarized,
             result.tokens_saved,
-            self.contextPercent(),
+            token_tracking_mod.contextPercent(self),
         });
-        try self.addMessageUnlocked("assistant", text);
+        try history_mod.addMessageUnlocked(self, "assistant", text);
     }
 
     fn performCompactionAuto(self: *Model) !void {
@@ -4995,43 +4569,13 @@ pub const Model = struct {
         std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
         self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
 
-        self.context_tokens = self.estimateContextTokens();
+        self.context_tokens = token_tracking_mod.estimateContextTokens(self);
     }
 
-    fn contextPercent(self: *const Model) u8 {
-        const total_tokens = self.total_input_tokens + self.total_output_tokens;
-        const percent = @min((total_tokens * 100) / 128_000, 100);
-        return @intCast(percent);
-    }
 
-    fn getMCPServerStatus(self: *const Model, allocator: std.mem.Allocator) []const widget_sidebar.MCPServerStatus {
-        const bridge = self.mcp_bridge orelse return &.{};
-        var statuses = std.ArrayList(widget_sidebar.MCPServerStatus).initCapacity(allocator, bridge.servers.items.len) catch return &.{};
-        for (bridge.servers.items) |server| {
-            statuses.append(allocator, .{
-                .name = server.name,
-                .connected = server.connected,
-                .tool_count = @intCast(server.tools.len),
-            }) catch break;
-        }
-        return statuses.toOwnedSlice(allocator) catch return &.{};
-    }
-
-    fn sessionElapsedSeconds(self: *const Model) u64 {
-        const elapsed_ns = @max(std.time.nanoTimestamp() - self.session_start, 0);
-        return @intCast(@divFloor(elapsed_ns, std.time.ns_per_s));
-    }
-
-    fn sessionMinutes(self: *const Model) u64 {
-        return @divFloor(self.sessionElapsedSeconds(), 60);
-    }
-
-    fn sessionSecondsPart(self: *const Model) u64 {
-        return @mod(self.sessionElapsedSeconds(), 60);
-    }
 };
 
-fn onSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []const u8) anyerror!void {
+pub fn onSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []const u8) anyerror!void {
     const ptr = userdata orelse return;
     const model: *Model = @ptrCast(@alignCast(ptr));
     try model.handleSubmit(value, ctx);
@@ -5040,7 +4584,7 @@ fn onSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []const u8) a
 fn onPaletteChange(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []const u8) anyerror!void {
     const ptr = userdata orelse return;
     const model: *Model = @ptrCast(@alignCast(ptr));
-    try model.setPaletteFilter(value);
+    try model_palette.setPaletteFilter(model, value);
     ctx.redraw = true;
 }
 
@@ -5057,7 +4601,7 @@ fn onPaletteSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []cons
         if (filtered_count == 1) {
             const command = model.palette_commands[filtered_indices[0]];
             if (std.mem.eql(u8, command.name, value)) {
-                try model.closePalette(ctx);
+                try model_palette.closePalette(model, ctx);
                 try model.executePaletteCommand(command.name, ctx);
                 return;
             }
