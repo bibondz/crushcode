@@ -575,7 +575,7 @@ fn executeReadFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     const content = try file.readToEndAlloc(allocator, stat.size);
     defer allocator.free(content);
 
-    // Track the file after reading
+    // Track the file after reading — stores mtime for stale-check before edits
     if (active_file_tracker) |tracker| {
         tracker.track(parsed.value.path, content, stat) catch {};
     }
@@ -700,6 +700,21 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
         const msg = try std.fmt.allocPrint(allocator, "Writing to system files is not allowed. Path: {s}", .{parsed.value.path});
         defer allocator.free(msg);
         return buildValidationError(allocator, "write_file", msg);
+    }
+
+    // [Safety] mtime check for existing files: warn if file changed since last read
+    blk: {
+        if (active_file_tracker) |tracker| {
+            if (tracker.files.get(parsed.value.path)) |tracked| {
+                const current_file = std.fs.cwd().openFile(parsed.value.path, .{}) catch break :blk;
+                defer current_file.close();
+                const current_stat = current_file.stat() catch break :blk;
+                if (current_stat.mtime != tracked.mtime) {
+                    return buildValidationError(allocator, "write_file",
+                        "File has been modified since last read (external change detected). Re-read the file before overwriting.");
+                }
+            }
+        }
     }
 
     // Checkpoint: snapshot current file content before overwriting
@@ -949,6 +964,22 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
         return buildValidationError(allocator, "edit", "old_string and new_string are identical. No change needed.");
     }
 
+    // [Safety] mtime check: reject if file changed since last read
+    // Compare current mtime against tracked mtime from the last read_file call
+    blk: {
+        if (active_file_tracker) |tracker| {
+            if (tracker.files.get(parsed.value.file_path)) |tracked| {
+                const current_file = std.fs.cwd().openFile(parsed.value.file_path, .{}) catch break :blk;
+                defer current_file.close();
+                const current_stat = current_file.stat() catch break :blk;
+                if (current_stat.mtime != tracked.mtime) {
+                    return buildValidationError(allocator, "edit",
+                        "File has been modified since last read (external change detected). Re-read the file before editing to avoid data corruption.");
+                }
+            }
+        }
+    }
+
     // Checkpoint: snapshot current file content before editing
     checkpointBeforeWrite(parsed.value.file_path, "edit");
 
@@ -985,9 +1016,36 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     const lines_before = countLines(content);
     const lines_after = countLines(new_content.items);
 
+    // [Quality] Auto LSP diagnostics after edit — check for type errors
+    var diag_note: ?[]const u8 = null;
+    {
+        const diag_args = try std.fmt.allocPrint(allocator, "{{\"file_path\":\"{s}\"}}", .{parsed.value.file_path});
+        defer allocator.free(diag_args);
+        if (lsp_tools_mod.executeDiagnostics(allocator, diag_args)) |diag_result| {
+            defer allocator.free(diag_result);
+            // Check if result contains errors (look for "error" or "Error" in output)
+            if (std.mem.indexOf(u8, diag_result, "error") != null or std.mem.indexOf(u8, diag_result, "Error") != null) {
+                // Count approximate issues
+                var count: u32 = 0;
+                var idx: usize = 0;
+                while (std.mem.indexOf(u8, diag_result[idx..], "error") orelse std.mem.indexOf(u8, diag_result[idx..], "Error")) |match_pos| {
+                    count += 1;
+                    idx += match_pos + 5;
+                    if (idx >= diag_result.len) break;
+                }
+                if (count > 0) {
+                    diag_note = try std.fmt.allocPrint(allocator, "\n⚠️ ~{d} issue(s) detected by LSP after edit. Run lsp_diagnostics for details.", .{count});
+                }
+            }
+        } else |_| {
+            // LSP not available or failed — silently skip auto-diag
+        }
+    }
+    defer if (diag_note) |n| allocator.free(n);
+
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 edit(\"{s}\") → replaced {d} chars with {d} chars\n", .{ parsed.value.file_path, parsed.value.old_string.len, parsed.value.new_string.len }),
-        .result = try std.fmt.allocPrint(allocator, "Edited {s}: replaced text at position {d}. File: {d} lines → {d} lines", .{ parsed.value.file_path, pos, lines_before, lines_after }),
+        .display = try std.fmt.allocPrint(allocator, "🔧 edit(\"{s}\") → replaced {d} chars with {d} chars{s}\n", .{ parsed.value.file_path, parsed.value.old_string.len, parsed.value.new_string.len, diag_note orelse "" }),
+        .result = try std.fmt.allocPrint(allocator, "Edited {s}: replaced text at position {d}. File: {d} lines → {d} lines{s}", .{ parsed.value.file_path, pos, lines_before, lines_after, diag_note orelse "" }),
     };
 }
 
