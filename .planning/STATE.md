@@ -1,9 +1,9 @@
-# State: Crushcode v0.52.0
+# State: Crushcode v0.57.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-22
-**Commit:** (pending)
-**Stats:** ~279 `.zig` files, ~125K lines
+**Commit:** 80f5caa
+**Stats:** ~283 `.zig` files, ~126K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.52+ Competitive Parity & Tooling — COMPLETE |
-| Phase | All 5 phases (53–57) complete |
-| Status | ✅ Milestone finished — 29 builtin tools, 7 hook types, 40 slash commands |
-| Code Version | 0.52.0 |
+| Milestone | v0.57+ OS Integration & Agent Power-Ups — COMPLETE |
+| Phase | All 3 phases (58–60) complete |
+| Status | ✅ Milestone finished — 30 builtin tools, 41 slash commands, OS notifications, recipes |
+| Code Version | 0.57.0 |
 | Binary Size | 125MB (includes SQLite amalgamation) |
 
 ---
@@ -55,7 +55,10 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 54 | New Tools — TodoWrite + apply_patch + Question (26→29 builtin tools) | ✅ Done | pending |
 | Phase 55 | Smart Commands — /doctor diagnostics, /review code review, /commit AI commit messages | ✅ Done | pending |
 | Phase 56 | Skill Loader + Dynamic Commands — SKILL.md frontmatter parsing, .md command discovery | ✅ Done | pending |
-| Phase 57 | Advanced Permission Modes — auto-classifier, enhanced risk tiers, plan mode enforcement | ✅ Done | pending |
+| Phase 57 | Advanced Permission Modes — auto-classifier, enhanced risk tiers, plan mode enforcement | ✅ Done | f952781 |
+| Phase 58 | OS Notifications — real notify-send/osascript/PowerShell with auto-detection | ✅ Done | 80f5caa |
+| Phase 59 | Subagent Tool — AI-callable subagent with depth/timeout controls (30 builtin tools) | ✅ Done | 80f5caa |
+| Phase 60 | Recipes System — .recipe.md templates with {{variable}} substitution, /recipe command | ✅ Done | 80f5caa |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -126,7 +129,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 
 | Feature Area | Crushcode | Claude Code | OpenCode | Codex | Goose |
 |---|---|---|---|---|---|
-| Builtin tools | **29** | 40+ | 20+ | 15 | 12 |
+| Builtin tools | **30** | 40+ | 20+ | 15 | 12 |
 | Providers | **22** | 1 | 20+ | 1 | 10 |
 | Session backend | **SQLite** ✅ | JSONL | SQLite | File | File |
 | Syntax highlight | **20 langs** ✅ | ⚠️ | ⚠️ | ❌ | ❌ |
@@ -237,6 +240,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.42.0** | **Phases 43-47: Smart Context, LSP Tools, Multi-File Edit, Cost Analytics, Session Forking** | **✅ Done** |
 | **v0.47.0** | **Phases 48-52: Agent Teams, Session Tree, Checkpoints, Side Chains, Semantic Compression** | **✅ Done** |
 | **v0.52.0** | **Phases 53-57: Hook System, New Tools, Smart Commands, Skill Loader, Advanced Permissions** | **✅ Done** |
+| **v0.57.0** | **Phases 58-60: OS Notifications, Subagent Tool, Recipes System** | **✅ Done** |
 
 ---
 
