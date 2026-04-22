@@ -122,6 +122,7 @@ pub fn build(b: *std.Build) !void {
     const usage_pricing_mod = simpleMod(b, "src/usage/pricing.zig", target, optimize);
     // db modules (declared early — referenced by session_mod and others)
     const sqlite_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
+    sqlite_mod.addIncludePath(b.path("vendor/sqlite3"));
     const safety_checkpoint_mod = simpleMod(b, "src/safety/checkpoint.zig", target, optimize);
     const session_db_mod = createMod(b, "src/db/session_db.zig", target, optimize, &.{imp("sqlite", sqlite_mod), imp("safety_checkpoint", safety_checkpoint_mod)});
     const cost_dashboard_mod = createMod(b, "src/analytics/cost_dashboard.zig", target, optimize, &.{
