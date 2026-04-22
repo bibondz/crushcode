@@ -332,4 +332,25 @@ pub const builtin_tool_schemas = [_]core.ToolSchema{
         \\{"type":"object","properties":{"file_path":{"type":"string"},"line":{"type":"integer"},"character":{"type":"integer"},"new_name":{"type":"string"}},"required":["file_path","line","character","new_name"]}
         ,
     },
+    .{
+        .name = "todo_write",
+        .description = "Manage a todo list. Create, update, or list todo items with status tracking.",
+        .parameters =
+        \\{"type":"object","properties":{"todos":{"type":"array","items":{"type":"object","properties":{"id":{"type":"string"},"content":{"type":"string"},"status":{"type":"string","enum":["pending","in_progress","completed","cancelled"]},"priority":{"type":"string","enum":["high","medium","low"]}},"required":["content"]}}},"required":["todos"]}
+        ,
+    },
+    .{
+        .name = "apply_patch",
+        .description = "Apply a unified patch with multiple file operations (add, update, delete, move).",
+        .parameters =
+        \\{"type":"object","properties":{"patch":{"type":"array","items":{"type":"object","properties":{"operation":{"type":"string","enum":["add","update","delete","move"]},"path":{"type":"string"},"content":{"type":"string"},"old_content":{"type":"string"},"new_content":{"type":"string"},"destination":{"type":"string"}},"required":["operation","path"]}}},"required":["patch"]}
+        ,
+    },
+    .{
+        .name = "question",
+        .description = "Ask the user a question with predefined options. Returns the user's selection.",
+        .parameters =
+        \\{"type":"object","properties":{"questions":{"type":"array","items":{"type":"object","properties":{"question":{"type":"string"},"header":{"type":"string"},"options":{"type":"array","items":{"type":"object","properties":{"label":{"type":"string"},"description":{"type":"string"}},"required":["label","description"]}},"multiple":{"type":"boolean"}},"required":["question","header","options"]}}},"required":["questions"]}
+        ,
+    },
 };

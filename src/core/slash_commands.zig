@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const dynamic_commands = @import("dynamic_commands");
 
 const Allocator = std.mem.Allocator;
 
@@ -52,6 +53,7 @@ pub const all_slash_command_names = [_][]const u8{
     "/plan",     "/undo",     "/lsp-restart", "/export",
     "/rewind",
     "/compress",
+    "/doctor",   "/review",   "/commit",
 };
 
 /// Check if a string is a recognized slash command.
@@ -61,6 +63,36 @@ pub fn isSupportedSlashCommand(name: []const u8) bool {
         if (std.mem.eql(u8, name, cmd)) return true;
     }
     return false;
+}
+
+/// Global dynamic command registry — initialized at startup.
+/// Holds user/project-defined commands loaded from .crushcode/commands/ and
+/// ~/.config/crushcode/commands/ directories.
+pub var dynamic_registry: ?*dynamic_commands.DynamicCommandRegistry = null;
+
+/// Get all command names including dynamic ones.
+/// Returns a newly allocated array that the caller must free (including each string).
+pub fn getAllCommandNames(allocator: Allocator) ![]const []const u8 {
+    var names = array_list_compat.ArrayList([]const u8).init(allocator);
+    errdefer {
+        for (names.items) |n| allocator.free(n);
+        names.deinit();
+    }
+
+    // Add static commands
+    for (&all_slash_command_names) |name| {
+        try names.append(try allocator.dupe(u8, name));
+    }
+
+    // Add dynamic commands
+    if (dynamic_registry) |registry| {
+        for (registry.listCommands()) |cmd| {
+            const full_name = try std.fmt.allocPrint(allocator, "/{s}", .{cmd.name});
+            try names.append(full_name);
+        }
+    }
+
+    return names.toOwnedSlice();
 }
 
 /// Session context passed to commands that need session state

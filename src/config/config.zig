@@ -52,6 +52,10 @@ pub const Config = struct {
     provider_overrides: std.StringHashMap(ProviderOverride),
     /// OAuth callback port (default: 19876)
     oauth_port: u16 = 19876,
+    /// Skills directory — defaults to ~/.config/crushcode/skills/
+    skills_dir: ?[]const u8 = null,
+    /// Commands directory — defaults to ~/.config/crushcode/commands/
+    commands_dir: ?[]const u8 = null,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -66,6 +70,8 @@ pub const Config = struct {
             .temperature = 0.7,
             .provider_overrides = std.StringHashMap(ProviderOverride).init(allocator),
             .oauth_port = 19876,
+            .skills_dir = null,
+            .commands_dir = null,
         };
     }
 
@@ -92,6 +98,8 @@ pub const Config = struct {
             }
             self.provider_overrides.deinit();
         }
+        if (self.skills_dir) |d| self.allocator.free(d);
+        if (self.commands_dir) |d| self.allocator.free(d);
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -531,6 +539,18 @@ pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
 
     // Ensure providers.toml exists (idempotent — skips if already present)
     @import("providers_file").createDefaultProvidersFile() catch {};
+
+    // Resolve skills and commands directories if not set by config
+    if (config.skills_dir == null) {
+        const config_dir = try env.getConfigDir(allocator);
+        defer allocator.free(config_dir);
+        config.skills_dir = try std.fs.path.join(allocator, &.{ config_dir, "skills" });
+    }
+    if (config.commands_dir == null) {
+        const config_dir = try env.getConfigDir(allocator);
+        defer allocator.free(config_dir);
+        config.commands_dir = try std.fs.path.join(allocator, &.{ config_dir, "commands" });
+    }
 
     return config;
 }

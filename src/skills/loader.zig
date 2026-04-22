@@ -301,6 +301,173 @@ pub const SkillLoader = struct {
     }
 };
 
+// ============================================================
+// Standalone SkillMetadata — lightweight frontmatter-only parsing
+// ============================================================
+
+/// Lightweight metadata extracted from SKILL.md frontmatter.
+/// Used by skill discovery without loading the full Skill struct.
+pub const SkillMetadata = struct {
+    allocator: Allocator,
+    name: []const u8,
+    description: []const u8,
+    triggers: [][]const u8,
+    tools: [][]const u8,
+    scope: []const u8,
+    content: []const u8,
+
+    pub fn deinit(self: *SkillMetadata) void {
+        self.allocator.free(self.name);
+        self.allocator.free(self.description);
+        self.allocator.free(self.scope);
+        self.allocator.free(self.content);
+        for (self.triggers) |t| self.allocator.free(t);
+        self.allocator.free(self.triggers);
+        for (self.tools) |t| self.allocator.free(t);
+        self.allocator.free(self.tools);
+    }
+};
+
+/// Parse a SKILL.md content string into a SkillMetadata.
+/// Returns null if the content does not contain valid frontmatter.
+pub fn parseSkillMd(allocator: Allocator, content: []const u8) !?SkillMetadata {
+    const split = splitFrontmatter(content);
+    if (split.yaml.len == 0) return null;
+
+    var meta = SkillMetadata{
+        .allocator = allocator,
+        .name = "",
+        .description = "",
+        .triggers = &[_][]const u8{},
+        .tools = &[_][]const u8{},
+        .scope = "",
+        .content = "",
+    };
+
+    // Parse YAML key: value pairs
+    var line_iter = std.mem.splitScalar(u8, split.yaml, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon_pos| {
+            const key = std.mem.trim(u8, trimmed[0..colon_pos], " \t");
+            const value = std.mem.trim(u8, trimmed[colon_pos + 1 ..], " \t\"'");
+            if (value.len == 0) continue;
+
+            if (std.mem.eql(u8, key, "name")) {
+                meta.name = try allocator.dupe(u8, value);
+            } else if (std.mem.eql(u8, key, "description")) {
+                meta.description = try allocator.dupe(u8, value);
+            } else if (std.mem.eql(u8, key, "triggers")) {
+                meta.triggers = try parseCommaListStandalone(allocator, value);
+            } else if (std.mem.eql(u8, key, "tools")) {
+                meta.tools = try parseCommaListStandalone(allocator, value);
+            } else if (std.mem.eql(u8, key, "scope")) {
+                meta.scope = try allocator.dupe(u8, value);
+            }
+        }
+    }
+
+    // Body content after frontmatter
+    if (split.body.len > 0) {
+        meta.content = try allocator.dupe(u8, split.body);
+    }
+
+    return meta;
+}
+
+/// Walk a directory for SKILL.md or *.skill.md files and parse them into metadata.
+pub fn loadSkillsFromDirectory(allocator: Allocator, dir_path: []const u8) ![]SkillMetadata {
+    var results = array_list_compat.ArrayList(SkillMetadata).init(allocator);
+    errdefer {
+        for (results.items) |*m| m.deinit();
+        results.deinit();
+    }
+
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch |err| {
+        if (err == error.FileNotFound) return &[_]SkillMetadata{};
+        return err;
+    };
+    defer dir.close();
+
+    var walker = try dir.walk(allocator);
+    defer walker.deinit();
+
+    while (try walker.next()) |entry| {
+        if (entry.kind != .file) continue;
+
+        const basename = entry.basename;
+        const is_skill_file = std.mem.eql(u8, basename, "SKILL.md") or
+            std.mem.endsWith(u8, basename, ".skill.md");
+        if (!is_skill_file) continue;
+
+        const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.path });
+        errdefer allocator.free(full_path);
+
+        const file = std.fs.cwd().openFile(full_path, .{}) catch {
+            allocator.free(full_path);
+            continue;
+        };
+        defer file.close();
+
+        const file_size = file.getEndPos() catch {
+            allocator.free(full_path);
+            continue;
+        };
+        if (file_size == 0) {
+            allocator.free(full_path);
+            continue;
+        }
+
+        const buffer = try allocator.alloc(u8, file_size);
+        defer allocator.free(buffer);
+
+        const bytes_read = file.readAll(buffer) catch {
+            allocator.free(full_path);
+            continue;
+        };
+
+        const meta = try parseSkillMd(allocator, buffer[0..bytes_read]) orelse {
+            allocator.free(full_path);
+            continue;
+        };
+
+        // Use filename as fallback name
+        var owned = meta;
+        if (owned.name.len == 0) {
+            if (std.mem.endsWith(u8, basename, ".skill.md")) {
+                owned.name = try allocator.dupe(u8, basename[0 .. basename.len - ".skill.md".len]);
+            } else {
+                owned.name = try allocator.dupe(u8, basename);
+            }
+        }
+
+        allocator.free(full_path);
+        try results.append(owned);
+    }
+
+    return results.toOwnedSlice();
+}
+
+/// Parse comma-separated list (standalone, no SkillLoader needed).
+fn parseCommaListStandalone(allocator: Allocator, value: []const u8) ![][]const u8 {
+    var items = array_list_compat.ArrayList([]const u8).init(allocator);
+    errdefer {
+        for (items.items) |item| allocator.free(item);
+        items.deinit();
+    }
+
+    var iter = std.mem.splitScalar(u8, value, ',');
+    while (iter.next()) |item| {
+        const trimmed = std.mem.trim(u8, item, " \t\"'[]");
+        if (trimmed.len == 0) continue;
+        try items.append(try allocator.dupe(u8, trimmed));
+    }
+
+    return items.toOwnedSlice();
+}
+
 /// Split YAML frontmatter from markdown body
 fn splitFrontmatter(content: []const u8) struct { yaml: []const u8, body: []const u8 } {
     if (content.len < 4 or !std.mem.startsWith(u8, content, "---")) {
@@ -360,6 +527,70 @@ test "SkillLoader - parseCommaList" {
     try std.testing.expect(std.mem.eql(u8, list[0], "read"));
     try std.testing.expect(std.mem.eql(u8, list[1], "write"));
     try std.testing.expect(std.mem.eql(u8, list[2], "edit"));
+}
+
+test "parseSkillMd - with valid frontmatter" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\---
+        \\name: code-review
+        \\description: Review code for quality
+        \\triggers: review, audit
+        \\tools: read, grep
+        \\scope: builtin
+        \\---
+        \\You are a code reviewer. Analyze the following code.
+    ;
+
+    const result = try parseSkillMd(allocator, content) orelse {
+        try std.testing.expect(false);
+        return;
+    };
+    defer {
+        var mut = result;
+        mut.deinit();
+    }
+
+    try std.testing.expectEqualStrings("code-review", result.name);
+    try std.testing.expectEqualStrings("Review code for quality", result.description);
+    try std.testing.expectEqualStrings("builtin", result.scope);
+    try std.testing.expectEqual(@as(usize, 2), result.triggers.len);
+    try std.testing.expectEqual(@as(usize, 2), result.tools.len);
+    try std.testing.expect(std.mem.indexOf(u8, result.content, "code reviewer") != null);
+}
+
+test "parseSkillMd - no frontmatter returns null" {
+    const allocator = std.testing.allocator;
+    const content = "Just plain text without frontmatter.";
+
+    const result = try parseSkillMd(allocator, content);
+    try std.testing.expect(result == null);
+}
+
+test "parseSkillMd - empty frontmatter returns null" {
+    const allocator = std.testing.allocator;
+    const content =
+        \\---
+        \\---
+        \\Body content.
+    ;
+
+    const result = try parseSkillMd(allocator, content);
+    try std.testing.expect(result == null);
+}
+
+test "parseCommaListStandalone - parses comma list" {
+    const allocator = std.testing.allocator;
+    const list = try parseCommaListStandalone(allocator, "bash, read, edit");
+    defer {
+        for (list) |item| allocator.free(item);
+        allocator.free(list);
+    }
+
+    try std.testing.expectEqual(@as(usize, 3), list.len);
+    try std.testing.expectEqualStrings("bash", list[0]);
+    try std.testing.expectEqualStrings("read", list[1]);
+    try std.testing.expectEqualStrings("edit", list[2]);
 }
 
 test "SkillLoader - toPromptXml" {

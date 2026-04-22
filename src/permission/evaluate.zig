@@ -13,11 +13,15 @@ pub const PermissionPrompt = @import("prompt.zig").PermissionPrompt;
 pub const PromptResponse = @import("prompt.zig").PromptResponse;
 pub const PromptHandler = @import("prompt.zig").PromptHandler;
 const tool_classifier = @import("tool_classifier.zig");
+const auto_classifier_mod = @import("auto_classifier.zig");
+pub const AutoClassifier = auto_classifier_mod.AutoClassifier;
+pub const RiskTier = auto_classifier_mod.RiskTier;
 
 /// Permission evaluator implementing OpenCode's pattern matching logic
 pub const PermissionEvaluator = struct {
     allocator: Allocator,
     config: PermissionConfig,
+    auto_classifier: ?*AutoClassifier = null,
 
     pub fn init(allocator: Allocator, config: PermissionConfig) PermissionEvaluator {
         return PermissionEvaluator{
@@ -30,20 +34,39 @@ pub const PermissionEvaluator = struct {
         self.config.deinit();
     }
 
+    /// Attach an auto-classifier for enhanced auto mode decisions.
+    pub fn setAutoClassifier(self: *PermissionEvaluator, classifier: *AutoClassifier) void {
+        self.auto_classifier = classifier;
+    }
+
     /// Evaluate permission request against rules (OpenCode pattern)
     /// Returns the last matching rule's action (last-match-wins)
     pub fn evaluate(self: *const PermissionEvaluator, request: *const PermissionRequest) PermissionResult {
         // Check permission mode first (Claude Code pattern)
         switch (self.config.mode) {
             .bypassPermissions => return PermissionResult.allow(),
-            .auto => return PermissionResult.autoAllow(),
+            .auto => {
+                // Auto-classifier check (enhanced auto mode): if the
+                // classifier is attached and considers this operation safe
+                // based on transcript history, auto-approve.
+                if (self.auto_classifier) |classifier| {
+                    const args = request.description orelse "";
+                    if (classifier.shouldAutoApprove(request.tool_name, args)) {
+                        return PermissionResult.autoAllow();
+                    }
+                }
+                // Fallback: blanket auto-allow for plain auto mode.
+                return PermissionResult.autoAllow();
+            },
             .plan => {
-                // Plan mode: allow read operations, deny writes
+                // Plan mode: strict read-only — block ALL write operations.
                 if (isReadOperation(request)) {
                     return PermissionResult.allow();
-                } else {
-                    return PermissionResult.deny("Plan mode: Write operations not allowed");
                 }
+                // Build a descriptive denial message.
+                const msg = std.fmt.allocPrint(self.allocator, "Plan mode: '{s}' is a write operation. Switch modes with /mode default", .{request.tool_name}) catch
+                    "Plan mode: Write operations not allowed";
+                return PermissionResult{ .action = .deny, .error_message = msg };
             },
             .acceptEdits => {
                 // Accept edits mode: allow file writes, ask for other operations
@@ -171,10 +194,12 @@ pub const PermissionEvaluator = struct {
     pub fn applyMode(self: *const PermissionEvaluator, request: *const PermissionRequest, result: *PermissionResult) void {
         switch (self.config.mode) {
             .plan => {
-                // Plan mode overrides: deny all writes
+                // Plan mode overrides: deny all writes with descriptive message
                 if (!isReadOperation(request)) {
                     result.action = .deny;
-                    result.error_message = "Plan mode: Write operations not allowed";
+                    const msg = std.fmt.allocPrint(self.allocator, "Plan mode: '{s}' is a write operation. Switch modes with /mode default", .{request.tool_name}) catch
+                        "Plan mode: Write operations not allowed";
+                    result.error_message = msg;
                 }
             },
             .acceptEdits => {

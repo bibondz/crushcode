@@ -18,6 +18,10 @@ const edit_batch_mod = @import("edit_batch");
 const lsp_tools_mod = @import("lsp_tools");
 const checkpoint_mod = @import("safety_checkpoint");
 const session_db_mod = @import("session_db");
+const todo_mod = @import("todo");
+const apply_patch_mod = @import("apply_patch");
+const question_mod = @import("question");
+const hooks_mod = @import("hooks_registry");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -74,6 +78,7 @@ threadlocal var active_agent_mode: agent_loop_mod.AgentMode = .execute;
 threadlocal var active_checkpoint_manager: ?*checkpoint_mod.CheckpointManager = null;
 threadlocal var active_session_db_ref: ?*session_db_mod.SessionDB = null;
 threadlocal var active_checkpoint_session_id: []const u8 = "";
+threadlocal var active_hook_registry: ?*hooks_mod.HookRegistry = null;
 
 pub fn setPermissionEvaluator(evaluator: ?*PermissionEvaluator) void {
     active_evaluator = evaluator;
@@ -117,6 +122,10 @@ pub fn setSessionDbForCheckpoint(db: ?*session_db_mod.SessionDB) void {
 
 pub fn setCheckpointSessionId(session_id: []const u8) void {
     active_checkpoint_session_id = session_id;
+}
+
+pub fn setHookRegistry(registry: ?*hooks_mod.HookRegistry) void {
+    active_hook_registry = registry;
 }
 
 /// Attempt to snapshot a file before a destructive operation.
@@ -176,6 +185,19 @@ fn adaptToolExecution(
     };
 
     active_json_output.emitToolCall(tool_name, call_id, arguments);
+
+    // PreToolUse hook — abort if any hook returns non-zero
+    if (active_hook_registry) |registry| {
+        var ctx = hooks_mod.HookContext{
+            .hook_type = .PreToolUse,
+            .tool_name = tool_name,
+            .arguments = arguments,
+            .timestamp = std.time.milliTimestamp(),
+        };
+        if (!(registry.shouldProceed(&ctx) catch true)) {
+            return try ToolResult.init(allocator, call_id, "Tool execution blocked by hook", false);
+        }
+    }
 
     // Agent mode check — restrict tools based on plan/build/execute mode
     const current_mode = active_agent_mode;
@@ -302,6 +324,22 @@ fn adaptToolExecution(
     out("\n{s}", .{execution.display});
     active_json_output.emitToolResult(call_id, execution.result, success);
 
+    // PostToolUse hook
+    if (active_hook_registry) |registry| {
+        var ctx = hooks_mod.HookContext{
+            .hook_type = .PostToolUse,
+            .tool_name = tool_name,
+            .arguments = arguments,
+            .result = execution.result,
+            .timestamp = std.time.milliTimestamp(),
+        };
+        const results = registry.executeHooks(&ctx) catch &.{};
+        defer {
+            for (results) |*r| r.deinit(allocator);
+            if (results.len > 0) allocator.free(results);
+        }
+    }
+
     var result = try ToolResult.init(allocator, call_id, execution.result, success);
     result.duration_ms = elapsedMillis(start_ms);
     return result;
@@ -414,6 +452,18 @@ fn lspRenameExecutor(allocator: std.mem.Allocator, call_id: []const u8, argument
     return adaptToolExecution(allocator, call_id, "lsp_rename", arguments, executeLspRenameTool);
 }
 
+fn todoWriteExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "todo_write", arguments, executeTodoWriteTool);
+}
+
+fn applyPatchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "apply_patch", arguments, executeApplyPatchTool);
+}
+
+fn questionExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "question", arguments, executeQuestionTool);
+}
+
 const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "read_file", .executor = readFileExecutor },
     .{ .name = "shell", .executor = shellExecutor },
@@ -441,6 +491,9 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "lsp_hover", .executor = lspHoverExecutor },
     .{ .name = "lsp_symbols", .executor = lspSymbolsExecutor },
     .{ .name = "lsp_rename", .executor = lspRenameExecutor },
+    .{ .name = "todo_write", .executor = todoWriteExecutor },
+    .{ .name = "apply_patch", .executor = applyPatchExecutor },
+    .{ .name = "question", .executor = questionExecutor },
 };
 
 fn getExecutorForTool(name: []const u8) ?ToolExecutor {
@@ -1765,6 +1818,33 @@ fn executeLspRenameTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
     };
 }
 
+fn executeTodoWriteTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = todo_mod.executeTodoWriteTool(allocator, tool_call) catch |err|
+        return buildToolFailure(allocator, tool_call, err);
+    return .{
+        .display = result.display,
+        .result = result.result,
+    };
+}
+
+fn executeApplyPatchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = apply_patch_mod.executeApplyPatchTool(allocator, tool_call) catch |err|
+        return buildToolFailure(allocator, tool_call, err);
+    return .{
+        .display = result.display,
+        .result = result.result,
+    };
+}
+
+fn executeQuestionTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const result = question_mod.executeQuestionTool(allocator, tool_call) catch |err|
+        return buildToolFailure(allocator, tool_call, err);
+    return .{
+        .display = result.display,
+        .result = result.result,
+    };
+}
+
 pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
     // Guard: empty arguments would cause a confusing JSON parse error downstream;
     // return a descriptive validation error instead.
@@ -1848,6 +1928,15 @@ pub fn executeBuiltinTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     }
     if (std.mem.eql(u8, tool_call.name, "lsp_rename")) {
         return executeLspRenameTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "todo_write")) {
+        return executeTodoWriteTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "apply_patch")) {
+        return executeApplyPatchTool(allocator, tool_call);
+    }
+    if (std.mem.eql(u8, tool_call.name, "question")) {
+        return executeQuestionTool(allocator, tool_call);
     }
     return error.UnsupportedTool;
 }

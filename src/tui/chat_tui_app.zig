@@ -62,6 +62,11 @@ const team_coordinator_lib = @import("team_coordinator");
 const safety_checkpoint_mod = @import("safety_checkpoint");
 const session_tree_mod = @import("session_tree");
 const semantic_compressor_mod = @import("semantic_compressor");
+const doctor_mod = @import("doctor");
+const review_mod = @import("review");
+const commit_mod = @import("commit");
+const hooks_mod = @import("hooks_registry");
+const hooks_config_mod = @import("hooks_config");
 
 // Types from widget_types
 pub const WorkerStatus = widget_types.WorkerStatus;
@@ -304,6 +309,7 @@ pub const Model = struct {
     hybrid_bridge: ?*hybrid_bridge_mod.HybridBridge = null,
     plugin_manager: plugin_mod.runtime.ExternalPluginManager,
     lifecycle_hooks: lifecycle_mod.LifecycleHooks,
+    hook_registry: ?*hooks_mod.HookRegistry,
     memory: memory_mod.Memory,
     parallel_executor: parallel_mod.ParallelExecutor,
     guardian: ?guardian_mod.Guardian = null,
@@ -427,6 +433,7 @@ pub const Model = struct {
             .toast_stack = undefined,
             .typewriter = null,
             .lifecycle_hooks = lifecycle_mod.LifecycleHooks.init(allocator),
+            .hook_registry = null,
             .memory = memory_mod.Memory.init(allocator, "", 100),
             .parallel_executor = parallel_mod.ParallelExecutor.init(allocator, 3),
             .plugin_manager = plugin_mod.runtime.ExternalPluginManager.init(allocator, ""),
@@ -541,12 +548,38 @@ pub const Model = struct {
         try model.lifecycle_hooks.register("error_logger", .core, .on_error, hookErrorLogger, 10);
         try model.lifecycle_hooks.register("tool_timer", .core, .post_tool, hookToolTimer, 10);
 
+        // Initialize hook registry and load hooks from config (non-fatal)
+        {
+            const hr = allocator.create(hooks_mod.HookRegistry) catch null;
+            if (hr) |reg| {
+                reg.* = hooks_mod.HookRegistry.init(allocator);
+                _ = hooks_config_mod.loadAllHooks(allocator, reg) catch 0;
+                model.hook_registry = reg;
+
+                // Wire the hook registry into tool executors
+                tool_executors.setHookRegistry(reg);
+            }
+        }
+
         // Execute session_start lifecycle hook
         {
             var hook_ctx = lifecycle_mod.HookContext.init(allocator);
             defer hook_ctx.deinit();
             hook_ctx.phase = .session_start;
             model.lifecycle_hooks.execute(.session_start, &hook_ctx) catch {};
+        }
+
+        // Fire SessionStart hook via hook registry
+        if (model.hook_registry) |registry| {
+            var ctx = hooks_mod.HookContext{
+                .hook_type = .SessionStart,
+                .timestamp = std.time.milliTimestamp(),
+            };
+            const results = registry.executeHooks(&ctx) catch &.{};
+            defer {
+                for (results) |*r| r.deinit(allocator);
+                if (results.len > 0) allocator.free(results);
+            }
         }
 
         try model.registry.registerAllProviders();
@@ -665,6 +698,21 @@ pub const Model = struct {
             defer hook_ctx.deinit();
             hook_ctx.phase = .session_end;
             self.lifecycle_hooks.execute(.session_end, &hook_ctx) catch {};
+        }
+        // Fire SessionEnd hook via hook registry
+        if (self.hook_registry) |registry| {
+            var ctx = hooks_mod.HookContext{
+                .hook_type = .SessionEnd,
+                .timestamp = std.time.milliTimestamp(),
+            };
+            const results = registry.executeHooks(&ctx) catch &.{};
+            defer {
+                for (results) |*r| r.deinit(self.allocator);
+                if (results.len > 0) self.allocator.free(results);
+            }
+            registry.deinit();
+            self.allocator.destroy(registry);
+            self.hook_registry = null;
         }
         self.lifecycle_hooks.deinit();
         self.app.deinit();
@@ -3925,6 +3973,39 @@ pub const Model = struct {
             } else {
                 try self.addMessageUnlocked("assistant", "Usage: /compress [status|run]");
             }
+        } else if (std.mem.eql(u8, name, "/doctor")) {
+            const report = doctor_mod.runDoctorChecks(self.allocator) catch {
+                try self.addMessageUnlocked("assistant", "Doctor checks failed to run.");
+                ctx.redraw = true;
+                return;
+            };
+            defer self.allocator.free(report);
+            try self.addMessageUnlocked("assistant", report);
+        } else if (std.mem.eql(u8, name, "/review") or std.mem.startsWith(u8, name, "/review ")) {
+            const review_sub = std.mem.trim(u8, name["/review".len..], " ");
+            const scope: review_mod.ReviewScope = blk: {
+                if (review_sub.len == 0) break :blk .unstaged;
+                if (std.mem.eql(u8, review_sub, "staged")) break :blk .staged;
+                if (std.mem.eql(u8, review_sub, "branch")) break :blk .branch;
+                if (std.mem.eql(u8, review_sub, "last") or std.mem.eql(u8, review_sub, "last-commit")) break :blk .last_commit;
+                break :blk .unstaged;
+            };
+            const result = review_mod.runReview(self.allocator, scope, null) catch {
+                try self.addMessageUnlocked("assistant", "Review failed. Make sure you are in a git repository.");
+                ctx.redraw = true;
+                return;
+            };
+            defer self.allocator.free(result);
+            try self.addMessageUnlocked("assistant", result);
+        } else if (std.mem.eql(u8, name, "/commit") or std.mem.startsWith(u8, name, "/commit ")) {
+            const commit_args = std.mem.trim(u8, name["/commit".len..], " ");
+            const result = commit_mod.runCommit(self.allocator, commit_args) catch {
+                try self.addMessageUnlocked("assistant", "Commit analysis failed. Make sure you are in a git repository.");
+                ctx.redraw = true;
+                return;
+            };
+            defer self.allocator.free(result);
+            try self.addMessageUnlocked("assistant", result);
         }
 
         ctx.redraw = true;
@@ -4722,6 +4803,25 @@ pub const Model = struct {
                 defer self.allocator.free(text);
                 self.finishRequestWithErrorText(text);
             },
+        }
+    }
+
+    /// Show a toast notification and fire the Notification hook.
+    fn showNotification(self: *Model, message: []const u8, severity: widget_toast.Severity) void {
+        self.toast_stack.push(message, severity) catch {};
+
+        // Fire Notification hook via hook registry
+        if (self.hook_registry) |registry| {
+            var ctx = hooks_mod.HookContext{
+                .hook_type = .Notification,
+                .result = message,
+                .timestamp = std.time.milliTimestamp(),
+            };
+            const results = registry.executeHooks(&ctx) catch &.{};
+            defer {
+                for (results) |*r| r.deinit(self.allocator);
+                if (results.len > 0) self.allocator.free(results);
+            }
         }
     }
 

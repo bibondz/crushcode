@@ -1,9 +1,9 @@
-# State: Crushcode v0.40.0
+# State: Crushcode v0.52.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
-**Updated:** 2026-04-21
-**Commit:** b5b9fcf
-**Stats:** ~268 `.zig` files, ~117K lines
+**Updated:** 2026-04-22
+**Commit:** (pending)
+**Stats:** ~279 `.zig` files, ~125K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 
 ---
@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v0.47+ Agent Unification & Safety Net — COMPLETE |
-| Phase | All 5 phases (48–52) complete |
-| Status | ✅ Milestone finished — 26 builtin tools, 5 new infra features |
-| Code Version | 0.47.0 |
+| Milestone | v0.52+ Competitive Parity & Tooling — COMPLETE |
+| Phase | All 5 phases (53–57) complete |
+| Status | ✅ Milestone finished — 29 builtin tools, 7 hook types, 40 slash commands |
+| Code Version | 0.52.0 |
 | Binary Size | 125MB (includes SQLite amalgamation) |
 
 ---
@@ -51,6 +51,11 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | Phase 50 | Checkpoints & Rewind — auto-snapshot before AI edits, /rewind command | ✅ Done | fb00497 |
 | Phase 51 | Side Chains — /btw context switching, compact summary injection | ✅ Done | b5b9fcf |
 | Phase 52 | Semantic Context Compression — AST-aware 4-level compression, /compress command | ✅ Done | b5b9fcf |
+| Phase 53 | Hook System — lifecycle hooks (PreToolUse, PostToolUse, SessionStart/End, Notification), config loading | ✅ Done | pending |
+| Phase 54 | New Tools — TodoWrite + apply_patch + Question (26→29 builtin tools) | ✅ Done | pending |
+| Phase 55 | Smart Commands — /doctor diagnostics, /review code review, /commit AI commit messages | ✅ Done | pending |
+| Phase 56 | Skill Loader + Dynamic Commands — SKILL.md frontmatter parsing, .md command discovery | ✅ Done | pending |
+| Phase 57 | Advanced Permission Modes — auto-classifier, enhanced risk tiers, plan mode enforcement | ✅ Done | pending |
 
 ### Phase 38: Streaming Diff Preview (c596292)
 
@@ -121,7 +126,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 
 | Feature Area | Crushcode | Claude Code | OpenCode | Codex | Goose |
 |---|---|---|---|---|---|
-| Builtin tools | **26** | 40+ | 20+ | 15 | 12 |
+| Builtin tools | **29** | 40+ | 20+ | 15 | 12 |
 | Providers | **22** | 1 | 20+ | 1 | 10 |
 | Session backend | **SQLite** ✅ | JSONL | SQLite | File | File |
 | Syntax highlight | **20 langs** ✅ | ⚠️ | ⚠️ | ❌ | ❌ |
@@ -231,6 +236,7 @@ Roadmap: `.planning/ROADMAP-v0.37.md`
 | **v0.41.0** | **Phase 42: Image in Terminal (Kitty/Sixel)** | **✅ Done** |
 | **v0.42.0** | **Phases 43-47: Smart Context, LSP Tools, Multi-File Edit, Cost Analytics, Session Forking** | **✅ Done** |
 | **v0.47.0** | **Phases 48-52: Agent Teams, Session Tree, Checkpoints, Side Chains, Semantic Compression** | **✅ Done** |
+| **v0.52.0** | **Phases 53-57: Hook System, New Tools, Smart Commands, Skill Loader, Advanced Permissions** | **✅ Done** |
 
 ---
 
@@ -290,5 +296,5 @@ vendor/sqlite3/ — SQLite 3.47.0 amalgamation (vendored C)
 ## Session Continuity
 
 **Last Updated:** 2026-04-22
-**Current Work:** v0.47+ Agent Unification & Safety Net milestone COMPLETE. All 5 phases (48–52) shipped.
+**Current Work:** v0.52+ Competitive Parity & Tooling milestone COMPLETE. All 5 phases (53–57) shipped.
 **Next Step:** Define next milestone or push to remote
