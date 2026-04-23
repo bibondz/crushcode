@@ -23,3 +23,29 @@ pub const PerfReport = struct {
         std.debug.print("[PERF] {s}: {d}{s}\n", .{ metric, value, unit });
     }
 };
+
+// ========== UNIT TESTS ==========
+
+const testing = std.testing;
+
+test "Timer.start and elapsed" {
+    const timer = Timer.start();
+    const elapsed = timer.elapsed();
+    // Elapsed should be non-negative (>= 0) since no time travel
+    try testing.expect(elapsed >= 0);
+}
+
+test "Timer.stop returns positive duration" {
+    const timer = Timer.start();
+    std.Thread.sleep(10 * std.time.ns_per_ms);
+    const duration = timer.stop();
+    // Allow tolerance: at least 8ms should have passed after 10ms sleep
+    try testing.expect(duration >= 8);
+}
+
+test "PerfReport.log does not crash" {
+    // Verify log() runs without errors for sample values
+    PerfReport.log("test_metric", 42, "ms");
+    PerfReport.log("throughput", 1000, "tok/s");
+    PerfReport.log("negative_value", -1, "ms");
+}

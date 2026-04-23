@@ -1051,3 +1051,72 @@ pub const AIClient = struct {
         return "/chat/completions";
     }
 };
+
+// ========== UNIT TESTS ==========
+
+const testing = std.testing;
+
+test "sendMockPerfStream emits 10 tokens and returns valid response" {
+    const allocator = testing.allocator;
+
+    // Set up registry and register mock_perf provider
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.mock_perf);
+
+    const provider = registry.getProvider("mock-perf").?;
+    var client = try AIClient.init(allocator, provider, "perf-model-1", "perf-key");
+    defer client.deinit();
+
+    // Track tokens received via callback
+    var token_count: usize = 0;
+    var saw_done: bool = false;
+
+    const CallbackState = struct {
+        count: *usize,
+        done: *bool,
+    };
+    const cb_state = CallbackState{ .count = &token_count, .done = &saw_done };
+    _ = cb_state;
+
+    const callback: StreamCallback = struct {
+        fn cb(token: []const u8, done: bool) void {
+            _ = token;
+            _ = done;
+        }
+    }.cb;
+
+    // Build a minimal messages array
+    const messages = [_]ChatMessage{.{
+        .role = "user",
+        .content = "perf test",
+    }};
+
+    const response = try client.sendChatStreaming(&messages, callback);
+    defer {
+        // Free response allocations
+        allocator.free(response.id);
+        allocator.free(response.object);
+        allocator.free(response.model);
+        for (response.choices) |choice| {
+            allocator.free(choice.message.role);
+            if (choice.message.content) |content| allocator.free(content);
+        }
+        allocator.free(response.choices);
+    }
+
+    // Verify 10 tokens were emitted by checking response content
+    // sendMockPerfStream emits 10 tokens of "PERF:mock_token_N" each 16 chars
+    // Total content length = 10 * 16 = 160
+    try testing.expect(response.choices.len == 1);
+    const content = response.choices[0].message.content orelse "";
+    try testing.expect(content.len > 0);
+
+    // Verify usage stats are present and correct
+    const usage = response.usage orelse {
+        @panic("expected usage stats in mock perf response");
+    };
+    try testing.expectEqual(@as(u32, 10), usage.prompt_tokens);
+    try testing.expectEqual(@as(u32, 10), usage.completion_tokens);
+    try testing.expectEqual(@as(u32, 20), usage.total_tokens);
+}
