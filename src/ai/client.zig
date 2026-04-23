@@ -152,6 +152,66 @@ pub const AIClient = struct {
         return self.sendChatWithOptions(null, messages, true);
     }
 
+    /// Mock streaming provider for performance benchmarking.
+    /// Emits tokens with realistic SSE timing to measure TTFT and throughput
+    /// without network latency.
+    fn sendMockPerfStream(self: *AIClient, callback: StreamCallback) !ChatResponse {
+        const allocator = self.allocator;
+        const tokens = [_][]const u8{
+            "PERF:mock_token_0",
+            "PERF:mock_token_1",
+            "PERF:mock_token_2",
+            "PERF:mock_token_3",
+            "PERF:mock_token_4",
+            "PERF:mock_token_5",
+            "PERF:mock_token_6",
+            "PERF:mock_token_7",
+            "PERF:mock_token_8",
+            "PERF:mock_token_9",
+        };
+
+        var full_content = array_list_compat.ArrayList(u8).init(allocator);
+        defer full_content.deinit();
+
+        // Emit tokens with 10ms delay each (simulating 100 tok/s)
+        for (tokens, 0..) |token, i| {
+            std.Thread.sleep(10 * std.time.ns_per_ms);
+            try full_content.appendSlice(token);
+            if (i == tokens.len - 1) {
+                callback(token, true);
+            } else {
+                callback(token, false);
+            }
+        }
+
+        const content = try allocator.dupe(u8, full_content.items);
+        const model = try allocator.dupe(u8, self.model);
+
+        const choices = try allocator.alloc(ChatChoice, 1);
+        choices[0] = .{
+            .index = 0,
+            .message = .{
+                .role = "assistant",
+                .content = content,
+                .tool_calls = null,
+            },
+            .finish_reason = "stop",
+        };
+
+        return ChatResponse{
+            .id = "perf-mock-001",
+            .object = "chat.completion",
+            .created = @intCast(std.time.milliTimestamp()),
+            .model = model,
+            .choices = choices,
+            .usage = .{
+                .prompt_tokens = 10,
+                .completion_tokens = tokens.len,
+                .total_tokens = 10 + tokens.len,
+            },
+        };
+    }
+
     /// Send chat with streaming, calling callback for each token chunk.
     pub fn sendChatStreaming(self: *AIClient, messages: []const ChatMessage, callback: StreamCallback) !ChatResponse {
         if (messages.len == 0) {
@@ -160,6 +220,10 @@ pub const AIClient = struct {
 
         if (self.model.len == 0) {
             return error.ConfigurationError;
+        }
+
+        if (std.mem.eql(u8, self.provider.name, "mock-perf")) {
+            return self.sendMockPerfStream(callback);
         }
 
         const has_key = self.api_key.len > 0;

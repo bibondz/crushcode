@@ -85,6 +85,8 @@ pub fn requestThreadMain(self: *Model) void {
 // ---------------------------------------------------------------------------
 
 pub fn runStreamingRequest(self: *Model) !void {
+    self.request_start_time = std.time.milliTimestamp();
+
     self.budget_mgr.checkAndResetPeriods();
     if (self.budget_mgr.isOverBudget()) {
         finishRequestWithErrorText(self, "Budget limit reached. Increase limits or start a new session.");
@@ -779,6 +781,11 @@ pub fn handleStreamToken(self: *Model, token: []const u8, done: bool) void {
     _ = done;
     if (token.len == 0) {
         return;
+    }
+
+    if (self.awaiting_first_token) {
+        const ttft = std.time.milliTimestamp() - self.request_start_time;
+        std.debug.print("[PERF] TTFT: {d}ms\n", .{ttft});
     }
 
     // Feed token to spinner for animation + stalled detection

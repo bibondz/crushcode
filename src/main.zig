@@ -1,4 +1,5 @@
 const std = @import("std");
+const perf = @import("core/perf.zig");
 const file_compat = @import("file_compat");
 const args_mod = @import("args");
 const commands = @import("handlers");
@@ -44,6 +45,7 @@ fn cleanupParsedArgs(allocator: std.mem.Allocator, parsed_args: args_mod.Args) v
 }
 
 pub fn main() !void {
+    const start_time = perf.Timer.start();
     // For CLI tools that run once and exit, use page_allocator directly.
     // The GPA tracking adds overhead and the memory is released on process exit anyway.
     const allocator = std.heap.page_allocator;
@@ -157,6 +159,10 @@ pub fn main() !void {
             .has_command = true,
         };
         defer allocator.free(interactive_args.command);
+        
+        const startup_time = start_time.elapsed();
+        std.debug.print("[PERF] Startup Time (Cold): {d}ms\n", .{startup_time});
+        
         try commands.handleTUI(interactive_args, &config);
         return;
     }

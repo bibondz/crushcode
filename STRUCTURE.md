@@ -146,6 +146,22 @@ src/
 ├── tui/                     Full terminal UI (screen buffer based)
 │   ├── mod.zig              TUI module re-exports
 │   ├── app.zig              Application state and command handling
+│   ├── chat_tui_app.zig     Main TUI chat interface (4101 lines — was 5505, decomposed)
+│   ├── model/               Extracted Model methods (god object decomposition)
+│   │   ├── helpers.zig          35 free helper functions (toolCallStatusIcon, estimateTextTokens, etc.)
+│   │   ├── streaming.zig        16 streaming/tool execution methods + streamCallback
+│   │   ├── session_mgmt.zig     12 session lifecycle methods
+│   │   ├── history.zig          10 message/history CRUD methods
+│   │   ├── fallback.zig         7 fallback provider methods + classifyToolTier
+│   │   ├── permissions.zig      5 permission methods
+│   │   ├── palette.zig          7 palette UI state methods
+│   │   ├── navigation.zig       4 message navigation methods
+│   │   ├── input_handling.zig   resetInputField, currentInputPrompt, replaceOwnedString
+│   │   ├── token_tracking.zig   estimatedCostUsd, estimateContextTokens, contextPercent
+│   │   ├── notifications.zig    showNotification
+│   │   ├── mcp_status.zig       getMCPServerStatus
+│   │   ├── session_time.zig     sessionElapsedSeconds, sessionMinutes, sessionSecondsPart
+│   │   └── status.zig           setStatusMessage, clearStatusMessage
 │   ├── components.zig       UI components — buttons, lists, text areas (1037 lines ⚠️)
 │   ├── screen.zig           Screen buffer — render, scroll, regions
 │   ├── layout.zig           Layout engine — vertical, horizontal, flex
@@ -235,6 +251,16 @@ streaming/        → compat/ only
 2. Import via relative `@import` from tui/mod.zig
 3. TUI is self-contained — don't import from ai/ or config/
 
+### "I want to extract methods from chat_tui_app.zig"
+
+1. Create `src/tui/model/<cluster>.zig` — free functions taking `*Model` as first parameter
+2. Pattern: `pub fn myMethod(self: *Model) void { ... }`
+3. Import Model via `const Model = @import("../chat_tui_app.zig").Model;`
+4. Import the new module in chat_tui_app.zig via `const model_<name> = @import("model/<name>.zig");`
+5. Call extracted functions as `model_<name>.myMethod(self, ...)`
+6. Naming: avoid shadowing Model fields (use `history_mod` not `history`), build.zig modules (use `model_fallback` not `fallback_mod`), local variables (use `mcp_status_mod`)
+7. Zig handles circular @import — no special ordering needed
+
 ---
 
 ## Shared Infrastructure (use, don't duplicate)
@@ -259,6 +285,7 @@ Files approaching or exceeding maintainability limits. Split before growing furt
 
 | File | Lines | Status |
 |------|-------|--------|
+| chat_tui_app.zig | 4101 | ✅ Decomposed — 14 modules extracted to tui/model/ |
 | mcp/client.zig | 1764 | ⛔ Split: protocol.zig + transport.zig + client.zig |
 | handlers.zig | 1621 | ⛔ Split: move implementations to respective command files |
 | chat.zig | 1478 | ⚠️ Split: interactive mode → separate file |

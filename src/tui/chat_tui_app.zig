@@ -270,6 +270,7 @@ pub const Model = struct {
     diff_preview_tool_call_id: []const u8 = "",
     diff_preview_tool_name: []const u8 = "",
     diff_preview_tool_arguments: []const u8 = "",
+    request_start_time: i64 = 0,
     crush_active: bool = false,
     crush_engine: ?crush_mode_mod.CrushEngine = null,
     crush_progress: []const u8 = "",

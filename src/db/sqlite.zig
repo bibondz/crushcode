@@ -1,6 +1,7 @@
 const std = @import("std");
 const c = @cImport({
     @cInclude("sqlite3.h");
+    @cInclude("zig_helpers.h");
 });
 
 pub const SqliteError = error{
@@ -110,7 +111,7 @@ pub const Stmt = struct {
     }
 
     pub fn bindText(self: *Stmt, idx: i32, val: []const u8) !void {
-        const rc = c.sqlite3_bind_text(self.handle, idx, val.ptr, @intCast(val.len), c.SQLITE_TRANSIENT);
+        const rc = c.zig_sqlite3_bind_text_transient(self.handle, idx, val.ptr, @intCast(val.len));
         if (rc != c.SQLITE_OK) return SqliteError.BindFailed;
     }
 

@@ -29,6 +29,8 @@ pub const ProviderType = enum {
     opencode_zen,
     opencode_go,
     minimax,
+    mock_perf,
+    
 
     pub fn toString(self: ProviderType) []const u8 {
         return switch (self) {
@@ -52,6 +54,7 @@ pub const ProviderType = enum {
             .opencode_zen => "opencode-zen",
             .opencode_go => "opencode-go",
             .minimax => "minimax",
+            .mock_perf => "mock-perf",
         };
     }
 };
@@ -285,43 +288,44 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
             .api_format = .openai,
             .is_local = true,
         },
-        .opencode_go => ProviderConfig{
-            // OpenCode Go - low cost subscription ($5 first month, $10/month)
-            // Models: GLM-5, GLM-5.1, Kimi K2.5, MiMo-V2-Pro, MiMo-V2-Omni, MiniMax M2.7, MiniMax M2.5
-            // Endpoint is under /zen/go path
-            .base_url = try allocator.dupe(u8, "https://opencode.ai/zen/go/v1"),
-            .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{
-                "glm-5.1",
-                "glm-5",
-                "kimi-k2.5",
-                "mimo-v2-pro",
-                "mimo-v2-omni",
-                "minimax-m2.7",
-                "minimax-m2.5",
-            },
-            .is_models_static = true,
-            .api_format = .openai,
-            .is_local = true,
+    .opencode_go => ProviderConfig{
+        .base_url = try allocator.dupe(u8, "https://opencode.ai/zen/go/v1"),
+        .api_key = try allocator.dupe(u8, ""),
+        .models = &[_][]const u8{
+            "glm-5.1",
+            "glm-5",
+            "kimi-k2.5",
+            "mcp-v2-pro",
+            "mcp-v2-omni",
+            "minimax-m2.7",
+            "minimax-m2.5",
         },
-        .minimax => ProviderConfig{
-            // MiniMax Direct API — OpenAI-compatible, tool calling, streaming
-            // Models: M2.7 (60 tps), M2.7-highspeed (100 tps), M2.5, M2.1, M2
-            // Context: 204,800 tokens
-            // Docs: https://platform.minimaxi.com/document
-            .base_url = try allocator.dupe(u8, "https://api.minimaxi.com/v1"),
-            .api_key = try allocator.dupe(u8, ""),
-            .models = &[_][]const u8{
-                "MiniMax-M2.7",
-                "MiniMax-M2.7-highspeed",
-                "MiniMax-M2.5",
-                "MiniMax-M2.5-highspeed",
-                "MiniMax-M2.1",
-                "MiniMax-M2",
-            },
-            .is_models_static = true,
-            .api_format = .openai,
+        .is_models_static = true,
+        .is_local = true,
+    },
+    .minimax => ProviderConfig{
+        .base_url = try allocator.dupe(u8, "https://api.minimaxi.com/v1"),
+        .api_key = try allocator.dupe(u8, ""),
+        .models = &[_][]const u8{
+            "MiniMax-M2.7",
+            "MiniMax-M2.7-highspeed",
+            "MiniMax-M2.5",
+            "MiniMax-M2.5-highspeed",
+            "MiniMax-M2.1",
+            "MiniMax-M2",
         },
+        .is_models_static = true,
+        .api_format = .openai,
+        .is_local = false,
+    },
+    .mock_perf => ProviderConfig{
+        .base_url = try allocator.dupe(u8, "mock://perf"),
+        .api_key = try allocator.dupe(u8, "perf-key"),
+        .models = &[_][]const u8{ "perf-model-1" },
+        .is_models_static = true,
+        .api_format = .openai,
+        .is_local = true,
+    },
     };
 }
 

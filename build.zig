@@ -43,7 +43,8 @@ pub fn build(b: *std.Build) !void {
     // The patch replaces the hardcoded `try posix.open("/dev/tty", ...)` with a
     // raw openat syscall that silently falls back to STDIN_FILENO on failure,
     // avoiding the stack-trace dump that Zig's posix.open triggers on ENXIO.
-    patchVaxisTty(b, vaxis_dep);
+    // Only the tty patch is Linux-specific; the App.zig division-by-zero guard applies to all targets.
+    patchVaxisTty(b, vaxis_dep, target);
 
     const compat_array_list_mod = simpleMod(b, "src/compat/array_list.zig", target, optimize);
     const compat_file_mod = simpleMod(b, "src/compat/file.zig", target, optimize);
@@ -243,14 +244,13 @@ pub fn build(b: *std.Build) !void {
 
     const adversarial_review_mod = simpleMod(b, "src/core/adversarial_review.zig", target, optimize);
     const structured_log_mod = createMod(b, "src/core/structured_log.zig", target, optimize, &.{imp("env", env_mod)});
-    addImports(chat_mod, &.{ imp("adversarial_review", adversarial_review_mod), imp("structured_log", structured_log_mod) });
-
+    const perf_mod = simpleMod(b, "src/core/perf.zig", target, optimize);
+    
     const spinner_mod = createMod(b, "src/core/spinner.zig", target, optimize, &.{imp("color", color_mod)});
     const markdown_renderer_mod = createMod(b, "src/core/markdown_renderer.zig", target, optimize, &.{imp("color", color_mod)});
     const error_display_mod = createMod(b, "src/core/error_display.zig", target, optimize, &.{imp("color", color_mod)});
-    addImports(chat_mod, &.{
-        imp("spinner", spinner_mod), imp("markdown_renderer", markdown_renderer_mod), imp("error_display", error_display_mod), imp("structured_log", structured_log_mod),
-    });
+    
+    addImports(chat_mod, &.{ imp("spinner", spinner_mod), imp("markdown_renderer", markdown_renderer_mod), imp("error_display", error_display_mod), imp("structured_log", structured_log_mod), imp("perf", perf_mod) });
     addImports(tui_mod, &.{
         imp("core_api", core_api_mod), imp("markdown_renderer", markdown_renderer_mod), imp("color", color_mod), imp("registry", registry_mod),
         imp("config", config_mod),
@@ -845,6 +845,10 @@ pub fn build(b: *std.Build) !void {
         .file = b.path("vendor/sqlite3/sqlite3.c"),
         .flags = &sqlite_c_flags,
     });
+    exe.addCSourceFile(.{
+        .file = b.path("vendor/sqlite3/zig_helpers.c"),
+        .flags = &.{},
+    });
     exe.addIncludePath(b.path("vendor/sqlite3"));
     exe.linkLibC();
     b.installArtifact(exe);
@@ -971,9 +975,9 @@ pub fn build(b: *std.Build) !void {
 /// back to STDIN_FILENO without dumping a stack trace.
 /// Also patches App.zig doLayout to guard against division-by-zero when
 /// screen dimensions are zero (e.g. before queryTerminal responds).
-fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency) void {
-    // Patch 1: tty.zig — /dev/tty fallback
-    {
+fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency, target: std.Build.ResolvedTarget) void {
+    // Patch 1: tty.zig — /dev/tty fallback (Linux only — uses std.os.linux.openat)
+    if (target.result.os.tag == .linux) {
         const tty_src = vaxis_dep.path("src/tty.zig").getPath3(b, null);
         const tty_path = tty_src.root_dir.path orelse return;
 
@@ -998,9 +1002,9 @@ fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency) void {
             file.setEndPos(0) catch return;
             file.writeAll(new_contents) catch return;
         }
-    }
+    } // end Linux-only tty patch
 
-    // Patch 2: App.zig doLayout — guard division-by-zero
+    // Patch 2: App.zig doLayout — guard division-by-zero (all platforms)
     {
         const app_src = vaxis_dep.path("src/vxfw/App.zig").getPath3(b, null);
         const app_root = app_src.root_dir.path orelse return;
