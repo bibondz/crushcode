@@ -22,6 +22,7 @@ const run_mod = @import("run");
 const batch_mod = @import("batch");
 const logs_mod = @import("logs");
 const session_cmd_mod = @import("session_cmd");
+const completion_mod = @import("completion");
 const file_compat = @import("file_compat");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
@@ -169,6 +170,10 @@ pub fn handleLogs(args: args_mod.Args) !void {
 
 pub fn handleSessions(args: args_mod.Args) !void {
     try session_cmd_mod.handleSessions(args);
+}
+
+pub fn handleCompletion(args: args_mod.Args) !void {
+    try completion_mod.handleCompletion(args);
 }
 
 pub fn printHelp() !void {

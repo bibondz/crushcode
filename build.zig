@@ -457,6 +457,10 @@ pub fn build(b: *std.Build) !void {
         imp("args", cli_mod), imp("session", session_mod), imp("file_compat", compat_file_mod),
     });
 
+    const completion_mod = createMod(b, "src/commands/completion.zig", target, optimize, &.{
+        imp("args", cli_mod),
+        imp("file_compat", compat_file_mod),
+    });
     const handlers_mod = createMod(b, "src/commands/handlers.zig", target, optimize, &.{
         imp("args", cli_mod),                        imp("config", config_mod),                               imp("chat", chat_mod),               imp("read", read_mod),
         imp("shell", shell_mod),                     imp("write", write_mod),                                 imp("git", git_mod),                 imp("skills", skills_mod),
@@ -464,6 +468,7 @@ pub fn build(b: *std.Build) !void {
         imp("lsp_handler", lsp_handler_mod),         imp("mcp_handler", mcp_handler_mod),                     imp("ai_handlers", ai_handlers_mod), imp("tool_handlers", tool_handlers_mod),
         imp("system_handlers", system_handlers_mod), imp("experimental_handlers", experimental_handlers_mod), imp("auth_cmd", auth_cmd_mod),       imp("run", run_mod),
         imp("batch", batch_mod),                     imp("logs", logs_mod),                                   imp("session_cmd", session_cmd_mod),
+        imp("completion", completion_mod),
     });
 
     const cli_registry_mod = createMod(b, "src/cli/registry.zig", target, optimize, &.{

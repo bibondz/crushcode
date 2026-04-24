@@ -23,7 +23,7 @@ const InstallOptions = struct {
 /// Install command — downloads crushcode binary from GitHub releases or builds from source
 pub const Installer = struct {
     const version = "1.0.0";
-    const releases_base = "https://github.com/crushcode/crushcode/releases";
+    const releases_base = "https://github.com/bibondz/crushcode/releases";
 
     /// Detect the current OS
     pub fn detectOS() []const u8 {
@@ -60,12 +60,12 @@ pub const Installer = struct {
     /// Get the download URL for a specific version, OS, and arch
     pub fn downloadURL(allocator: Allocator, ver: []const u8, os: []const u8, arch: []const u8) ![]const u8 {
         const ext = if (std.mem.eql(u8, os, "windows")) ".exe" else "";
-        return std.fmt.allocPrint(allocator, "{s}/download/v{s}/crushcode-{s}-{s}{s}", .{ releases_base, ver, os, arch, ext });
+        return std.fmt.allocPrint(allocator, "{s}/download/v{s}/crushcode-{s}-{s}{s}", .{ releases_base, ver, arch, os, ext });
     }
 
     /// Get the latest version tag from GitHub API
     pub fn getLatestVersion(allocator: Allocator) ![]const u8 {
-        const api_url = "https://api.github.com/repos/crushcode/crushcode/releases/latest";
+        const api_url = "https://api.github.com/repos/bibondz/crushcode/releases/latest";
 
         const headers = [_]std.http.Header{
             .{ .name = "User-Agent", .value = "crushcode-installer" },
@@ -136,7 +136,7 @@ pub const Installer = struct {
 
         if (std.mem.eql(u8, os, "unknown") or std.mem.eql(u8, arch, "unknown")) {
             try stdout.print("Error: Unsupported platform. Please build from source:\n", .{});
-            try stdout.print("  git clone https://github.com/crushcode/crushcode.git\n", .{});
+            try stdout.print("  git clone https://github.com/bibondz/crushcode.git\n", .{});
             try stdout.print("  cd crushcode && zig build\n\n", .{});
             return error.UnsupportedPlatform;
         }
@@ -320,7 +320,7 @@ pub const Installer = struct {
             \\  crushcode install --uninstall
             \\
             \\Build from source:
-            \\  git clone https://github.com/crushcode/crushcode.git
+            \\  git clone https://github.com/bibondz/crushcode.git
             \\  cd crushcode && zig build
             \\  sudo cp zig-out/bin/crushcode /usr/local/bin/
             \\
@@ -393,7 +393,9 @@ pub fn handleInstall(args: [][]const u8) !void {
             \\set -e
             \\echo "Installing Crushcode..."
             \\mkdir -p ~/.local/bin
-            \\curl -sL https://github.com/crushcode/crushcode/releases/latest/download/crushcode-$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m) -o ~/.local/bin/crushcode
+            \\ARCH=$(uname -m | sed 's/arm64/aarch64/' | sed 's/amd64/x86_64/')
+            \\OS=$(uname -s | tr '[:upper:]' '[:lower:]' | sed 's/darwin/macos/')
+            \\curl -sL https://github.com/bibondz/crushcode/releases/latest/download/crushcode-${{ARCH}}-${{OS}} -o ~/.local/bin/crushcode
             \\chmod +x ~/.local/bin/crushcode
             \\grep -q 'export PATH="$HOME/.local/bin:$PATH"' ~/.bashrc 2>/dev/null || echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
             \\echo "Done! Run: crushcode --help"
