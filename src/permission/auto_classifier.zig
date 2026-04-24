@@ -244,7 +244,8 @@ pub const AutoClassifier = struct {
 
         // Shell commands need individual classification.
         if (std.mem.eql(u8, tool_name, "shell")) {
-            return tool_classifier.classifyShellCommand(arguments);
+            const shell_tier = tool_classifier.classifyShellCommand(arguments);
+            return @enumFromInt(@intFromEnum(shell_tier));
         }
 
         // File writes to previously-approved paths → medium.
@@ -360,10 +361,9 @@ pub const AutoClassifier = struct {
         const file = try std.fs.cwd().createFile(path, .{ .truncate = true });
         defer file.close();
 
-        var write_buffer: [8192]u8 = undefined;
-        var writer = file.writer(&write_buffer);
-        try std.json.stringify(root_value, .{ .whitespace = .indent_2 }, &writer.interface);
-        try writer.interface.flush();
+        const json_str = try std.fmt.allocPrint(self.allocator, "{f}", .{std.json.fmt(root_value, .{ .whitespace = .indent_2 })});
+        defer self.allocator.free(json_str);
+        try file.writeAll(json_str);
     }
 
     // ------------------------------------------------------------------

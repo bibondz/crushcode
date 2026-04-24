@@ -761,14 +761,14 @@ test "MCPServerConfig - toJson with stdio transport" {
     const config = MCPServerConfig{
         .transport = .stdio,
         .command = "node",
-        .args = &[_][]const u8{ "server.js", "--verbose" },
-        .env_vars = &[_][]const u8{ "NODE_ENV=test" },
+        .args = @as(?[][]const u8, @constCast(&[_][]const u8{ "server.js", "--verbose" })),
+        .env_vars = @as(?[][]const u8, @constCast(&[_][]const u8{ "NODE_ENV=test" })),
     };
 
     const json_val = try config.toJson(testing.allocator);
     defer {
         var v = json_val;
-        v.dump(testing.allocator);
+        v.dump();
     }
 
     const obj = json_val.object;
@@ -795,7 +795,7 @@ test "MCPServerConfig - toJson with http transport and headers" {
     const json_val = try config.toJson(testing.allocator);
     defer {
         var v = json_val;
-        v.dump(testing.allocator);
+        v.dump();
     }
 
     const obj = json_val.object;
@@ -813,7 +813,7 @@ test "MCPServerConfig - toJson with minimal fields omits optional fields" {
     const json_val = try config.toJson(testing.allocator);
     defer {
         var v = json_val;
-        v.dump(testing.allocator);
+        v.dump();
     }
 
     const obj = json_val.object;

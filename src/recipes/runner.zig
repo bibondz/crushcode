@@ -35,7 +35,6 @@ pub const RecipeRunner = struct {
 
     /// Validate that all required variables are provided.
     pub fn validateVariables(self: *RecipeRunner, rec: Recipe, variables: std.StringHashMap([]const u8)) !void {
-        _ = self;
         for (rec.variables) |v| {
             if (v.required and variables.get(v.name) == null and v.default_value == null) {
                 const msg = try std.fmt.allocPrint(self.allocator, "Missing required variable: {s}", .{v.name});
