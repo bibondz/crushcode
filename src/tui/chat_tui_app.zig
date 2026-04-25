@@ -457,13 +457,16 @@ pub const Model = struct {
         errdefer model.destroy();
 
         // Initialize cognition pipeline (non-fatal)
-        {
-            var pipeline = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
-            if (pipeline) |*p| {
-                model.pipeline = p.*;
-                model.pipeline_initialized = true;
-            }
-        }
+        // TODO: KnowledgePipeline stores internal *KnowledgeVault pointers that dangle
+        // when returned by value. Needs heap allocation refactor to fix.
+        // Disabled for now to prevent TUI crash during context building.
+        // {
+        //     var pipeline = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
+        //     if (pipeline) |*p| {
+        //         model.pipeline = p.*;
+        //         model.pipeline_initialized = true;
+        //     }
+        // }
         // Initialize user model (non-fatal)
         {
             var um = user_model_mod.UserModel.init(model.allocator) catch null;

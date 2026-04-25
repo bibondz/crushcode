@@ -383,6 +383,9 @@ pub const KnowledgeQuerier = struct {
 
         if (search_words.items.len == 0) return &.{};
 
+        // Skip query if vault has no nodes (avoids iterator assertion on empty/corrupt vault)
+        if (self.vault.nodes.count() == 0) return &.{};
+
         // Score each node
         var scored = array_list_compat.ArrayList(struct { *schema.KnowledgeNode, f64 }).init(self.allocator);
         defer scored.deinit();
