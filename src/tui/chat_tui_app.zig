@@ -1336,6 +1336,15 @@ pub const Model = struct {
                 // the permanent focused widget. Key events are forwarded manually
                 // to input/palette_input in the key_press handler below.
                 ctx.redraw = true;
+                
+                // Register tick timer for 30fps rendering during streaming
+                try ctx.cmds.append(self.allocator, .{ .tick = .{ .deadline_ms = 33 + @as(i64, @intCast(std.time.milliTimestamp())), .widget = self.widget() } });
+            },
+            .tick => {
+                // Force redraw during streaming to show AI response
+                ctx.redraw = true;
+                // Re-register tick timer for continuous rendering
+                try ctx.cmds.append(self.allocator, .{ .tick = .{ .deadline_ms = 33 + @as(i64, @intCast(std.time.milliTimestamp())), .widget = self.widget() } });
             },
             .focus_in => {
                 // Keep focus on Model (root). Keys forwarded manually.

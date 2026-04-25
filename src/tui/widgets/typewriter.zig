@@ -75,9 +75,9 @@ pub const TypewriterState = struct {
     /// Note: text must outlive this struct (borrowed reference).
     pub fn setText(self: *Self, text: []const u8) void {
         self.full_text = text;
-        self.revealed = 0;
-        self.total_codepoints = countCodepoints(text);
-        self.complete = (text.len == 0);
+        self.revealed = countCodepoints(text);
+        self.total_codepoints = self.revealed;
+        self.complete = true;
         self.last_reveal_ms = std.time.milliTimestamp();
         self.next_delay_ms = randomDelay(&self.rng_state);
     }
@@ -90,7 +90,8 @@ pub const TypewriterState = struct {
         // is handled by the caller updating the text and calling setText
         // or updateText. We re-count codepoints.
         self.total_codepoints = countCodepoints(self.full_text);
-        self.complete = (self.revealed >= self.total_codepoints);
+        self.revealed = self.total_codepoints;
+        self.complete = true;
     }
 
     /// Update the full text without resetting reveal position.
@@ -98,7 +99,8 @@ pub const TypewriterState = struct {
     pub fn updateText(self: *Self, text: []const u8) void {
         self.full_text = text;
         self.total_codepoints = countCodepoints(text);
-        self.complete = (self.revealed >= self.total_codepoints);
+        self.revealed = self.total_codepoints;
+        self.complete = true;
     }
 
     /// Advance reveal by one or more characters if enough time has elapsed.

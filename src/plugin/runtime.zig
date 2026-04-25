@@ -168,7 +168,7 @@ pub const ExternalPluginManager = struct {
     pub fn discoverPlugins(self: *Self) !void {
         if (!self.auto_load) return;
 
-        var dir = std.fs.cwd().openDir(self.plugin_dir, .{}) catch |err| switch (err) {
+        var dir = std.fs.cwd().openDir(self.plugin_dir, .{ .iterate = true }) catch |err| switch (err) {
             error.FileNotFound => {
                 std.log.warn("Plugin directory not found: {s}", .{self.plugin_dir});
                 return;
