@@ -1,3 +1,4 @@
+const builtin = @import("builtin");
 const std = @import("std");
 const perf = @import("core/perf.zig");
 const file_compat = @import("file_compat");
@@ -52,20 +53,21 @@ pub fn main() !void {
 
     // Graceful shutdown: install SIGINT/SIGTERM handlers so we exit cleanly.
     // Zig's std.os.sigaction wraps the POSIX call. On Windows these are no-ops.
-    const Posix = struct {
-        fn sigintHandler(sig: c_int) callconv(.c) void {
-            _ = sig;
-            // Exit with code 130 (128 + SIGINT=2) — standard convention.
-            std.posix.exit(130);
-        }
-    };
-    var empty_mask: std.posix.sigset_t = undefined;
-    @memset(std.mem.asBytes(&empty_mask), 0);
-    _ = std.posix.sigaction(std.posix.SIG.INT, &.{
-        .handler = .{ .handler = Posix.sigintHandler },
-        .mask = empty_mask,
-        .flags = 0,
-    }, null);
+    // SIGINT handler — POSIX only (Linux/macOS). Windows uses SetConsoleCtrlHandler.
+    if (builtin.target.os.tag != .windows) {
+        var empty_mask: std.posix.sigset_t = undefined;
+        @memset(std.mem.asBytes(&empty_mask), 0);
+        _ = std.posix.sigaction(std.posix.SIG.INT, &.{
+            .handler = .{ .handler = struct {
+                fn sigintHandler(sig: c_int) callconv(.c) void {
+                    _ = sig;
+                    std.posix.exit(130);
+                }
+            }.sigintHandler },
+            .mask = empty_mask,
+            .flags = 0,
+        }, null);
+    }
 
     // Early Exit: Handle argument iterator initialization failure
     var args_iter = std.process.argsWithAllocator(allocator) catch |err| switch (err) {
