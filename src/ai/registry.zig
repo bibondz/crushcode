@@ -29,6 +29,7 @@ pub const ProviderType = enum {
     opencode_zen,
     opencode_go,
     minimax,
+    nvidia,
     mock_perf,
     
 
@@ -54,6 +55,7 @@ pub const ProviderType = enum {
             .opencode_zen => "opencode-zen",
             .opencode_go => "opencode-go",
             .minimax => "minimax",
+            .nvidia => "nvidia",
             .mock_perf => "mock-perf",
         };
     }
@@ -317,6 +319,34 @@ fn getConfigForProvider(allocator: std.mem.Allocator, provider_type: ProviderTyp
         .is_models_static = true,
         .api_format = .openai,
         .is_local = false,
+    },
+    .nvidia => ProviderConfig{
+        // NVIDIA NIM API — OpenAI-compatible chat completions
+        // Docs: https://docs.api.nvidia.com/nim/reference/llm-apis
+        .base_url = try allocator.dupe(u8, "https://integrate.api.nvidia.com/v1"),
+        .api_key = try allocator.dupe(u8, ""),
+        .models = &[_][]const u8{
+            // Nemotron series
+            "nvidia/llama-3.1-nemotron-ultra-253b-v1",
+            "nvidia/llama-3.3-nemotron-super-49b-v1",
+            "nvidia/nvidia-nemotron-nano-9b-v2",
+            "nvidia/nemotron-mini-4b-instruct",
+            // Meta models
+            "meta/llama-3.1-405b-instruct",
+            "meta/llama-3.3-70b-instruct",
+            // DeepSeek models
+            "deepseek-ai/deepseek-v3.2",
+            "deepseek-ai/deepseek-v4-pro",
+            // Qwen models
+            "qwen/qwen3-coder-480b-a35b-instruct",
+            // Google models
+            "google/gemma-2-27b-it",
+            // Mistral models
+            "mistralai/mistral-large",
+            "mistralai/mixtral-8x22b-instruct",
+        },
+        .is_models_static = true,
+        .api_format = .openai,
     },
     .mock_perf => ProviderConfig{
         .base_url = try allocator.dupe(u8, "mock://perf"),
