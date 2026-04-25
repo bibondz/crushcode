@@ -17,13 +17,6 @@ tmpzig/
 # Backup files
 CLAUDE.original.md
 
-# SpecKit
-.specify/
-specs/*/research.md
-specs/*/data-model.md
-specs/*/quickstart.md
-specs/*/contracts/
-
 # IDE
 .idea/
 .vscode/
