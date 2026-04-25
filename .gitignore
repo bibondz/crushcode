@@ -4,6 +4,18 @@ zig-out/
 *.zig-cache
 *.zig-out
 build.zig
+.zig-cache/
+1/
+tmpzig/
+*.a
+*.o
+*.so
+*.dylib
+*.dll
+*.wasm
+
+# Backup files
+CLAUDE.original.md
 
 # SpecKit
 .specify/
