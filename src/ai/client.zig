@@ -438,6 +438,7 @@ pub const AIClient = struct {
                 try self.performHttpRequestHistory(messages.?, has_key, is_local, attempt, debug);
 
             if (result.err) |err| {
+                std.log.err("Request failed (attempt {d}): {s}", .{ attempt, error_handler_mod.formatError(err) });
                 if (debug) std.log.debug("Request failed: {s}", .{error_handler_mod.formatError(err)});
                 if (!error_handler_mod.isRetryableError(err.error_type)) {
                     return error.RetryExhausted;
@@ -501,12 +502,18 @@ pub const AIClient = struct {
 
         if (fetch_result.status != .ok) {
             const error_body = fetch_result.body;
-            if (debug) std.log.debug("Error Response: {s}", .{error_body});
+            const http_status: u16 = @intFromEnum(fetch_result.status);
+            std.log.err("HTTP {d} from {s}: {s}", .{ http_status, endpoint, error_body });
+
+            // Use proper error classification so non-retryable errors (401, 403, 404) aren't retried
+            const parsed = error_handler_mod.parseHttpStatus(http_status, error_body);
+            const err_response = parsed orelse error_handler_mod.ErrorResponse.init(
+                error_handler_mod.AIClientError.ServerError,
+                try allocator.dupe(u8, error_body),
+            );
+
             return HTTPResult{
-                .err = error_handler_mod.ErrorResponse.init(
-                    error_handler_mod.AIClientError.ServerError,
-                    try allocator.dupe(u8, error_body),
-                ),
+                .err = err_response,
                 .response = null,
             };
         }
@@ -661,11 +668,17 @@ pub const AIClient = struct {
         if (debug) std.log.debug("Response Status: {}", .{fetch_result.status});
 
         if (fetch_result.status != .ok) {
+            const http_status: u16 = @intFromEnum(fetch_result.status);
+            std.log.err("HTTP {d} from {s}: {s}", .{ http_status, endpoint, fetch_result.body });
+
+            const parsed = error_handler_mod.parseHttpStatus(http_status, fetch_result.body);
+            const err_response = parsed orelse error_handler_mod.ErrorResponse.init(
+                error_handler_mod.AIClientError.ServerError,
+                try allocator.dupe(u8, fetch_result.body),
+            );
+
             return HTTPResult{
-                .err = error_handler_mod.ErrorResponse.init(
-                    error_handler_mod.AIClientError.ServerError,
-                    try allocator.dupe(u8, fetch_result.body),
-                ),
+                .err = err_response,
                 .response = null,
             };
         }
