@@ -56,12 +56,20 @@ zig build --cache-dir /tmp/zigcache
 
 ### Installation
 
+**macOS / Linux (one-liner):**
 ```bash
-# Install to system PATH
-zig build install --prefix /usr/local
+curl -fsSL https://github.com/bibondz/crushcode/raw/main/install.sh | sh
+```
 
-# Or install from GitHub releases
-crushcode install
+**Windows (PowerShell):**
+```powershell
+irm https://github.com/bibondz/crushcode/raw/main/install.ps1 | iex
+```
+
+**Build from source:**
+```bash
+zig build -Doptimize=ReleaseSmall
+cp zig-out/bin/crushcode ~/.local/bin/   # or /usr/local/bin/
 ```
 
 ## Usage

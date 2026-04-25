@@ -88,13 +88,43 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchWindows(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        _ = self;
-        _ = results;
-        _ = term;
+        // Search common Windows locations for MCP servers
+        const search_paths = [_][]const u8{
+            "\\Program Files\\crushcode\\mcp-servers",
+            "\\Program Files (x86)\\crushcode\\mcp-servers",
+        };
 
-        // Search Windows Registry for MCP servers
-        std.log.info("Searching Windows registry for MCP servers");
-        // TODO: Implement Windows registry search
+        // Search LOCALAPPDATA-based paths
+        if (std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA")) |local_appdata| {
+            defer self.allocator.free(local_appdata);
+            const npx_path = std.fmt.allocPrint(self.allocator, "{s}\\npm-cache\\_npx", .{local_appdata}) catch return;
+            defer self.allocator.free(npx_path);
+            _ = self.searchDirectory(results, npx_path, term) catch false;
+
+            const crushcode_path = std.fmt.allocPrint(self.allocator, "{s}\\crushcode\\mcp-servers", .{local_appdata}) catch return;
+            defer self.allocator.free(crushcode_path);
+            _ = self.searchDirectory(results, crushcode_path, term) catch false;
+        } else |_| {}
+
+        // Search USERPROFILE-based paths
+        if (std.process.getEnvVarOwned(self.allocator, "USERPROFILE")) |home| {
+            defer self.allocator.free(home);
+            const appdata_npm = std.fmt.allocPrint(self.allocator, "{s}\\AppData\\Roaming\\npm", .{home}) catch return;
+            defer self.allocator.free(appdata_npm);
+            _ = self.searchDirectory(results, appdata_npm, term) catch false;
+        } else |_| {}
+
+        // Search system paths
+        if (std.process.getEnvVarOwned(self.allocator, "SYSTEMDRIVE")) |drive| {
+            defer self.allocator.free(drive);
+            for (search_paths) |suffix| {
+                const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ drive, suffix }) catch continue;
+                defer self.allocator.free(full_path);
+                _ = self.searchDirectory(results, full_path, term) catch continue;
+            }
+        } else |_| {}
+
+        std.log.info("Searched Windows paths for MCP servers", .{});
     }
 
     fn searchUnix(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {

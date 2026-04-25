@@ -1,10 +1,20 @@
 const std = @import("std");
+const builtin = @import("builtin");
 
 const Allocator = std.mem.Allocator;
 
+const is_windows = builtin.target.os.tag == .windows;
+
 /// Get the user's home directory.
-/// Checks HOME (Unix) then USERPROFILE (Windows).
+/// Windows: %USERPROFILE%
+/// Unix: $HOME
 pub fn getHomeDir(allocator: Allocator) ![]const u8 {
+    if (is_windows) {
+        return std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |err| switch (err) {
+            error.EnvironmentVariableNotFound => error.HomeNotFound,
+            else => err,
+        };
+    }
     return std.process.getEnvVarOwned(allocator, "HOME") catch |err| switch (err) {
         error.EnvironmentVariableNotFound => std.process.getEnvVarOwned(allocator, "USERPROFILE") catch |fallback_err| switch (fallback_err) {
             error.EnvironmentVariableNotFound => error.HomeNotFound,
@@ -14,56 +24,86 @@ pub fn getHomeDir(allocator: Allocator) ![]const u8 {
     };
 }
 
-/// XDG_CONFIG_HOME/crushcode — defaults to ~/.config/crushcode
-/// This is where config.toml, providers.toml, profile.toml, auth/ live.
+/// Config directory — where config.toml, providers.toml, profile.toml, auth/ live.
+/// Windows: %APPDATA%\crushcode
+/// Unix: $XDG_CONFIG_HOME/crushcode or ~/.config/crushcode
 pub fn getConfigDir(allocator: Allocator) ![]const u8 {
-    // Check XDG_CONFIG_HOME first
+    if (is_windows) {
+        if (std.process.getEnvVarOwned(allocator, "APPDATA")) |appdata| {
+            return std.fs.path.join(allocator, &.{ appdata, "crushcode" });
+        } else |_| {}
+        // Fallback: USERPROFILE\AppData\Roaming\crushcode
+        const home = try getHomeDir(allocator);
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, "AppData", "Roaming", "crushcode" });
+    }
+    // Unix: XDG_CONFIG_HOME/crushcode or ~/.config/crushcode
     if (std.process.getEnvVarOwned(allocator, "XDG_CONFIG_HOME")) |xdg_config| {
         return std.fs.path.join(allocator, &.{ xdg_config, "crushcode" });
     } else |_| {
-        // Fallback: ~/.config/crushcode
         const home = try getHomeDir(allocator);
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".config", "crushcode" });
     }
 }
 
-/// XDG_DATA_HOME/crushcode — defaults to ~/.local/share/crushcode
-/// This is where sessions/, plugins/, mcp-servers/, models/ live.
+/// Data directory — where sessions/, plugins/, mcp-servers/, models/ live.
+/// Windows: %LOCALAPPDATA%\crushcode
+/// Unix: $XDG_DATA_HOME/crushcode or ~/.local/share/crushcode
 pub fn getDataDir(allocator: Allocator) ![]const u8 {
-    // Check XDG_DATA_HOME first
+    if (is_windows) {
+        if (std.process.getEnvVarOwned(allocator, "LOCALAPPDATA")) |local_appdata| {
+            return std.fs.path.join(allocator, &.{ local_appdata, "crushcode" });
+        } else |_| {}
+        // Fallback: USERPROFILE\AppData\Local\crushcode
+        const home = try getHomeDir(allocator);
+        defer allocator.free(home);
+        return std.fs.path.join(allocator, &.{ home, "AppData", "Local", "crushcode" });
+    }
+    // Unix: XDG_DATA_HOME/crushcode or ~/.local/share/crushcode
     if (std.process.getEnvVarOwned(allocator, "XDG_DATA_HOME")) |xdg_data| {
         return std.fs.path.join(allocator, &.{ xdg_data, "crushcode" });
     } else |_| {
-        // Fallback: ~/.local/share/crushcode
         const home = try getHomeDir(allocator);
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".local", "share", "crushcode" });
     }
 }
 
-/// XDG_CACHE_HOME/crushcode — defaults to ~/.cache/crushcode
-/// This is where update downloads, HTTP cache, temp files live.
+/// Cache directory — where update downloads, HTTP cache, temp files live.
+/// Windows: %LOCALAPPDATA%\crushcode\cache
+/// Unix: $XDG_CACHE_HOME/crushcode or ~/.cache/crushcode
 pub fn getCacheDir(allocator: Allocator) ![]const u8 {
-    // Check XDG_CACHE_HOME first
+    if (is_windows) {
+        // Windows: cache lives inside data dir (LOCALAPPDATA\crushcode\cache)
+        const data_dir = try getDataDir(allocator);
+        defer allocator.free(data_dir);
+        return std.fs.path.join(allocator, &.{ data_dir, "cache" });
+    }
+    // Unix: XDG_CACHE_HOME/crushcode or ~/.cache/crushcode
     if (std.process.getEnvVarOwned(allocator, "XDG_CACHE_HOME")) |xdg_cache| {
         return std.fs.path.join(allocator, &.{ xdg_cache, "crushcode" });
     } else |_| {
-        // Fallback: ~/.cache/crushcode
         const home = try getHomeDir(allocator);
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".cache", "crushcode" });
     }
 }
 
-/// XDG_STATE_HOME/crushcode — defaults to ~/.local/state/crushcode
-/// This is where logs/ live.
+/// State directory — where logs/ live.
+/// Windows: %LOCALAPPDATA%\crushcode\state
+/// Unix: $XDG_STATE_HOME/crushcode or ~/.local/state/crushcode
 pub fn getStateDir(allocator: Allocator) ![]const u8 {
-    // Check XDG_STATE_HOME first
+    if (is_windows) {
+        // Windows: state lives inside data dir (LOCALAPPDATA\crushcode\state)
+        const data_dir = try getDataDir(allocator);
+        defer allocator.free(data_dir);
+        return std.fs.path.join(allocator, &.{ data_dir, "state" });
+    }
+    // Unix: XDG_STATE_HOME/crushcode or ~/.local/state/crushcode
     if (std.process.getEnvVarOwned(allocator, "XDG_STATE_HOME")) |xdg_state| {
         return std.fs.path.join(allocator, &.{ xdg_state, "crushcode" });
     } else |_| {
-        // Fallback: ~/.local/state/crushcode
         const home = try getHomeDir(allocator);
         defer allocator.free(home);
         return std.fs.path.join(allocator, &.{ home, ".local", "state", "crushcode" });
@@ -99,7 +139,6 @@ pub fn getMCPDir(allocator: Allocator) ![]const u8 {
 }
 
 /// Ensure a directory exists (mkdir -p equivalent).
-/// Returns the same path passed in for chaining convenience.
 pub fn ensureDir(dir_path: []const u8) !void {
     std.fs.cwd().makePath(dir_path) catch |err| {
         if (err != error.PathAlreadyExists) return err;

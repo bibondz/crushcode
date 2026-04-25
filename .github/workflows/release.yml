@@ -36,12 +36,20 @@ jobs:
       - name: Rename binary
         run: |
           mkdir -p release
-          cp zig-out/bin/crushcode release/crushcode-${{ matrix.target }}
+          if [ "${{ matrix.target }}" = "x86_64-windows-gnu" ]; then
+            cp zig-out/bin/crushcode.exe release/crushcode-${{ matrix.target }}.exe
+          else
+            cp zig-out/bin/crushcode release/crushcode-${{ matrix.target }}
+          fi
 
       - name: Generate SHA256 checksum
         run: |
           cd release
-          shasum -a 256 crushcode-${{ matrix.target }} > crushcode-${{ matrix.target }}.sha256
+          if [ "${{ matrix.target }}" = "x86_64-windows-gnu" ]; then
+            shasum -a 256 crushcode-${{ matrix.target }}.exe > crushcode-${{ matrix.target }}.exe.sha256
+          else
+            shasum -a 256 crushcode-${{ matrix.target }} > crushcode-${{ matrix.target }}.sha256
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
