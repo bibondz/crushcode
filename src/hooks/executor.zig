@@ -57,14 +57,14 @@ pub const HookExecutor = struct {
     allocator: Allocator,
     scripts: ArrayList(HookScript),
     hooks_dir: []const u8,
-    lifecycle_hooks: *lifecycle.LifecycleHooks,
+    lifecycle_hooks: lifecycle.LifecycleHooks,
     results_history: ArrayList(HookResult),
     max_history: u32,
     dry_run: bool,
 
     /// Initialize the hook executor.
     /// `hooks_dir` defaults to `.crushcode/hooks/` if empty.
-    pub fn init(allocator: Allocator, lifecycle_hooks: *lifecycle.LifecycleHooks, hooks_dir: []const u8) HookExecutor {
+    pub fn init(allocator: Allocator, lifecycle_hooks: lifecycle.LifecycleHooks, hooks_dir: []const u8) HookExecutor {
         const dir = if (hooks_dir.len > 0) hooks_dir else ".crushcode/hooks/";
         return HookExecutor{
             .allocator = allocator,
@@ -181,7 +181,9 @@ pub const HookExecutor = struct {
         }
 
         // Also run in-process lifecycle hooks
+        // lifecycle_hooks is stored by value — take address for the pointer-receiver method
         self.lifecycle_hooks.execute(phase, ctx) catch {};
+
 
         for (self.scripts.items) |script| {
             if (!script.enabled) continue;
@@ -524,7 +526,7 @@ test "HookScript creation and registration" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     try executor.registerScript("test-hook", "/tmp/test-hook.sh", .pre_tool, .core);
@@ -562,7 +564,7 @@ test "phase matching — only matching hooks execute" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     // Register hooks in different phases
@@ -608,7 +610,7 @@ test "history tracking" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
     executor.max_history = 3;
 
@@ -666,7 +668,7 @@ test "enable and disable hooks" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     try executor.registerScript("hook-1", "/tmp/a.sh", .pre_tool, .core);
@@ -695,7 +697,7 @@ test "testHook — dry-run a hook" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     try executor.registerScript("testable-hook", "/tmp/test.sh", .pre_edit, .core);
@@ -728,7 +730,7 @@ test "printStatus — formatting" {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     try executor.registerScript("status-hook-a", "/tmp/a.sh", .pre_tool, .core);

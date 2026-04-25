@@ -64,7 +64,7 @@ pub const PermissionRule = struct {
 
     pub fn toJson(self: PermissionRule, allocator: Allocator) !json.Value {
         var obj = json.ObjectMap.init(allocator);
-        defer obj.deinit();
+        errdefer obj.deinit();
 
         try obj.put("pattern", .{ .string = self.pattern });
         try obj.put("action", .{ .string = @tagName(self.action) });
@@ -145,7 +145,7 @@ pub const PermissionRequest = struct {
 
     pub fn toJson(self: PermissionRequest, allocator: Allocator) !json.Value {
         var obj = json.ObjectMap.init(allocator);
-        defer obj.deinit();
+        errdefer obj.deinit();
 
         try obj.put("tool_name", .{ .string = self.tool_name });
         try obj.put("action", .{ .string = self.action });
@@ -198,7 +198,7 @@ pub const PermissionResult = struct {
 
     pub fn toJson(self: PermissionResult, allocator: Allocator) !json.Value {
         var obj = json.ObjectMap.init(allocator);
-        defer obj.deinit();
+        errdefer obj.deinit();
 
         try obj.put("action", .{ .string = @tagName(self.action) });
         try obj.put("auto_approved", .{ .bool = self.auto_approved });
@@ -294,14 +294,14 @@ pub const PermissionConfig = struct {
 
     pub fn toJson(self: PermissionConfig, allocator: Allocator) !json.Value {
         var obj = json.ObjectMap.init(allocator);
-        defer obj.deinit();
+        errdefer obj.deinit();
 
         try obj.put("default_action", .{ .string = @tagName(self.default_action) });
         try obj.put("mode", .{ .string = @tagName(self.mode) });
 
         // Serialize rules
         var rules_array = json.Array.init(allocator);
-        defer rules_array.deinit();
+        errdefer rules_array.deinit();
         for (self.rules.items) |rule| {
             try rules_array.append(try rule.toJson(allocator));
         }
@@ -309,7 +309,7 @@ pub const PermissionConfig = struct {
 
         // Serialize auto-approved sessions
         var sessions_array = json.Array.init(allocator);
-        defer sessions_array.deinit();
+        errdefer sessions_array.deinit();
         for (self.auto_approved_sessions.items) |session_id| {
             try sessions_array.append(.{ .string = session_id });
         }
@@ -317,7 +317,7 @@ pub const PermissionConfig = struct {
 
         // Serialize auto-approved operations
         var operations_obj = json.ObjectMap.init(allocator);
-        defer operations_obj.deinit();
+        errdefer operations_obj.deinit();
         var iter = self.auto_approved_operations.iterator();
         while (iter.next()) |entry| {
             try operations_obj.put(entry.key_ptr.*, .{ .bool = entry.value_ptr.* });
@@ -326,7 +326,7 @@ pub const PermissionConfig = struct {
 
         // Serialize always-allow tools
         var always_allow_obj = json.ObjectMap.init(allocator);
-        defer always_allow_obj.deinit();
+        errdefer always_allow_obj.deinit();
         var aa_iter = self.always_allow_tools.iterator();
         while (aa_iter.next()) |entry| {
             try always_allow_obj.put(entry.key_ptr.*, .{ .bool = entry.value_ptr.* });

@@ -109,6 +109,7 @@ pub const LifecycleHooks = struct {
         // Sort by priority (lower = runs first)
         // Simple bubble sort for small hook counts
         const items = self.hooks.items;
+        if (items.len == 0) return; // Early exit — no hooks to execute
         var i: usize = 0;
         while (i < items.len) : (i += 1) {
             var j: usize = i + 1;

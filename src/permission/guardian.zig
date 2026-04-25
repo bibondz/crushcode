@@ -67,18 +67,21 @@ pub const Guardian = struct {
 
     /// Create a Guardian instance. Initializes internal LifecycleHooks,
     /// HookExecutor, GovernancePolicy, and SensitivePathChecker.
+    /// The executor holds a pointer to lifecycle_hooks, so the Guardian
+    /// must be allocated on the heap (not returned by value) if the executor
+    /// will be used. For stack allocation, use initStack and then call
+    /// initExecutor separately.
     pub fn init(allocator: Allocator) !Guardian {
-        var lifecycle_hooks = LifecycleHooks.init(allocator);
-        const hooks_dir = ".crushcode/hooks/";
-        const executor = HookExecutor.init(allocator, &lifecycle_hooks, hooks_dir);
-
-        return Guardian{
+        var guardian = Guardian{
             .allocator = allocator,
-            .lifecycle_hooks = lifecycle_hooks,
-            .executor = executor,
+            .lifecycle_hooks = LifecycleHooks.init(allocator),
+            .executor = undefined,
             .governance = GovernancePolicy.init(allocator),
             .path_checker = SensitivePathChecker.init(allocator),
         };
+        // Initialize executor with pointer to our own lifecycle_hooks field
+        guardian.executor = HookExecutor.init(allocator, guardian.lifecycle_hooks, ".crushcode/hooks/");
+        return guardian;
     }
 
     /// Clean up all internal resources.

@@ -442,7 +442,7 @@ pub fn handleHooks(args: args_mod.Args) !void {
     var lifecycle_hooks = lifecycle.LifecycleHooks.init(allocator);
     defer lifecycle_hooks.deinit();
 
-    var executor = hooks_executor_mod.HookExecutor.init(allocator, &lifecycle_hooks, ".crushcode/hooks/");
+    var executor = hooks_executor_mod.HookExecutor.init(allocator, lifecycle_hooks, ".crushcode/hooks/");
     defer executor.deinit();
 
     if (std.mem.eql(u8, subcommand, "list")) {
