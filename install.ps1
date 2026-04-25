@@ -10,7 +10,7 @@ param(
 
 $Repo = "bibondz/crushcode"
 $BinaryName = "crushcode"
-$InstallDir = "$env:USERPROFILE\.local\bin"
+$InstallDir = "$env:LOCALAPPDATA\crushcode"
 
 # --- Banner ---
 function Show-Banner {
@@ -36,7 +36,7 @@ if ($Uninstall) {
     Write-Host "  -> Uninstalling $BinaryName..." -ForegroundColor Yellow
 
     $found = $false
-    foreach ($dir in @($InstallDir, "C:\Program Files\crushcode")) {
+    foreach ($dir in @($InstallDir)) {
         $path = Join-Path $dir "$BinaryName.exe"
         if (Test-Path $path) {
             Remove-Item $path -Force -ErrorAction SilentlyContinue
@@ -48,7 +48,7 @@ if ($Uninstall) {
     }
 
     if (-not $found) {
-        Write-Host "  -> $BinaryName not found in $InstallDir or C:\Program Files\crushcode" -ForegroundColor DarkGray
+        Write-Host "  -> $BinaryName not found in $InstallDir" -ForegroundColor DarkGray
     }
 
     Write-Host ""

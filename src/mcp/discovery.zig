@@ -88,40 +88,34 @@ pub const MCPDiscovery = struct {
     }
 
     fn searchWindows(self: *MCPDiscovery, results: *array_list_compat.ArrayList(MCPDiscoveryResult), term: []const u8) !void {
-        // Search common Windows locations for MCP servers
-        const search_paths = [_][]const u8{
-            "\\Program Files\\crushcode\\mcp-servers",
-            "\\Program Files (x86)\\crushcode\\mcp-servers",
-        };
-
-        // Search LOCALAPPDATA-based paths
+        // Search LOCALAPPDATA-based paths (user-level tools)
         if (std.process.getEnvVarOwned(self.allocator, "LOCALAPPDATA")) |local_appdata| {
             defer self.allocator.free(local_appdata);
-            const npx_path = std.fmt.allocPrint(self.allocator, "{s}\\npm-cache\\_npx", .{local_appdata}) catch return;
-            defer self.allocator.free(npx_path);
-            _ = self.searchDirectory(results, npx_path, term) catch false;
 
+            // crushcode's own MCP server dir: %LOCALAPPDATA%\crushcode\mcp-servers
             const crushcode_path = std.fmt.allocPrint(self.allocator, "{s}\\crushcode\\mcp-servers", .{local_appdata}) catch return;
             defer self.allocator.free(crushcode_path);
             _ = self.searchDirectory(results, crushcode_path, term) catch false;
+
+            // npm global installs: %LOCALAPPDATA%\npm\
+            const npm_path = std.fmt.allocPrint(self.allocator, "{s}\\npm", .{local_appdata}) catch return;
+            defer self.allocator.free(npm_path);
+            _ = self.searchDirectory(results, npm_path, term) catch false;
+
+            // npx cache: %LOCALAPPDATA%\npm-cache\_npx\
+            const npx_path = std.fmt.allocPrint(self.allocator, "{s}\\npm-cache\\_npx", .{local_appdata}) catch return;
+            defer self.allocator.free(npx_path);
+            _ = self.searchDirectory(results, npx_path, term) catch false;
         } else |_| {}
 
-        // Search USERPROFILE-based paths
-        if (std.process.getEnvVarOwned(self.allocator, "USERPROFILE")) |home| {
-            defer self.allocator.free(home);
-            const appdata_npm = std.fmt.allocPrint(self.allocator, "{s}\\AppData\\Roaming\\npm", .{home}) catch return;
-            defer self.allocator.free(appdata_npm);
-            _ = self.searchDirectory(results, appdata_npm, term) catch false;
-        } else |_| {}
+        // Search APPDATA-based paths (roaming, user-level tools)
+        if (std.process.getEnvVarOwned(self.allocator, "APPDATA")) |appdata| {
+            defer self.allocator.free(appdata);
 
-        // Search system paths
-        if (std.process.getEnvVarOwned(self.allocator, "SYSTEMDRIVE")) |drive| {
-            defer self.allocator.free(drive);
-            for (search_paths) |suffix| {
-                const full_path = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ drive, suffix }) catch continue;
-                defer self.allocator.free(full_path);
-                _ = self.searchDirectory(results, full_path, term) catch continue;
-            }
+            // npm roaming installs: %APPDATA%\npm\
+            const npm_roaming = std.fmt.allocPrint(self.allocator, "{s}\\npm", .{appdata}) catch return;
+            defer self.allocator.free(npm_roaming);
+            _ = self.searchDirectory(results, npm_roaming, term) catch false;
         } else |_| {}
 
         std.log.info("Searched Windows paths for MCP servers", .{});
