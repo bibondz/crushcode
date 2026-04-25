@@ -241,7 +241,9 @@ pub fn handleParallel(_: args_mod.Args) !void {
             continue;
         };
         defer allocator.free(task_id);
-        stdout_print("  Submitted: {s} ({s}/{s})\n", .{ prompt[0..@min(prompt.len, 50)], prov.name, prov.model });
+        // Strip provider prefix from model name for display (e.g. "nvidia/model" → "model")
+        const display_model = if (std.mem.indexOfScalar(u8, prov.model, '/')) |idx| prov.model[idx + 1 ..] else prov.model;
+        stdout_print("  Submitted: {s} ({s}/{s})\n", .{ prompt[0..@min(prompt.len, 50)], prov.name, display_model });
         submitted += 1;
     }
 

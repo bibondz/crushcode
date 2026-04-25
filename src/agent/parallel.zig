@@ -313,12 +313,14 @@ pub const ParallelExecutor = struct {
                 .verified => "✓ ",
             };
             const category_name = @tagName(parallel_task.category);
+            // Strip provider prefix from model name for display (e.g. "nvidia/model" → "model")
+            const display_model = if (std.mem.indexOfScalar(u8, parallel_task.model, '/')) |idx| parallel_task.model[idx + 1 ..] else parallel_task.model;
             stdout.print("  {s} [{s}] {s}: {s}/{s} — {s:.40}\n", .{
                 status_icon,
                 category_name,
                 parallel_task.id,
                 parallel_task.provider,
-                parallel_task.model,
+                display_model,
                 parallel_task.prompt,
             }) catch {};
         }

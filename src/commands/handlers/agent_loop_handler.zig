@@ -475,13 +475,14 @@ fn parseConfigToml(allocator: std.mem.Allocator, config_path: []const u8, provid
         const value = std.mem.trim(u8, trimmed[eq_pos + 1 ..], " \t\"");
 
         if (std.mem.eql(u8, key, "default_provider")) {
-            provider_name.* = value;
+            // Must dupe — value is a slice into buf which gets freed on return
+            provider_name.* = try allocator.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "default_model")) {
-            model.* = value;
+            model.* = try allocator.dupe(u8, value);
         } else if (in_api_keys_section) {
             // Check if this key matches the resolved provider name
             if (std.mem.eql(u8, key, provider_name.*)) {
-                api_key.* = value;
+                api_key.* = try allocator.dupe(u8, value);
             }
         }
     }

@@ -92,6 +92,8 @@ pub fn handleMemory(args: args_mod.Args) !void {
         stdout_print("\n=== Search Results for \"{s}\" ===\n", .{query});
         if (results.len == 0) {
             stdout_print("  No results found.\n", .{});
+            stdout_print("  Tip: session layer is ephemeral and not persisted across invocations.\n", .{});
+            stdout_print("  Store to working/insights/project layers for persistent search.\n", .{});
         } else {
             for (results, 0..) |entry, idx| {
                 const layer_name = @tagName(entry.layer);
