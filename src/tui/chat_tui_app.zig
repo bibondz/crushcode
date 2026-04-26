@@ -1,6 +1,7 @@
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
+const http_client = @import("http_client");
 
 // Recover terminal state on panic so the user's shell isn't left broken
 pub const panic = vaxis.panic_handler;
@@ -396,6 +397,8 @@ pub const Model = struct {
     session_tree: session_tree_mod.SessionTreeWidget,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
+        http_client.initSharedClient(allocator);
+
         // Pre-flight: check if /dev/tty is accessible.
         // vaxis.Tty.init() will dump a stack trace on failure, which is noisy.
         // Detect early and return a clean error instead.
@@ -819,6 +822,7 @@ pub const Model = struct {
         self.lifecycle_hooks.deinit();
         self.app.deinit();
         self.allocator.destroy(self.app);
+        http_client.deinitSharedClient();
         self.allocator.destroy(self);
     }
 
@@ -3880,6 +3884,33 @@ pub const Model = struct {
             } else {
                 try history_mod.addMessageUnlocked(self, "assistant", "Usage: /cost [total|today|model|session]");
             }
+        } else if (std.mem.eql(u8, name, "/undo")) {
+            // /undo — restore most recent checkpoint (alias for /rewind last)
+            const db_ptr = session_mod.getSessionDb(self.allocator) catch {
+                try history_mod.addMessageUnlocked(self, "assistant", "Failed to open session database for undo.");
+                ctx.redraw = true;
+                return;
+            };
+            const session_id = if (self.current_session) |sess| sess.id else "";
+            if (session_id.len == 0) {
+                try history_mod.addMessageUnlocked(self, "assistant", "No active session to undo.");
+            } else {
+                var mgr = safety_checkpoint_mod.CheckpointManager.init(self.allocator, ".crushcode/checkpoints/");
+                const restored = mgr.rewindLast(db_ptr, self.allocator, session_id) catch {
+                    try history_mod.addMessageUnlocked(self, "assistant", "Error undoing last change.");
+                    ctx.redraw = true;
+                    return;
+                };
+                if (restored) |cp| {
+                    const text = std.fmt.allocPrint(self.allocator, "Undo: restored {s} (checkpoint #{d}, {s})", .{ cp.file_path, cp.id, cp.operation }) catch "Undo successful.";
+                    var cp_mut = cp;
+                    cp_mut.deinit(self.allocator);
+                    try history_mod.addMessageUnlocked(self, "assistant", text);
+                } else {
+                    try history_mod.addMessageUnlocked(self, "assistant", "Nothing to undo. Use /rewind to see all checkpoints.");
+                }
+            }
+            ctx.redraw = true;
         } else if (std.mem.eql(u8, name, "/rewind") or std.mem.startsWith(u8, name, "/rewind ")) {
             const rewind_sub = std.mem.trim(u8, name["/rewind".len..], " ");
             const db_ptr = session_mod.getSessionDb(self.allocator) catch {

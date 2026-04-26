@@ -3,6 +3,35 @@ const array_list_compat = @import("array_list_compat");
 
 const Allocator = std.mem.Allocator;
 
+threadlocal var shared_client: ?std.http.Client = null;
+threadlocal var shared_client_allocator: ?Allocator = null;
+
+/// Initialize the thread-local shared HTTP client for connection reuse.
+/// Call once before any HTTP requests. Safe to call multiple times.
+pub fn initSharedClient(allocator: Allocator) void {
+    if (shared_client != null) return;
+    shared_client = std.http.Client{ .allocator = allocator };
+    shared_client_allocator = allocator;
+}
+
+/// Release the thread-local shared HTTP client and its pooled connections.
+/// Call once at shutdown after all HTTP requests are complete.
+pub fn deinitSharedClient() void {
+    if (shared_client) |*c| {
+        c.deinit();
+        shared_client = null;
+        shared_client_allocator = null;
+    }
+}
+
+/// Return a pointer to the thread-local shared client, initializing lazily.
+fn getSharedClient(allocator: Allocator) *std.http.Client {
+    if (shared_client == null) {
+        initSharedClient(allocator);
+    }
+    return &shared_client.?;
+}
+
 pub const HttpResponse = struct {
     status: std.http.Status,
     body: []const u8,
@@ -17,8 +46,7 @@ fn executeRequest(
 ) !HttpResponse {
     const uri = try std.Uri.parse(url);
 
-    var client = std.http.Client{ .allocator = allocator };
-    defer client.deinit();
+    const client = getSharedClient(allocator);
 
     // Inject Accept-Encoding: identity to prevent gzip.
     // Zig 0.15.2's std.Io.Writer.Allocating doesn't implement rebase,

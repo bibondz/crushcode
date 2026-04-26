@@ -1,5 +1,6 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const token_cache_mod = @import("token_cache");
 
 const Allocator = std.mem.Allocator;
 
@@ -225,10 +226,30 @@ pub const ContextOptimizer = struct {
     }
 };
 
-/// Estimate tokens using chars/4 heuristic.
+threadlocal var optimizer_cache: ?token_cache_mod.TokenCache = null;
+
+pub fn initOptimizerCache(allocator: std.mem.Allocator) void {
+    if (optimizer_cache != null) return;
+    optimizer_cache = token_cache_mod.TokenCache.init(allocator, 1024);
+}
+
+pub fn deinitOptimizerCache() void {
+    if (optimizer_cache) |*c| {
+        c.deinit();
+        optimizer_cache = null;
+    }
+}
+
+fn estimateTokensCached(text: []const u8) u32 {
+    if (optimizer_cache) |*c| {
+        return c.getOrEstimate(text);
+    }
+    return @intCast(text.len / 4);
+}
+
 fn estimateTokens(text: []const u8) u64 {
     if (text.len == 0) return 0;
-    return @intCast((text.len + 3) / 4);
+    return @intCast(estimateTokensCached(text));
 }
 
 /// Estimate tokens from a byte length using the same heuristic.

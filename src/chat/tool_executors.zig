@@ -26,6 +26,7 @@ const apply_patch_mod = @import("apply_patch");
 const question_mod = @import("question");
 const hooks_mod = @import("hooks_registry");
 const subagent_mod = @import("subagent");
+const hashline_edit_mod = @import("hashline_edit");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -88,6 +89,7 @@ threadlocal var active_checkpoint_manager: ?*checkpoint_mod.CheckpointManager = 
 threadlocal var active_session_db_ref: ?*session_db_mod.SessionDB = null;
 threadlocal var active_checkpoint_session_id: []const u8 = "";
 threadlocal var active_hook_registry: ?*hooks_mod.HookRegistry = null;
+threadlocal var hashline_mode: bool = false;
 
 pub fn setPermissionEvaluator(evaluator: ?*PermissionEvaluator) void {
     active_evaluator = evaluator;
@@ -135,6 +137,10 @@ pub fn setCheckpointSessionId(session_id: []const u8) void {
 
 pub fn setHookRegistry(registry: ?*hooks_mod.HookRegistry) void {
     active_hook_registry = registry;
+}
+
+pub fn setHashlineMode(enabled: bool) void {
+    hashline_mode = enabled;
 }
 
 /// Attempt to snapshot a file before a destructive operation.
@@ -607,6 +613,20 @@ fn executeReadFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     defer {
         if (truncated.ptr != content.ptr) allocator.free(truncated);
     }
+
+    // Format with hashline annotations when mode is enabled
+    if (hashline_mode) {
+        const annotated = hashline_edit_mod.formatFileWithHashlineEdit(allocator, truncated_owned) catch truncated_owned;
+        const annotated_owned = if (annotated.ptr == truncated_owned.ptr) try allocator.dupe(u8, annotated) else annotated;
+        defer {
+            if (annotated.ptr != truncated_owned.ptr) allocator.free(annotated);
+        }
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔧 read_file(\"{s}\") → {d} bytes [hashline]\n", .{ parsed.value.path, stat.size }),
+            .result = try std.fmt.allocPrint(allocator, "=== {s} ({d} bytes) ===\n{s}", .{ parsed.value.path, stat.size, annotated_owned }),
+        };
+    }
+
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 read_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, stat.size }),
         .result = try std.fmt.allocPrint(allocator, "=== {s} ({d} bytes) ===\n{s}", .{ parsed.value.path, stat.size, truncated_owned }),
@@ -685,6 +705,18 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
         const msg = try std.fmt.allocPrint(allocator, "Writing to system files is not allowed. Path: {s}", .{parsed.value.path});
         defer allocator.free(msg);
         return buildValidationError(allocator, "write_file", msg);
+    }
+
+    // [Safety] Write-before-read guard: reject if file exists but was never read
+    // This prevents blind overwrites — the AI must read a file before modifying it.
+    if (active_file_tracker) |tracker| {
+        if (tracker.files.get(parsed.value.path) == null) {
+            // File was never tracked (never read). Check if file actually exists.
+            if (std.fs.cwd().statFile(parsed.value.path)) |_| {
+                return buildValidationError(allocator, "write_file",
+                    "File has not been read in this session. Read the file first before overwriting to prevent data loss.");
+            } else |_| {}
+        }
     }
 
     // [Safety] mtime check for existing files: warn if file changed since last read
@@ -917,6 +949,14 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     if (try requireField(allocator, "edit", "edit requires 'old_string' to find in the file.", parsed.value.old_string)) |r| return r;
     if (std.mem.eql(u8, parsed.value.old_string, parsed.value.new_string)) {
         return buildValidationError(allocator, "edit", "old_string and new_string are identical. No change needed.");
+    }
+
+    // [Safety] Write-before-read guard: reject if file was never read in this session
+    if (active_file_tracker) |tracker| {
+        if (tracker.files.get(parsed.value.file_path) == null) {
+            return buildValidationError(allocator, "edit",
+                "File has not been read in this session. Read the file first before editing to prevent data corruption.");
+        }
     }
 
     // [Safety] mtime check: reject if file changed since last read
@@ -1332,6 +1372,9 @@ fn executeMoveFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
         }
     }
 
+    // Checkpoint: snapshot source file before moving (enables /rewind)
+    checkpointBeforeWrite(parsed.value.source, "move_file");
+
     // Try atomic rename first (same filesystem)
     std.fs.cwd().rename(parsed.value.source, parsed.value.destination) catch {
         // Fallback: copy + delete for cross-device moves
@@ -1447,6 +1490,9 @@ fn executeDeleteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToo
         defer allocator.free(msg);
         return buildValidationError(allocator, "delete_file", msg);
     }
+
+    // Checkpoint: snapshot file content before deleting (enables /rewind)
+    checkpointBeforeWrite(parsed.value.path, "delete_file");
 
     try std.fs.cwd().deleteFile(parsed.value.path);
 

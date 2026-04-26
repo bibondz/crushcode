@@ -136,6 +136,7 @@ const config_mod = @import("config");
 const profile_mod = @import("profile");
 const client_mod = @import("client");
 const core = @import("core_api");
+const http_client = @import("http_client");
 const intent_gate_mod = @import("intent_gate");
 const lifecycle_hooks_mod = @import("lifecycle_hooks");
 const guardian_mod = @import("guardian");
@@ -241,6 +242,9 @@ fn registerCoreChatHooks(hooks: *LifecycleHooks) !void {
 pub fn handleChat(args: args_mod.Args, config: *Config) !void {
     const allocator = std.heap.page_allocator;
     const json_out = json_output_mod.JsonOutput.init(args.json);
+
+    http_client.initSharedClient(allocator);
+    defer http_client.deinitSharedClient();
 
     if (args.interactive) {
         try handleInteractiveChat(args, config, allocator, json_out);

@@ -413,6 +413,7 @@ pub fn build(b: *std.Build) !void {
     const pattern_search_mod = simpleMod(b, "src/edit/pattern_search.zig", target, optimize);
     const hash_index_mod = createMod(b, "src/edit/hash_index.zig", target, optimize, &.{imp("hashline", hashline_mod)});
     const conflict_mod = simpleMod(b, "src/edit/conflict.zig", target, optimize);
+    const hashline_edit_mod = simpleMod(b, "src/edit/hashline_edit.zig", target, optimize);
     const validated_edit_mod = createMod(b, "src/edit/validated_edit.zig", target, optimize, &.{
         imp("hashline", hashline_mod), imp("hash_index", hash_index_mod), imp("conflict", conflict_mod),
     });
@@ -809,6 +810,7 @@ pub fn build(b: *std.Build) !void {
     addImports(tui_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod)});
     addImports(tui_mod, &.{imp("hooks_registry", hooks_registry_mod), imp("hooks_config", hooks_config_mod)});
     addImports(tui_mod, &.{imp("context_limits", context_limits_mod)});
+    addImports(tui_mod, &.{imp("http_client", http_client_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
@@ -822,6 +824,7 @@ pub fn build(b: *std.Build) !void {
     addImports(question_mod, &.{imp("core_api", core_api_mod), imp("file_compat", compat_file_mod), imp("json_helpers", json_helpers_mod)});
     addImports(chat_tool_executors_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod), imp("session_db", session_db_mod)});
     addImports(chat_tool_executors_mod, &.{imp("hooks_registry", hooks_registry_mod)});
+    addImports(chat_tool_executors_mod, &.{imp("hashline_edit", hashline_edit_mod)});
     addImports(chat_bridge_mod, &.{
         imp("ai_types", ai_types_mod),
         imp("core_api", core_api_mod),
@@ -834,7 +837,7 @@ pub fn build(b: *std.Build) !void {
         imp("color", color_mod),
         imp("chat_helpers", chat_helpers_mod),
     });
-    addImports(chat_mod, &.{ imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod), imp("shell", shell_mod) });
+    addImports(chat_mod, &.{ imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod), imp("shell", shell_mod), imp("http_client", http_client_mod) });
 
     for (&[_]*std.Build.Module{
         cli_mod,                  env_mod,                      http_client_mod,         registry_mod,          ai_types_mod,               tool_types_mod,       tool_loader_mod,           client_mod,          config_mod,
@@ -842,7 +845,7 @@ pub fn build(b: *std.Build) !void {
         chat_tool_executors_mod,  chat_helpers_mod,             chat_bridge_mod,         chat_mod,              plugin_command_mod,         default_commands_mod, shell_mod,                 write_mod,           git_mod,
         skills_mod,               tui_mod,                      install_mod,             jobs_mod,              skills_loader_mod,          tools_mod,            diff_mod,                  diff_visualizer_mod, myers_mod,
         backup_mod,               streaming_types_mod,          streaming_buffer_mod,    streaming_display_mod, ndjson_mod,                 sse_mod,              streaming_session_mod,     core_api_mod,        usage_tracker_mod,
-        usage_pricing_mod,        usage_budget_mod,             usage_report_mod,        hashline_mod,          hash_index_mod,             conflict_mod,         validated_edit_mod,        pattern_search_mod,  lsp_handler_mod,
+        usage_pricing_mod,        usage_budget_mod,             usage_report_mod,        hashline_mod,          hash_index_mod,             conflict_mod,         validated_edit_mod,        hashline_edit_mod,   pattern_search_mod,  lsp_handler_mod,
         mcp_handler_mod,          ai_handlers_mod,              tool_handlers_mod,       system_handlers_mod,   experimental_handlers_mod,  handlers_mod,         main_mod,                  fallback_mod,        parallel_mod,
         skill_import_mod,         worktree_mod,                 lifecycle_hooks_mod,     intent_gate_mod,       graph_types_mod,            graph_parser_mod,     graph_algorithms_mod,      graph_mod,           agent_loop_mod,
         workflow_mod,             compaction_mod,               context_budget_mod,              project_memory_mod,            smart_context_mod,         semantic_compressor_mod,   capability_catalog_mod,     intensity_mod,        tiered_loader_mod,         revision_loop_mod,   session_summarizer_mod,
@@ -1039,6 +1042,7 @@ pub fn build(b: *std.Build) !void {
         tui_test_harness_mod,
         registry_mod,
         fileops_mod,
+        hashline_edit_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);

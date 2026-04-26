@@ -11,6 +11,7 @@ const retry_policy = @import("retry_policy");
 const guardrail = @import("guardrail_pipeline");
 const metrics = @import("metrics_collector");
 const circuit_breaker = @import("circuit_breaker");
+const token_cache_mod = @import("token_cache");
 
 pub const ChatMessage = ai_types.ChatMessage;
 pub const ToolCallInfo = ai_types.ToolCallInfo;
@@ -905,7 +906,24 @@ pub const AIClient = struct {
         };
     }
 
+    threadlocal var tcache: ?token_cache_mod.TokenCache = null;
+
+    pub fn initTokenCache(allocator: std.mem.Allocator) void {
+        if (tcache != null) return;
+        tcache = token_cache_mod.TokenCache.init(allocator, 1024);
+    }
+
+    pub fn deinitTokenCache() void {
+        if (tcache) |*c| {
+            c.deinit();
+            tcache = null;
+        }
+    }
+
     fn estimateTokens(text: []const u8) u32 {
+        if (tcache) |*c| {
+            return c.getOrEstimate(text);
+        }
         const len = @min(text.len, 100);
         return @as(u32, @divTrunc(len, 4));
     }
