@@ -1,14 +1,14 @@
 # Crushcode — Session Handoff
 
 **Updated:** 2026-04-26
-**Status:** v1.3.0 TUI Polish COMPLETE ✅
-**Branch:** `master` | **Last commit:** `b7cbb43` | **Build:** ✅ clean | **Tests:** ✅ pass
+**Status:** v1.4.0 Harness Engineering COMPLETE ✅ + Phase 22 Auto-Compact ✅
+**Branch:** `master` | **Last commit:** `555aaa0` | **Build:** ✅ clean | **Tests:** ✅ pass
 
 ---
 
 ## What Is This Project
 
-Zig-based AI coding CLI/TUI. Single binary, zero deps. ~265 `.zig` files, ~105K lines.
+Zig-based AI coding CLI/TUI. Single binary, zero deps. ~280 `.zig` files, ~112K lines.
 Build: `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zigcache`
 Test: `cd /mnt/d/crushcode && zig build test --cache-dir /tmp/zigcache`
 Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
@@ -45,7 +45,22 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 4. `src/mcp/client.zig` — client_info version
 5. `src/mcp/server.zig` — server_info version + test assertion
 
-## Recent Work (v1.2.0–v1.3.0 — TUI Overhaul)
+## Recent Work (v1.2.0–v1.4.0)
+
+### v1.4.0 — Harness Engineering (7 commits, +6192 lines)
+
+- **P0: Execution Traces** — src/trace/ (Span, Writer, Context, hierarchical timing)
+- **P0: Self-Healing Retry** — src/retry/ (error classification + prompt repair)
+- **P1: Circuit Breaker** — closed/open/half_open FSM, configurable thresholds
+- **P1: Routing Strategies** — FallbackChain, ProviderLatency EMA P50/P95, cost-aware routing
+- **P1: Guardrail Pipeline** — PII scanner, injection detection, secrets scanner (1093 lines)
+- **P2: Observability Metrics** — counter/gauge/histogram, Prometheus + JSONL export
+- **P2: LLM Compaction** — compactWithLLM, truncateToolOutputs, CompactionConfig
+- **P2: Cache-Aware Client** — CacheControl, CacheMarkedMessage for Anthropic cache hints
+- **P3: Tool Inspection** — ToolInspectionPipeline, DangerLevel (safe/moderate/dangerous)
+- **P3: Parallel Execution** — chunked thread-per-task, ordered results
+- **Wiring** — All P1-P3 wired into client.zig, loop.zig, router.zig with circuit breaker feedback
+- **Phase 22: Auto-Compact** — Trigger performCompactionAuto() after each AI response when context >70%
 
 ### v1.3.0 — TUI Polish (5 commits)
 
@@ -68,18 +83,27 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 ## Architecture Quick Map
 
 ```
-build.zig (~900 lines) — module imports + build config
+build.zig (~1115 lines) — module imports + build config (all harness modules registered)
 src/main.zig → cli/args.zig → commands/handlers.zig
-src/tui/chat_tui_app.zig — main TUI app (Model, draw(), handleEvent(), ~4634 lines)
+src/tui/chat_tui_app.zig — main TUI app (Model, draw(), handleEvent())
+src/tui/model/streaming.zig — streaming worker, finishRequestSuccess(), auto-compact trigger
 src/tui/theme.zig — 6 themes × 75 color slots
 src/tui/markdown.zig — syntax highlighting (20 langs), public tokenizer
 src/tui/widgets/ — palette, sidebar, messages, spinner, input, multiline_input, diff_preview, etc.
 src/tui/model/ — streaming, token_tracking, palette, session_mgmt, history, helpers
-src/ai/client.zig — AI HTTP client (23 providers, streaming)
+src/ai/client.zig — AI HTTP client (23 providers, streaming, guardrails, metrics, circuit breaker)
 src/ai/registry.zig — provider registry
-src/agent/ — agent loop, compaction, memory, parallel, orchestrator, context_builder, checkpoint
+src/agent/loop.zig — agent loop (tool inspection, metrics, parallel execution)
+src/agent/compaction.zig — ContextCompactor (compactWithLLM, compactLight, compactWithSummary)
+src/agent/circuit_breaker.zig — closed/open/half_open FSM
+src/agent/router.zig — routing strategies, latency tracking
 src/commands/handlers/ — ai.zig, system.zig, tools.zig, experimental.zig (shim → 5 domain handlers)
 src/chat/tool_executors.zig — shared tool implementations (30 builtin tools)
+src/metrics/ — collector, registry (counter/gauge/histogram, Prometheus+JSONL)
+src/guardrail/ — pipeline, pii_scanner, injection, secrets
+src/tool/ — inspection, parallel execution
+src/trace/ — execution traces (Span, Writer, Context)
+src/retry/ — self-healing retry with error classification
 src/mcp/ — client, bridge, discovery, server, transport, oauth
 src/hybrid_bridge.zig — unified tool dispatch (builtin → MCP → runtime plugins)
 src/db/ — SQLite wrapper, session CRUD, JSON migration
@@ -131,12 +155,23 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 | Item | Priority | Notes |
 |------|----------|-------|
 | KnowledgePipeline fix (KP-1) | Medium | Dangling pointer, currently disabled |
-| Build.zig cleanup (900→~500 lines) | Medium | Create `createStdModule()` helper |
+| Build.zig cleanup (1115→~700 lines) | Medium | Create `createStdModule()` helper |
 | Vault→persistence merge | Medium | Circular dep risk |
-| v1.3.0 version bump + tag | Low | 5 files to update |
+| Cache-aware Anthropic HTTP body | Low | CacheControl structs exist, not wired to HTTP body |
+| Guardrail redaction pass | Low | deny works, redact→modified content not fully sent |
+| LLM compaction full wiring | Low | Needs sendToLLM function pointer |
 | Responsive layout | Low | FlexRow/FlexColumn available |
 | Resizable panes | Low | SplitView available |
 | Input history search | Low | Need new binding (Ctrl+R taken) |
+
+## Next Roadmap Items
+
+| Phase | Description | Status |
+|-------|-------------|--------|
+| Phase 22 | Smart Context + Auto-Compact | ✅ Mostly done |
+| Phase 23 | Myers Diff + Edit Preview | Not started |
+| Phase 24 | System Prompt Engineering + Project Config | Not started |
+| Phase 25 | Batch Operations + Undo/Redo | Not started |
 
 ## How To Continue
 

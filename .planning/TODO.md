@@ -1,7 +1,7 @@
 # Crushcode — TODO & Known Issues
 
 **Updated:** 2026-04-26
-**Version:** v1.3.0 (TUI polish batch complete)
+**Version:** v1.4.0 (Harness Engineering complete, Phase 22 auto-compact shipped)
 
 ---
 
@@ -32,6 +32,33 @@
 
 ## MEDIUM Priority
 
+### [HARNESS-1] Cache-Aware Anthropic HTTP Body
+
+**Status:** Partial
+**Files:** `src/ai/client.zig` — CacheControl + CacheMarkedMessage structs exist
+
+**Gap:** CacheControl structs are defined but not wired into the actual HTTP body format for Anthropic API requests. Need to add `cache_control` field to message objects in the JSON body.
+
+---
+
+### [HARNESS-2] Guardrail Redaction Pass
+
+**Status:** Partial
+**Files:** `src/guardrail/pipeline.zig`
+
+**Gap:** Deny mode works. Redact mode needs to actually modify the content (replace PII/secrets with `[REDACTED]`) before sending to provider.
+
+---
+
+### [HARNESS-3] LLM Compaction Full Wiring
+
+**Status:** Partial
+**Files:** `src/agent/compaction.zig` — compactWithLLM() exists
+
+**Gap:** compactWithLLM() needs a `sendToLLM` function pointer plumbed through the agent loop to actually call the AI for summarization.
+
+---
+
 ### [TW-1] Typewriter Animation Thread Safety
 
 **Status:** Fixed (commit `83d11cb`)
@@ -56,9 +83,9 @@
 ### [BZ-1] Build.zig Cleanup
 
 **Status:** Not started
-**File:** `build.zig` (~900 lines)
+**File:** `build.zig` (~1115 lines)
 
-**Goal:** Reduce to ~500 lines by creating `createStdModule()` helper.
+**Goal:** Reduce to ~700 lines by creating `createStdModule()` helper.
 
 ---
 
@@ -78,20 +105,6 @@
 
 ---
 
-### [TAG-1] v1.3.0 Release Tag
-
-**Status:** Ready to tag
-**Blockers:** None — all TUI features shipped, build clean, tests pass
-
-**Version bump files (5):**
-1. `src/tui/widgets/types.zig` — `app_version`
-2. `src/commands/update.zig` — `current_version`
-3. `src/commands/install.zig` — `version`
-4. `src/mcp/client.zig` — client_info version
-5. `src/mcp/server.zig` — server_info version + test assertion
-
----
-
 ### Future TUI Improvements
 
 | Item | Effort | Notes |
@@ -100,9 +113,26 @@
 | Mouse-resizable panes (SplitView) | Medium | vaxis SplitView available |
 | Input history search (Ctrl+R conflict) | Low | Need new binding |
 | Proper dialog overlay abstraction | Medium | Currently 6 ad-hoc overlays |
-| Syntax code preview (CodeView) | Low | No vaxis CodeView widget yet |
 
 ---
+
+## Done (v1.4.0 session — 2026-04-26)
+
+- [x] P0: Execution traces (src/trace/ — Span, Writer, Context, 397 lines)
+- [x] P0: Self-healing retry (src/retry/ — Policy, SelfHeal, 477 lines)
+- [x] P0: Wire traces + retry into client.zig and agent loop
+- [x] P1: Circuit breaker (closed/open/half_open FSM, 148 lines)
+- [x] P1: Routing strategies (FallbackChain, ProviderLatency EMA, 211 lines)
+- [x] P1: Guardrail pipeline (PII, injection, secrets — 1093 lines)
+- [x] P2: Observability metrics (collector + registry — 599 lines)
+- [x] P2: LLM compaction (compactWithLLM, truncateToolOutputs — 1089 lines)
+- [x] P2: Cache-aware client (CacheControl, CacheMarkedMessage)
+- [x] P3: Tool inspection pipeline (DangerLevel, pre/post hooks — 266 lines)
+- [x] P3: Parallel tool execution (chunked thread-per-task — 437 lines)
+- [x] Wire P1-P3 into client.zig, loop.zig, router.zig
+- [x] Circuit breaker feedback loop in client.zig
+- [x] Phase 22: Auto-compact trigger in finishRequestSuccess()
+- [x] Tagged v1.4.0, pushed to origin/master
 
 ## Done (v1.3.0 session — 2026-04-26)
 
@@ -114,6 +144,7 @@
 - [x] Click-to-preview file paths from chat messages
 - [x] Agent metadata in CompactResult for checkpoint restore
 - [x] Theme sidebar hints for new themes
+- [x] Tagged v1.3.0, pushed to origin/master
 
 ## Done (v1.2.0 session — 2026-04-26)
 

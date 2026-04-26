@@ -296,22 +296,22 @@ Plans:
 - [ ] 21-01-PLAN.md — MCP tool dispatch + unify tool implementations
 - [ ] 21-02-PLAN.md — MCP server lifecycle (auto-discover, connect, health-check) + sidebar status
 
-### Phase 22: Smart Context + Auto-Compact
+### Phase 22: Smart Context + Auto-Compact ✅ DONE
 **Goal:** Relevance-scored context selection and automatic context compaction when window fills
 **ปัญหา**: Knowledge graph dumps ALL indexed files into system prompt. No token budget awareness. `/compact` returns "not implemented" even though compaction.zig has full logic.
 **ทำ**:
-- Wire `ContextCompactor` from compaction.zig into TUI streaming loop
-- Add token budget tracking — auto-compact when >70% context used
-- Implement `/compact` slash command using existing `compact()` method
-- Relevance-based context selection — score files by query similarity, not dump all
-- Token-aware system prompt — truncate context to fit within model limits
-- Show context usage in header: `ctx: 45% | 14 files`
+- Wire `ContextCompactor` from compaction.zig into TUI streaming loop ✅ (already wired)
+- Add token budget tracking — auto-compact when >70% context used ✅ (commit 555aaa0)
+- Implement `/compact` slash command using existing `compact()` method ✅ (already existed)
+- Relevance-based context selection — score files by query similarity, not dump all ✅ (graph.zig scoreNodesByQuery)
+- Token-aware system prompt — truncate context to fit within model limits ✅ (8000 token budget)
+- Show context usage in header: `ctx: 45% | 14 files` ✅ (already in header)
 - ไฟล์: modify `chat_tui_app.zig` (wire compaction, auto-compact trigger), `graph/graph.zig` (relevance scoring)
 
 **Plans:** 2 plans
 Plans:
-- [ ] 22-01-PLAN.md — Wire compaction + auto-compact trigger + /compact command
-- [ ] 22-02-PLAN.md — Relevance-based context selection + token-aware system prompt
+- [x] 22-01-PLAN.md — Wire compaction + auto-compact trigger + /compact command ✅
+- [x] 22-02-PLAN.md — Relevance-based context selection + token-aware system prompt ✅
 
 ### Phase 23: Myers Diff + Edit Preview
 **Goal:** Real diff algorithm and edit preview before applying changes
