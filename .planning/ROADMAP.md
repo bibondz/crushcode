@@ -399,66 +399,53 @@ v0.7.0 Phase 21 → Phase 22 → Phase 23 → Phase 24 → Phase 25
 
 **Plans:** None needed — all already implemented.
 
-### Phase 27: User Model (USER.md)
+### Phase 27: User Model (USER.md) ✅
 **ปัญหา**: Agent ไม่จำความชอบของ user ข้าม session — ต้องสั่งซ้ำทุกครั้ง
-**ทำ**:
-- Create `src/agent/user_model.zig`: persistent user preferences storage
-- Track: preferred coding style, common tools, language preferences, naming conventions
-- Load USER.md on startup, update after each session
-- Inject user preferences into system prompt
-- ไฟล์: new `src/agent/user_model.zig`, modify `src/tui/chat_tui_app.zig`, `src/agent/memory.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/agent/user_model.zig` (440 lines): persistent preferences to `~/.crushcode/USER.md`
+- ✅ Tracks: coding style, tools, language, naming conventions with confidence scoring
+- ✅ Loaded on startup, injected into system prompt, `/user` slash command
+- ✅ 7 tests
 
-**Plans:**
-- [ ] 27-01-PLAN.md — Create user model with preference tracking
-- [ ] 27-02-PLAN.md — Wire user model into system prompt and session lifecycle
+**Plans:** None needed — all already implemented.
 
-### Phase 28: Auto Skill Generation
+### Phase 28: Auto Skill Generation ✅
 **ปัญหา**: Skills ต้องเขียนเองทุกอัน — agent ไม่เรียนรู้จาก pattern ที่ทำซ้ำ
-**ทำ**:
-- Create `src/skills/auto_gen.zig`: detect repeated task patterns across sessions
-- Pattern detection: if same type of task executed 2+ times → propose skill
-- Auto-generate SKILL.md from successful task execution traces
-- Show notification: "💡 Detected pattern: 'refactor error handling' → Save as skill? [y/n]"
-- Security: scan generated skills for injection before saving
-- ไฟล์: new `src/skills/auto_gen.zig`, modify `src/skills/loader.zig`, `src/tui/chat_tui_app.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/skills/auto_gen.zig` (717 lines): pattern detection across sessions
+- ✅ AutoSkillGenerator with TaskPattern struct, confidence scoring
+- ✅ Wired into TUI (chat_tui_app.zig line 3349) and streaming (streaming.zig line 471)
+- ✅ In build.zig as module
 
-**Plans:**
-- [ ] 28-01-PLAN.md — Implement pattern detection and skill proposal
-- [ ] 28-02-PLAN.md — Wire auto-gen into agent loop with user confirmation
+**Plans:** None needed — all already implemented.
 
-### Phase 29: Plan Mode
+### Phase 29: Plan Mode ✅
 **ปัญหา**: Agent แก้โค้ดเลยโดยไม่ถาม — เหมือน dev ไฟลนก้น (ตามรีวิว Reddit)
-**ทำ**:
-- Add `/plan` slash command: enter plan mode where agent proposes changes without executing
-- Structured plan format: list of steps with files affected + risk level
-- User can approve/reject/edit plan before execution
-- `/plan execute` to run approved plan
-- `/plan cancel` to discard
-- ไฟล์: new `src/commands/handlers/plan_handler.zig`, modify `src/tui/chat_tui_app.zig`, `src/cli/args.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/commands/handlers/plan_handler.zig` (575 lines): structured plan format
+- ✅ Plan steps with files affected + risk level
+- ✅ Wired into TUI (plan_mod imported, used in chat_tui_app.zig + streaming.zig)
+- ✅ In build.zig as module
 
-**Plans:**
-- [ ] 29-01-PLAN.md — Implement plan mode with structured plan format
-- [ ] 29-02-PLAN.md — Wire plan approval flow into TUI
+**Plans:** None needed — all already implemented.
 
-### Phase 30: Feedback Loop
+### Phase 30: Feedback Loop ✅
 **ปัญหา**: Agent ไม่รู้ว่างานที่ทำไปดีหรือไม่ — ไม่มี mechanism ปรับปรุง
-**ทำ**:
-- Add task outcome tracking: success/failure/partial for each tool call sequence
-- Rate task quality after completion (auto + manual)
-- Store outcomes in memory with confidence scores
-- Use past outcomes to adjust future suggestions (prefer patterns that worked)
-- ไฟล์: new `src/agent/feedback.zig`, modify `src/agent/memory.zig`, `src/tui/chat_tui_app.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/agent/feedback.zig` (737 lines): task outcome tracking with quality rating
+- ✅ Stores outcomes in memory with confidence scores
+- ✅ `/feedback` slash command to view stats
+- ✅ Injected into system prompt (chat_tui_app.zig line 1330)
+- ✅ In build.zig as module
 
-**Plans:**
-- [ ] 30-01-PLAN.md — Implement task outcome tracking and quality rating
-- [ ] 30-02-PLAN.md — Wire feedback into future suggestion ranking
+**Plans:** None needed — all already implemented.
 
 ---
 
-## v0.33.0 ลำดับการทำ
+## v0.33.0 ลำดับการทำ ✅ ALL DONE
 ```
 v0.33.0 Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30
-         (scoring)  (user)   (auto-skill) (plan)  (feedback)
+          (scoring)  (user)   (auto-skill) (plan)  (feedback)
 ```
 
 ## v0.33.0+ Backlog (researched but deferred)
@@ -479,48 +466,38 @@ v0.33.0 Phase 26 → Phase 27 → Phase 28 → Phase 29 → Phase 30
 
 **ลำดับตาม priority**: Tools → Permissions → Delegation (tools ต้องมีก่อน permission จะมีความหมาย)
 
-### Phase 31: Expand Builtin Tools to 15+
+### Phase 31: Expand Builtin Tools to 15+ ✅
 **ปัญหา**: มีแค่ 6 tools — AI ทำอะไรไม่ได้มาก
-**ทำ**:
-- Add 9+ new tools: `list_directory`, `create_file`, `move_file`, `copy_file`, `undo_edit`, `git_status`, `git_diff`, `git_log`, `search_files`
-- Register all tools in system prompt and MCP schema
-- Each tool follows existing pattern in tool_executors.zig
-- ไฟล์: modify `src/chat/tool_executors.zig`, `src/tui/chat_tui_app.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ All 9+ tools in tool_executors.zig: list_directory, create_file, move_file, copy_file, undo_edit, git_status, git_diff, git_log, search_files
+- ✅ Registered in both tool registries (lines 508-517, 1807-1816)
+- ✅ Checkpoint wiring on move_file, copy_file
 
-**Plans:**
-- [ ] 31-01-PLAN.md — Implement file operation tools (list_directory, create_file, move_file, copy_file)
-- [ ] 31-02-PLAN.md — Implement git tools (git_status, git_diff, git_log) and search_files + undo_edit
+**Plans:** None needed — all already implemented.
 
-### Phase 32: Graduated Permission System
+### Phase 32: Graduated Permission System ✅
 **ปัญธา**: Permission ตอนนี้เป็น binary allow/deny — น่ารำคาญ
-**ทำ**:
-- 3 tiers: auto-allow (reads), ask (writes/edits), deny (destructive like rm -rf)
-- Permission levels: permissive (ask only destructive), normal (ask writes), strict (ask all)
-- Remember per-session: "always allow edit for src/"
-- Show tool category in permission dialog
-- ไฟล์: modify `src/permission/evaluate.zig`, `src/tui/widgets/permission.zig`, `src/chat/tool_executors.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/permission/tool_classifier.zig` (452 lines): tool categorization (read/write/destructive)
+- ✅ `src/permission/auto_classifier.zig` (571 lines): auto-classification with tiers
+- ✅ `src/permission/evaluate.zig` (780+ lines): graduated evaluation, session memory, auto-allow
+- ✅ Full permission directory with 11 files (audit, governance, guardian, lists, security, types)
 
-**Plans:**
-- [ ] 32-01-PLAN.md — Implement graduated permission tiers with tool categorization
-- [ ] 32-02-PLAN.md — Wire into TUI permission dialog with "always allow" session memory
+**Plans:** None needed — all already implemented.
 
-### Phase 33: Sub-Agent Delegation
+### Phase 33: Sub-Agent Delegation ✅
 **ปัญหา**: งานซับซ้อนต้องทำทีละอย่าง — ไม่มี parallel sub-task
-**ทำ**:
-- Create `src/agent/delegate.zig`: spawn sub-agent with scoped context
-- Sub-agent gets subset of tools + focused prompt
-- Parent collects results and synthesizes
-- Show in TUI: `● Agent 1: analyzing src/ai/... ✓`
-- Max 3 concurrent sub-agents
-- ไฟล์: new `src/agent/delegate.zig`, modify `src/agent/parallel.zig`, `src/tui/chat_tui_app.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ `src/agent/delegate.zig` (605 lines): sub-agent spawning with scoped context
+- ✅ Sub-agent gets subset of tools + focused prompt
+- ✅ Parent collects and synthesizes results
+- ✅ In build.zig as module
 
-**Plans:**
-- [ ] 33-01-PLAN.md — Implement sub-agent delegation with scoped context
-- [ ] 33-02-PLAN.md — Wire sub-agents into TUI with status display
+**Plans:** None needed — all already implemented.
 
 ---
 
-## v0.34.0 ลำดับการทำ
+## v0.34.0 ลำดับการทำ ✅ ALL DONE
 ```
 v0.34.0 Phase 31 → Phase 32 → Phase 33
           (tools)  (perms)   (delegate)
