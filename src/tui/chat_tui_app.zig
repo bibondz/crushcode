@@ -1639,7 +1639,11 @@ pub const Model = struct {
         }
         // Tick toast stack each frame for auto-expiration
         self.toast_stack.tick();
-        // Tick typewriter each frame for character reveal
+        self.lock.lock();
+        defer self.lock.unlock();
+
+        // Tick typewriter each frame for character reveal (must be under lock —
+        // worker thread calls tw.updateText() under the same lock)
         if (self.typewriter) |*tw| {
             tw.tick();
         }
@@ -1647,9 +1651,6 @@ pub const Model = struct {
         if (self.typewriter != null and self.request_done and self.typewriter.?.complete) {
             self.typewriter = null;
         }
-
-        self.lock.lock();
-        defer self.lock.unlock();
 
         const max = ctx.max.size();
         const sidebar_width: u16 = 30;

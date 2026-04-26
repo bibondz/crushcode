@@ -75,23 +75,25 @@ pub const TypewriterState = struct {
     /// Note: text must outlive this struct (borrowed reference).
     pub fn setText(self: *Self, text: []const u8) void {
         self.full_text = text;
-        self.revealed = countCodepoints(text);
-        self.total_codepoints = self.revealed;
-        self.complete = true;
+        self.revealed = 0;
+        self.total_codepoints = countCodepoints(text);
+        self.complete = false;
         self.last_reveal_ms = std.time.milliTimestamp();
         self.next_delay_ms = randomDelay(&self.rng_state);
     }
 
     /// Append more text to the existing buffer (for streaming).
-    /// Revealed count stays the same — new text will be gradually revealed.
+    /// Does NOT reset revealed count — new text will be gradually revealed.
+    /// total_codepoints is updated so tick() reveals into the new content.
     pub fn appendText(self: *Self, text: []const u8) void {
         _ = text;
-        // Note: Since full_text is a borrowed slice, streaming append
-        // is handled by the caller updating the text and calling setText
-        // or updateText. We re-count codepoints.
         self.total_codepoints = countCodepoints(self.full_text);
-        self.revealed = self.total_codepoints;
-        self.complete = true;
+        // If was complete, resume animation for newly appended content
+        if (self.complete and self.revealed < self.total_codepoints) {
+            self.complete = false;
+            self.last_reveal_ms = std.time.milliTimestamp();
+            self.next_delay_ms = randomDelay(&self.rng_state);
+        }
     }
 
     /// Update the full text without resetting reveal position.
@@ -99,8 +101,12 @@ pub const TypewriterState = struct {
     pub fn updateText(self: *Self, text: []const u8) void {
         self.full_text = text;
         self.total_codepoints = countCodepoints(text);
-        self.revealed = self.total_codepoints;
-        self.complete = true;
+        // If was complete but new text arrived, resume animation
+        if (self.complete and self.revealed < self.total_codepoints) {
+            self.complete = false;
+            self.last_reveal_ms = std.time.milliTimestamp();
+            self.next_delay_ms = randomDelay(&self.rng_state);
+        }
     }
 
     /// Advance reveal by one or more characters if enough time has elapsed.
