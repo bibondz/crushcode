@@ -351,9 +351,9 @@ Plans:
 **ทำ**:
 - Wire `LifecycleHooks` into TUI agent loop: pre_request, post_request, pre_tool, post_tool, on_error
 - Implement core hooks: token tracking, error logging, tool timing
-- Rename ast_grep.zig to `pattern_search.zig` (honest naming) or implement real AST matching
+- Remove or repurpose `tree_sitter.zig` stub (438 lines of @panic) — AST replaced by: Regex (✅ 20 langs) + LSP (✅ goto/refs/hover/diagnostics) + spawn `sg` binary (future)
 - Clean up dead code and unused edge types in graph/types.zig
-- ไฟล์: modify `chat_tui_app.zig` (hook call sites), `hooks/lifecycle.zig` (register core hooks), rename `ast_grep.zig`
+- ไฟล์: modify `chat_tui_app.zig` (hook call sites), `hooks/lifecycle.zig` (register core hooks), remove `tree_sitter.zig`
 
 **Plans:** 1 plan
 Plans:
@@ -372,7 +372,7 @@ v0.7.0 Phase 21 → Phase 22 → Phase 23 → Phase 24 → Phase 25
 - Vim mode
 - Package managers (deb/rpm/brew) — install command พอ
 - IDE bridge (VS Code / JetBrains)
-- Real AST parsing (tree-sitter) — pattern search พอสำหรับ v0.7.0
+- Real AST parsing (tree-sitter) — REPLACED: 3-tier stack (Regex highlighting ✅ + LSP structural queries ✅ + spawn `sg` binary for AST search) — zero compile-time deps, covers all use cases
 
 ---
 

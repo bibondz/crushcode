@@ -162,6 +162,6 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-26
-**Current Work:** Phase 22-24 shipped. Phase 25 (Lifecycle Hooks + Code Quality) next.
-**Next Step:** Phase 25 — wire lifecycle hooks, rename ast_grep, code cleanup.
+**Last Updated:** 2026-04-27
+**Current Work:** Research phase complete. 41 ref repos analyzed. AST replaced by 3-tier (Regex + LSP + sg spawn).
+**Next Step:** Wire remaining infrastructure (items 1-8 from research), build performance features, implement hashline edit.
