@@ -1,8 +1,8 @@
 # Crushcode — Session Handoff
 
 **Updated:** 2026-04-26
-**Status:** v1.4.x Compaction Phase A COMPLETE ✅ — Phase B next
-**Branch:** `master` | **Last commit:** `c274109` | **Build:** ✅ clean | **Tests:** ✅ pass
+**Status:** v1.4.x Compaction Phase A+B COMPLETE ✅ — Phase 23 next
+**Branch:** `master` | **Last commit:** `629da2e` | **Build:** ✅ clean | **Tests:** ✅ pass
 
 ---
 
@@ -47,12 +47,15 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 
 ## Recent Work (v1.2.0–v1.4.0)
 
-### v1.4.x — Compaction Improvements Phase A (1 commit, +572 lines)
+### v1.4.x — Compaction Improvements Phase A+B (2 commits, +1177 lines)
 
 - **Micro-Compact**: Prune stale tool outputs older than recent window — 0 quality loss, 20-40% token savings
 - **Multi-Tier Thresholds**: micro@<85%, light@85-95%, summary@95%+ — graduated response vs one-size-fits-all
 - **Dynamic Context Limits**: context_limits.zig maps 15+ provider families (Claude 200K, Gemini 1M, GPT-4o 128K, etc.) — no more hardcoded 128K
 - **Agent Framing**: 8-section structured prompt (Goal/Constraints/Discoveries/Accomplished/Errors+Fixes/Files/Pending/NextStep) for AI-to-AI context recovery
+- **Template Enforcement**: enforceSummaryTemplate() validates LLM output has all 8 required sections, injects missing ones
+- **Tool Importance Pruning**: Protected (skill/write/edit/decision) > Normal (bash/grep/read) > Aggressive (web_fetch/web_search) — never prune decisions
+- **Wire compactWithLLM**: sendToLLMWrapper threadlocal pattern, auto-compact at 95%+ tries LLM first with heuristic fallback
 
 ### v1.4.0 — Harness Engineering (7 commits, +6192 lines)
 
@@ -101,7 +104,7 @@ src/tui/model/ — streaming, token_tracking, palette, session_mgmt, history, he
 src/ai/client.zig — AI HTTP client (23 providers, streaming, guardrails, metrics, circuit breaker)
 src/ai/registry.zig — provider registry
 src/agent/loop.zig — agent loop (tool inspection, metrics, parallel execution)
-src/agent/compaction.zig — ContextCompactor (compactWithLLM, compactLight, compactWithSummary)
+src/agent/compaction.zig — ContextCompactor (1328 lines): microCompact, compactLight, compactWithSummary, compactWithLLM, enforceSummaryTemplate, truncateToolOutputsByImportance
 src/agent/circuit_breaker.zig — closed/open/half_open FSM
 src/agent/router.zig — routing strategies, latency tracking
 src/commands/handlers/ — ai.zig, system.zig, tools.zig, experimental.zig (shim → 5 domain handlers)
@@ -166,7 +169,7 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 | Vault→persistence merge | Medium | Circular dep risk |
 | Cache-aware Anthropic HTTP body | Low | CacheControl structs exist, not wired to HTTP body |
 | Guardrail redaction pass | Low | deny works, redact→modified content not fully sent |
-| LLM compaction full wiring | Low | Needs sendToLLM function pointer |
+| LLM compaction full wiring | ✅ Done | sendToLLMWrapper threadlocal, commit 629da2e |
 | Responsive layout | Low | FlexRow/FlexColumn available |
 | Resizable panes | Low | SplitView available |
 | Input history search | Low | Need new binding (Ctrl+R taken) |
@@ -175,7 +178,7 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Phase 22 | Smart Context + Auto-Compact | ✅ Mostly done |
+| Phase 22 | Smart Context + Auto-Compact | ✅ Done (Phase A+B) |
 | Phase 23 | Myers Diff + Edit Preview | Not started |
 | Phase 24 | System Prompt Engineering + Project Config | Not started |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |

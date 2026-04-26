@@ -1,7 +1,7 @@
 # Crushcode — TODO & Known Issues
 
 **Updated:** 2026-04-26
-**Version:** v1.4.x (Phase A compaction improvements shipped)
+**Version:** v1.4.x (Phase A+B compaction improvements shipped)
 
 ---
 
@@ -52,10 +52,10 @@
 
 ### [HARNESS-3] LLM Compaction Full Wiring
 
-**Status:** Partial
-**Files:** `src/agent/compaction.zig` — compactWithLLM() exists
+**Status:** ✅ Done (commit `629da2e`)
+**Files:** `src/agent/compaction.zig`, `src/tui/chat_tui_app.zig`
 
-**Gap:** compactWithLLM() needs a `sendToLLM` function pointer plumbed through the agent loop to actually call the AI for summarization.
+**Shipped:** sendToLLMWrapper threadlocal pattern, auto-compact at 95%+ tier tries compactWithLLM first with heuristic fallback, manual `/compact` also tries LLM first. Template enforcement + tool importance pruning included.
 
 ---
 
@@ -123,6 +123,13 @@
 - [x] Dynamic context limits per provider/model (context_limits.zig, 28 tests)
 - [x] Agent-to-agent framing in summarization prompt (8-section structured)
 - [x] Model switch updates compactor.max_tokens dynamically
+
+## Done (v1.4.x Phase B — 2026-04-26)
+
+- [x] Template-enforced structured summarization (enforceSummaryTemplate, 8 required sections)
+- [x] Tool importance-based pruning (protected/normal/aggressive categories)
+- [x] Wire compactWithLLM via sendToLLMWrapper threadlocal pattern
+- [x] 14 new inline tests
 
 ## Done (v1.4.0 session — 2026-04-26)
 

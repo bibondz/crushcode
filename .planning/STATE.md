@@ -22,10 +22,9 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v1.4.x Compaction Improvements — Phase A COMPLETE |
-| Phase | Phase 22 (Smart Context + Auto-Compact) — Phase A shipped, Phase B next |
-| Status | ✅ Clean build, all tests pass |
-| Commit | c274109 |
+| Milestone | v1.4.x Compaction Improvements — Phase A+B COMPLETE |
+| Phase | Phase 22 (Smart Context + Auto-Compact) — Phase B shipped |
+| Commit | 629da2e |
 | Last Tag | v1.4.0 |
 | Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 |
 
@@ -51,6 +50,9 @@
 | Phase A: Multi-Tier Thresholds | micro@<85%, light@85-95%, summary@95%+ graduated compaction | c274109 |
 | Phase A: Dynamic Context Limits | context_limits.zig — per-provider/model window sizes (15+ providers, 28 tests) | c274109 |
 | Phase A: Agent Framing | 8-section structured prompt for AI-to-AI context recovery | c274109 |
+| Phase B: Template Enforcement | enforceSummaryTemplate() validates LLM output has 8 required sections | 629da2e |
+| Phase B: Tool Importance Pruning | Protected/normal/aggressive tool categories, prune by importance | 629da2e |
+| Phase B: Wire compactWithLLM | sendToLLMWrapper threadlocal pattern, LLM compaction with heuristic fallback | 629da2e |
 
 ---
 
@@ -134,9 +136,6 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 |------|----------|-------|
 | KnowledgePipeline fix (KP-1) | Medium | Dangling pointer, currently disabled |
 | Build.zig cleanup (1115→~700 lines) | Medium | Create `createStdModule()` helper |
-| **Phase B: Template-enforced structured summarization** | Medium | Enforce markdown section structure in compactWithLLM output |
-| **Phase B: Tool importance-based pruning** | Medium | Protect decision/skill outputs, prune verbose grep/read first |
-| **Phase B: Wire compactWithLLM()** | Medium | sendToLLM function pointer plumbed through agent loop |
 | Vault→persistence merge | Medium | Circular dep risk |
 | Cache-aware Anthropic HTTP body | Low | CacheControl structs exist, not wired to HTTP body format |
 | Guardrail redaction pass | Low | deny works, redact→modified content not fully sent |
@@ -150,7 +149,7 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Phase 22 | Smart Context + Auto-Compact | Phase A ✅ Done, Phase B in progress |
+| Phase 22 | Smart Context + Auto-Compact | ✅ Phase A+B Done |
 | Phase 23 | Myers Diff + Edit Preview | Not started |
 | Phase 24 | System Prompt Engineering + Project Config | Not started |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |
@@ -160,5 +159,5 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 ## Session Continuity
 
 **Last Updated:** 2026-04-26
-**Current Work:** Phase 22 Phase A shipped (micro-compact, multi-tier, dynamic limits, agent framing). Phase B next.
-**Next Step:** Phase B (template-enforced summaries, tool importance pruning, wire compactWithLLM).
+**Current Work:** Phase 22 Phase A+B shipped (micro-compact, multi-tier, dynamic limits, agent framing, template enforcement, tool importance, wired LLM compaction).
+**Next Step:** Phase 23 (Myers Diff + Edit Preview), or remaining items (guardrail redaction, cache wiring).
