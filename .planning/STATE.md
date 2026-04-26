@@ -14,7 +14,8 @@
 |-------|-------|
 | Milestone | v1.4.0 — ALL 33 phases COMPLETE |
 | Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 |
-| Next | v1.5.0 — Stability + Polish |
+| Next | v1.5.0 — Stability + Polish (in progress) |
+| Latest commit | `cd81742` — refactor build.zig, fix /export stub |
 
 ---
 
@@ -27,6 +28,20 @@
 | v1.2.0 | TUI Foundation | Virtual scroll, palette, split pane, file tree sidebar |
 | v1.3.0 | TUI Polish | 6 themes, sparkline, syntax preview, click-to-preview, dialogs |
 | v1.4.0 | Full AI Agent | Auto-compact, Myers diff, system prompt, relevance scoring, user model, auto-skill, plan mode, feedback loop, 30 tools, graduated permissions, sub-agent delegation |
+
+---
+
+## v1.5.0 Progress
+
+| Item | Status | Notes |
+|------|--------|-------|
+| KP-1 KnowledgePipeline | ✅ Verified stale | Dangling pointer was vxfw.App, already fixed |
+| Build.zig cleanup | ✅ Done (cd81742) | 1123→1037 lines, consolidated imports |
+| /export CLI | ✅ Done (cd81742) | Real markdown export, custom path support |
+| /doctor, /review, /commit | ✅ Verified real | 512L, 168L, 411L — fully implemented |
+| TUI /export handler | 🔲 Next | Wire into chat_tui_app.zig |
+| Cache-aware Anthropic body | Low | CacheControl structs exist, not wired |
+| Guardrail redaction | Low | deny works, redact not fully wired |
 
 ---
 
@@ -64,4 +79,4 @@
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** All ROADMAP phases (1-33) complete. v1.5.0 planning next.
+**Status:** v1.5.0 in progress. Build.zig cleanup + /export CLI done. TUI /export handler next.

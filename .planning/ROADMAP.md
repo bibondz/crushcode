@@ -134,22 +134,19 @@ Created: 2026-04-14 · Updated: 2026-04-27
 
 ---
 
-## v1.5.0 — Stability + Polish (NEXT)
+## v1.5.0 — Stability + Polish (IN PROGRESS)
 
 **วัตถุประสงค์**: Fix known bugs, clean up codebase, polish remaining edges
 
-### Known Issues to Fix
+### Progress
 
-| Item | Priority | Description |
-|------|----------|-------------|
-| KP-1 | High | KnowledgePipeline dangling pointer — currently disabled |
-| Build.zig cleanup | Medium | 1115→~700 lines, create createStdModule() helper |
-| Slash command stubs | Medium | /export, /review, /doctor, /commit still stubs |
-| Cache-aware Anthropic body | Low | CacheControl structs exist, not wired to HTTP body |
-| Guardrail redaction | Low | deny works, redact→modified content not sent |
-| Responsive layout | Low | FlexRow/FlexColumn vaxis widgets unused |
-| Mouse-resizable panes | Low | vaxis SplitView available |
-| Input history search | Low | Ctrl+R taken by /refresh |
+| Item | Status | Description |
+|------|--------|-------------|
+| KP-1 KnowledgePipeline | ✅ VERIFIED STALE | Dangling pointer was vxfw.App (already fixed). Pipeline works correctly. |
+| Build.zig cleanup | ✅ DONE | 1123→1037 lines (-86). Consolidated compat loop, test array, addImports. |
+| /export stub | ✅ DONE (CLI) | Real implementation: creates timestamped markdown file. TUI handler pending. |
+| /doctor, /review, /commit | ✅ VERIFIED REAL | 512L, 168L, 411L — all fully implemented, not stubs. |
+| TUI /export handler | 🔲 TODO | CLI works, TUI mode has no /export handler in chat_tui_app.zig. |
 
 ### Backlog (researched but deferred)
 - Streaming diff preview (diffpane, tuicr)
