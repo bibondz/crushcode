@@ -363,8 +363,34 @@ fn cmdLspRestart(allocator: Allocator, args: []const u8) !CommandResult {
 }
 
 fn cmdExport(allocator: Allocator, args: []const u8) !CommandResult {
-    _ = args;
-    return CommandResult.init(allocator, "Session exported.");
+    const timestamp = std.time.timestamp();
+    const filename = if (args.len > 0) 
+        try allocator.dupe(u8, args)
+    else 
+        try std.fmt.allocPrint(allocator, "session-export-{d}.md", .{timestamp});
+    
+    defer if (args.len == 0) allocator.free(filename);
+    
+    const file = std.fs.cwd().createFile(filename, .{ .truncate = true }) catch |err| {
+        return CommandResult.init(allocator, std.fmt.allocPrint(allocator, "Failed to create export file: {}", .{err}) catch "Failed to create export file.");
+    };
+    defer file.close();
+    
+    const header = try std.fmt.allocPrint(allocator, 
+        \\# Crushcode Session Export
+        \\Generated: {d}
+        \\
+        \\> Use /export in TUI mode for full session export with message history.
+        \\
+    , .{timestamp});
+    defer allocator.free(header);
+    
+    file.writeAll(header) catch |err| {
+        return CommandResult.init(allocator, std.fmt.allocPrint(allocator, "Failed to write export file: {}", .{err}) catch "Failed to write export file.");
+    };
+    
+    const msg = try std.fmt.allocPrint(allocator, "Session exported to {s}", .{filename});
+    return CommandResult.init(allocator, msg);
 }
 
 // ============================================================
