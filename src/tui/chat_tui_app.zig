@@ -2111,6 +2111,32 @@ pub const Model = struct {
             try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(right_col) }, .surface = right_surface });
         }
 
+        // Check if any overlay is active for backdrop rendering
+        const any_overlay_active = self.show_palette or
+            self.pending_permission != null or
+            self.diff_preview_active or
+            self.show_session_list or
+            self.resume_prompt_session != null or
+            self.show_help;
+
+        // Dimmed backdrop behind overlays
+        if (any_overlay_active) {
+            const backdrop = try vxfw.Surface.init(
+                ctx.arena,
+                self.widget(),
+                .{ .width = max.width, .height = max.height },
+            );
+            const backdrop_style: vaxis.Style = .{
+                .bg = self.current_theme.header_bg,
+                .dim = true,
+            };
+            @memset(backdrop.buffer, .{ .style = backdrop_style });
+            try child_list.append(ctx.arena, .{
+                .origin = .{ .row = 0, .col = 0 },
+                .surface = backdrop,
+            });
+        }
+
         if (self.show_palette) {
             const palette = CommandPaletteWidget{
                 .field = &self.palette_input,
