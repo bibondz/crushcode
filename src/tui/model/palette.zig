@@ -48,6 +48,8 @@ pub fn openPalette(self: *Model, ctx: *vxfw.EventContext) !void {
     self.show_palette = true;
     clearPaletteFilter(self);
     resetPaletteInputField(self);
+    // Build dynamic palette items (commands + models + files)
+    try self.buildPaletteItems();
     // NOTE: Do NOT requestFocus on palette_input — it's buried inside
     // FlexRow → InputWidget → CommandPaletteWidget, so vaxis focus path
     // tracking can never find it. Instead, we forward key events manually
@@ -63,8 +65,8 @@ pub fn closePalette(self: *Model, ctx: *vxfw.EventContext) !void {
 }
 
 pub fn clampPaletteSelection(self: *Model) void {
-    var filtered_indices: [palette_command_data.len]usize = undefined;
-    const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
+    var filtered_indices: [widget_palette.max_palette_items]usize = undefined;
+    const filtered_count = collectFilteredCommandIndices(self.palette_items, self.palette_filter, filtered_indices[0..]);
     if (filtered_count == 0) {
         self.palette_selected = 0;
         return;
@@ -75,8 +77,8 @@ pub fn clampPaletteSelection(self: *Model) void {
 }
 
 pub fn movePaletteSelection(self: *Model, delta: isize) void {
-    var filtered_indices: [palette_command_data.len]usize = undefined;
-    const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
+    var filtered_indices: [widget_palette.max_palette_items]usize = undefined;
+    const filtered_count = collectFilteredCommandIndices(self.palette_items, self.palette_filter, filtered_indices[0..]);
     if (filtered_count == 0) {
         self.palette_selected = 0;
         return;

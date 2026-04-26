@@ -13,6 +13,7 @@ const core = @import("core_api");
 const widget_types = @import("widget_types");
 const widget_toast = @import("widget_toast");
 const widget_diff_preview = @import("widget_diff_preview");
+const widget_spinner = @import("widget_spinner");
 const tool_executors = @import("chat_tool_executors");
 const myers = @import("myers");
 const array_list_compat = @import("array_list_compat");
@@ -173,6 +174,16 @@ pub fn runStreamingRequest(self: *Model) !void {
         }
 
         if (tool_calls) |calls| {
+            // Update spinner phrase for tool execution
+            if (self.spinner) |*spinner| {
+                if (calls.len == 1) {
+                    const phrase = std.fmt.allocPrint(self.allocator, "Running {s}...", .{calls[0].name}) catch "Running tool...";
+                    spinner.setContextPhrase(phrase);
+                } else {
+                    const phrase = std.fmt.allocPrint(self.allocator, "Running {d} tools...", .{calls.len}) catch "Running tools...";
+                    spinner.setContextPhrase(phrase);
+                }
+            }
             try executeToolCalls(self, calls);
             if (iteration + 1 >= self.max_iterations) {
                 finishRequestWithErrorText(self, "Stopped after reaching max tool iterations.");
@@ -703,6 +714,9 @@ pub fn startNextAssistantPlaceholder(self: *Model) !void {
     try history_mod.addMessageUnlocked(self, "assistant", "Thinking...");
     self.assistant_stream_index = self.messages.items.len - 1;
     self.awaiting_first_token = true;
+    var spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
+    spinner.setContextPhrase("Thinking...");
+    self.spinner = spinner;
     try session_mgmt.saveSessionSnapshotUnlocked(self);
 }
 
@@ -791,6 +805,10 @@ pub fn handleStreamToken(self: *Model, token: []const u8, done: bool) void {
     // Feed token to spinner for animation + stalled detection
     if (self.spinner) |*spinner| {
         spinner.feedToken();
+        // Update context phrase when streaming starts
+        if (self.awaiting_first_token) {
+            spinner.setContextPhrase("Writing...");
+        }
     }
 
     self.lock.lock();

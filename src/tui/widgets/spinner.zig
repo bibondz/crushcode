@@ -47,6 +47,9 @@ pub const AnimatedSpinner = struct {
     /// Token counter (updated externally)
     token_count: u64,
 
+    /// Contextual phrase shown before the spinner frame (e.g. "Thinking...", "Running tool...")
+    context_phrase: []const u8 = "",
+
     const Self = @This();
 
     /// Initialize spinner. Starts timing from now.
@@ -61,6 +64,7 @@ pub const AnimatedSpinner = struct {
             .tick_count = 0,
             .token_count = 0,
             .unicode = true,
+            .context_phrase = "",
         };
     }
 
@@ -69,6 +73,11 @@ pub const AnimatedSpinner = struct {
         var s = init(theme);
         s.unicode = unicode;
         return s;
+    }
+
+    /// Set the contextual phrase for the spinner display.
+    pub fn setContextPhrase(self: *Self, phrase: []const u8) void {
+        self.context_phrase = phrase;
     }
 
     /// Advance animation frame. Call every ~100ms.
@@ -164,27 +173,46 @@ pub const SpinnerWidget = struct {
 
         const frame_char = s.frame();
         const frame_color = s.frameColor();
-        const status_text: []const u8 = if (s.stalled) "Stalled..." else "Thinking...";
+
+        // Use context_phrase if set, otherwise fall back to status-based text
+        const status_text: []const u8 = if (s.context_phrase.len > 0)
+            s.context_phrase
+        else if (s.stalled)
+            "Stalled..."
+        else
+            "Thinking...";
         const elapsed_text = s.formatElapsed(ctx.arena) catch "0.0s";
 
-        // Build segments array (max 7: frame, space, status, space, elapsed, space, tokens)
+        // Build segments array (max 9: phrase, space, frame, space, status, space, elapsed, space, tokens)
         const Segment = struct { text: []const u8, style: vaxis.Style };
-        var segs: [7]Segment = undefined;
+        var segs: [9]Segment = undefined;
         var count: usize = 0;
+
+        // Context phrase (shown before spinner frame)
+        if (s.context_phrase.len > 0) {
+            segs[count] = .{ .text = s.context_phrase, .style = .{ .fg = s.theme.assistant_fg } };
+            count += 1;
+            segs[count] = .{ .text = " ", .style = .{} };
+            count += 1;
+        }
 
         // Spinner frame with color
         segs[count] = .{ .text = frame_char, .style = .{ .fg = frame_color, .bold = true } };
         count += 1;
-        segs[count] = .{ .text = " ", .style = .{} };
-        count += 1;
 
-        // Status text
-        if (s.stalled) {
-            segs[count] = .{ .text = status_text, .style = .{ .fg = .{ .index = 9 }, .bold = true } };
-        } else {
-            segs[count] = .{ .text = status_text, .style = .{ .fg = s.theme.assistant_fg } };
+        // Show status text only when no context phrase (avoids duplication)
+        if (s.context_phrase.len == 0) {
+            segs[count] = .{ .text = " ", .style = .{} };
+            count += 1;
+
+            // Status text
+            if (s.stalled) {
+                segs[count] = .{ .text = status_text, .style = .{ .fg = .{ .index = 9 }, .bold = true } };
+            } else {
+                segs[count] = .{ .text = status_text, .style = .{ .fg = s.theme.assistant_fg } };
+            }
+            count += 1;
         }
-        count += 1;
 
         // Elapsed time
         segs[count] = .{ .text = "  ", .style = .{} };

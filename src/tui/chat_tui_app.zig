@@ -147,6 +147,56 @@ const MessageWidget = struct {
     }
 };
 
+/// Builder data for ScrollView's .builder source — avoids creating all message
+/// widgets every frame; only visible items are built on demand.
+const MessageListBuilderData = struct {
+    model: *const Model,
+    visible_indices: []const usize,
+    theme: *const theme_mod.Theme,
+    arena: std.mem.Allocator,
+};
+
+/// ScrollView builder function. Maps a flat widget index to the appropriate
+/// widget using the same 3-widget-per-message layout as the original slice:
+///   idx % 3 == 0 → MessageWidget for visible message at idx / 3
+///   idx % 3 == 1 → MessageGapWidget (between messages)
+///   idx % 3 == 2 → SeparatorWidget  (between messages)
+/// The last visible message has no trailing gap/sep, so we return null for
+/// indices beyond the last message slot.
+fn messageListBuildFn(ptr: *const anyopaque, idx: usize, _: usize) ?vxfw.Widget {
+    const data: *const MessageListBuilderData = @ptrCast(@alignCast(ptr));
+    const vis_count = data.visible_indices.len;
+    if (vis_count == 0) return null;
+
+    const total_widgets: usize = if (vis_count == 0) 0 else vis_count * 3 - 2;
+    if (idx >= total_widgets) return null;
+
+    const slot = idx % 3;
+    const vis_idx = idx / 3;
+
+    if (slot == 0) {
+        // MessageWidget
+        if (vis_idx >= vis_count) return null;
+        const mw = data.arena.create(MessageWidget) catch return null;
+        mw.* = .{ .model = data.model, .message_index = data.visible_indices[vis_idx] };
+        return mw.widget();
+    }
+
+    // Gap + Separator slots only exist between messages (vis_idx < vis_count - 1)
+    if (vis_idx >= vis_count - 1) return null;
+
+    if (slot == 1) {
+        const gap = data.arena.create(MessageGapWidget) catch return null;
+        gap.* = .{};
+        return gap.widget();
+    }
+
+    // slot == 2
+    const sep = data.arena.create(SeparatorWidget) catch return null;
+    sep.* = .{ .theme = data.theme };
+    return sep.widget();
+}
+
 const HeaderWidget = widget_header.HeaderWidget;
 
 const SurfaceWidget = struct {
@@ -174,7 +224,8 @@ const SidebarContext = widget_sidebar.SidebarContext;
 const InputWidget = widget_input.InputWidget;
 const MultiLineInputWidget = widget_input.MultiLineInputWidget;
 
-const Command = widget_palette.Command;
+const PaletteItem = widget_palette.PaletteItem;
+const PaletteCategory = widget_palette.PaletteCategory;
 const palette_command_data = widget_palette.palette_command_data;
 const CommandRowWidget = widget_palette.CommandRowWidget;
 const SessionListRowWidget = widget_palette.SessionListRowWidget;
@@ -182,7 +233,6 @@ const SessionListWidget = widget_palette.SessionListWidget;
 const ResumePromptWidget = widget_palette.ResumePromptWidget;
 const CommandPaletteWidget = widget_palette.CommandPaletteWidget;
 const collectFilteredCommandIndices = widget_palette.collectFilteredCommandIndices;
-const commandDescriptionGap = widget_palette.commandDescriptionGap;
 const formatSessionTimestamp = widget_palette.formatSessionTimestamp;
 
 /// Slash command names used for autocomplete suggestions in the input field.
@@ -248,7 +298,7 @@ pub const Model = struct {
     input: widget_input.MultiLineInputState,
     show_palette: bool,
     palette_input: vxfw.TextField,
-    palette_commands: []const Command,
+    palette_items: []const PaletteItem,
     palette_selected: usize,
     palette_filter: []const u8,
     scroll_view: vxfw.ScrollView,
@@ -308,6 +358,11 @@ pub const Model = struct {
     resume_prompt_session: ?session_mod.Session,
     resume_prompt_path: ?[]const u8,
     sidebar_visible: bool = false,
+    right_pane_visible: bool = false,
+    right_pane_content: ?[]const u8 = null,
+    right_pane_title: ?[]const u8 = null,
+    right_pane_width: u16 = 60,
+    cwd_files: std.ArrayList([]const u8),
     scroll_mode: bool = false,
     show_help: bool = false,
     auto_scroll: bool = true,
@@ -401,11 +456,11 @@ pub const Model = struct {
             .input = widget_input.MultiLineInputState.init(allocator),
             .show_palette = false,
             .palette_input = vxfw.TextField.init(allocator),
-            .palette_commands = &palette_command_data,
+            .palette_items = &palette_command_data,
             .palette_selected = 0,
             .palette_filter = "",
             .scroll_view = .{
-                .children = .{ .slice = &.{} },
+                .children = .{ .builder = .{ .userdata = undefined, .buildFn = messageListBuildFn } },
                 .draw_cursor = false,
                 .wheel_scroll = 3,
             },
@@ -449,7 +504,12 @@ pub const Model = struct {
             .resume_prompt_session = null,
             .resume_prompt_path = null,
             .sidebar_visible = false,
+            .right_pane_visible = false,
+            .right_pane_content = null,
+            .right_pane_title = null,
+            .right_pane_width = 60,
             .workers = std.ArrayList(WorkerItem).empty,
+            .cwd_files = std.ArrayList([]const u8).empty,
             .spinner = null,
             .toast_stack = undefined,
             .typewriter = null,
@@ -625,6 +685,7 @@ pub const Model = struct {
         } else {
             try history_mod.addMessageUnlocked(model, "assistant", "TUI chat ready. Type a message and press Enter.");
             try model.initializeClient();
+            model.refreshCwdListing();
         }
         return model;
     }
@@ -632,6 +693,8 @@ pub const Model = struct {
     pub fn destroy(self: *Model) void {
         // Cleanup cognition pipeline and guardian
         if (self.pipeline) |p| p.deinit();
+        if (self.right_pane_content) |c| self.allocator.free(c);
+        if (self.right_pane_title) |t| self.allocator.free(t);
         if (self.user_model) |*um| um.deinit();
         if (self.auto_gen) |*ag| ag.deinit();
         if (self.feedback) |*fb| fb.deinit();
@@ -648,11 +711,24 @@ pub const Model = struct {
             if (w.@"error") |e| self.allocator.free(e);
         }
         self.workers.deinit(self.allocator);
+        for (self.cwd_files.items) |f| self.allocator.free(f);
+        self.cwd_files.deinit(self.allocator);
         if (self.client) |*client| {
             client.deinit();
         }
         self.input.deinit();
         self.palette_input.deinit();
+        // Free dynamic palette items (if not pointing to static default)
+        if (self.palette_items.ptr != @as([*]const PaletteItem, @ptrCast(&palette_command_data))) {
+            for (self.palette_items) |*it| {
+                if (it.category != .command) {
+                    self.allocator.free(it.label);
+                    self.allocator.free(it.description);
+                    self.allocator.free(it.action);
+                }
+            }
+            self.allocator.free(self.palette_items);
+        }
         for (self.messages.items) |message| {
             freeDisplayMessage(self.allocator, message);
         }
@@ -739,6 +815,51 @@ pub const Model = struct {
         self.app.deinit();
         self.allocator.destroy(self.app);
         self.allocator.destroy(self);
+    }
+
+    /// Refresh the CWD file listing shown in the sidebar.
+    /// Walks the current working directory (depth 1) and populates `cwd_files`
+    /// with sorted, relative paths capped at 50 entries.
+    pub fn refreshCwdListing(self: *Model) void {
+        // Clear old entries
+        for (self.cwd_files.items) |f| self.allocator.free(f);
+        self.cwd_files.clearRetainingCapacity();
+
+        var dir = std.fs.cwd().openDir(".", .{ .iterate = true }) catch return;
+        defer dir.close();
+
+        var walker = dir.walk(self.allocator) catch return;
+        defer walker.deinit();
+
+        var count: usize = 0;
+        while (walker.next() catch null) |entry| {
+            if (count >= 50) break;
+            // Skip hidden files/dirs and common noise
+            if (entry.basename.len > 0 and entry.basename[0] == '.') continue;
+            if (std.mem.eql(u8, entry.basename, "zig-out") or
+                std.mem.eql(u8, entry.basename, "zig-cache") or
+                std.mem.eql(u8, entry.basename, ".git"))
+                continue;
+
+            const kind = entry.kind;
+            if (kind != .file and kind != .directory) continue;
+
+            const prefix: []const u8 = if (kind == .directory) "📁 " else "  ";
+            const full = std.fmt.allocPrint(self.allocator, "{s}{s}", .{ prefix, entry.path }) catch continue;
+            self.cwd_files.append(self.allocator, full) catch {
+                self.allocator.free(full);
+                continue;
+            };
+            count += 1;
+        }
+
+        // Sort alphabetically (directories first via 📁 prefix)
+        const lessThan = struct {
+            pub fn lessThan(_: void, a: []const u8, b: []const u8) bool {
+                return std.mem.lessThan(u8, a, b);
+            }
+        }.lessThan;
+        std.sort.insertion([]const u8, self.cwd_files.items, {}, lessThan);
     }
 
     pub fn run(self: *Model) !void {
@@ -1442,6 +1563,20 @@ pub const Model = struct {
                     return;
                 }
 
+                if (key.matches('\\', .{ .ctrl = true })) {
+                    self.right_pane_visible = !self.right_pane_visible;
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
+                if (key.matches('r', .{ .ctrl = true })) {
+                    self.refreshCwdListing();
+                    ctx.consumeEvent();
+                    ctx.redraw = true;
+                    return;
+                }
+
                 // Ctrl+H or ? toggles help overlay
                 if (key.matches('h', .{ .ctrl = true })) {
                     self.show_help = !self.show_help;
@@ -1596,6 +1731,20 @@ pub const Model = struct {
                         ctx.consumeEvent();
                         return;
                     }
+                    if (key.matches(vaxis.Key.tab, .{})) {
+                        // Tab completion — fill input with best matching command
+                        const filter_text = self.palette_filter;
+                        var filtered_indices: [widget_palette.max_palette_items]usize = undefined;
+                        const count = widget_palette.collectFilteredCommandIndices(self.palette_items, filter_text, filtered_indices[0..]);
+                        if (count > 0) {
+                            const best = self.palette_items[filtered_indices[0]];
+                            try model_palette.setPaletteFilter(self, best.label);
+                            self.palette_selected = 0;
+                        }
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
                     // Forward all other keys (typing, backspace, etc.) to palette_input
                     try self.palette_input.handleEvent(ctx, event);
                     ctx.redraw = true;
@@ -1654,7 +1803,8 @@ pub const Model = struct {
 
         const max = ctx.max.size();
         const sidebar_width: u16 = 30;
-        const main_width: u16 = if (self.sidebar_visible) max.width -| sidebar_width else max.width;
+        const right_pane_w: u16 = if (self.right_pane_visible and self.right_pane_content != null) self.right_pane_width else 0;
+        const main_width: u16 = max.width -| if (self.sidebar_visible) sidebar_width else 0 -| right_pane_w;
         const header_height: u16 = 1;
         const status_height: u16 = 1;
         // Dynamic input height: compute based on content and available width
@@ -1706,37 +1856,43 @@ pub const Model = struct {
                     .{ .width = main_width, .height = safe_body_height },
                 ));
             } else {
-                var message_widgets = std.ArrayList(vxfw.Widget).empty;
-                defer message_widgets.deinit(ctx.arena);
-                try message_widgets.ensureTotalCapacity(ctx.arena, @max(self.messages.items.len * 3, 1));
-                var visible_count: usize = 0;
+                // Precompute visible message indices (skipping duplicate tool_call_id results)
+                const total_msgs = self.messages.items.len;
+                var visible_indices = std.ArrayList(usize).empty;
+                defer visible_indices.deinit(ctx.arena);
+                try visible_indices.ensureTotalCapacity(ctx.arena, @max(total_msgs, 1));
                 for (self.messages.items, 0..) |message, idx| {
                     if (message.tool_call_id != null and findToolCallBefore(self.messages.items, idx, message.tool_call_id.?) != null) {
                         continue;
                     }
-                    // Heap-allocate to avoid dangling stack pointers — .widget() captures
-                    // the address via @constCast, so locals would be overwritten each iteration.
-                    const mw = try ctx.arena.create(MessageWidget);
-                    mw.* = .{ .model = self, .message_index = idx };
-                    try message_widgets.append(ctx.arena, mw.widget());
-                    visible_count += 1;
-                    if (visible_count < visibleMessageCount(self.messages.items)) {
-                        const gap = try ctx.arena.create(MessageGapWidget);
-                        gap.* = .{};
-                        try message_widgets.append(ctx.arena, gap.widget());
-                        const sep = try ctx.arena.create(SeparatorWidget);
-                        sep.* = .{ .theme = self.current_theme };
-                        try message_widgets.append(ctx.arena, sep.widget());
-                    }
+                    try visible_indices.append(ctx.arena, idx);
                 }
+                const vis_count = visible_indices.items.len;
+                // Widget layout: each visible message = 1 MessageWidget. Between messages,
+                // 2 more widgets (Gap + Separator). So total = vis_count + (vis_count - 1) * 2
+                // = vis_count * 3 - 2 (for vis_count >= 1). This preserves the cursor mapping
+                // used by scrollCursorToMessageIndex (cursor % 3 == 0 → message at cursor / 3).
+                const total_widgets: usize = if (vis_count == 0) 0 else vis_count * 3 - 2;
 
-                self.scroll_view.children = .{ .slice = message_widgets.items };
-                if (self.auto_scroll and message_widgets.items.len > 0) {
-                    self.scroll_view.item_count = @intCast(message_widgets.items.len);
-                    self.scroll_view.cursor = @intCast(message_widgets.items.len - 1);
+                const builder_data = try ctx.arena.create(MessageListBuilderData);
+                builder_data.* = .{
+                    .model = self,
+                    .visible_indices = visible_indices.items,
+                    .theme = self.current_theme,
+                    .arena = ctx.arena,
+                };
+
+                self.scroll_view.children = .{ .builder = .{
+                    .userdata = builder_data,
+                    .buildFn = messageListBuildFn,
+                } };
+
+                if (self.auto_scroll and total_widgets > 0) {
+                    self.scroll_view.item_count = @intCast(total_widgets);
+                    self.scroll_view.cursor = @intCast(total_widgets - 1);
                     self.scroll_view.ensureScroll();
-                } else if (message_widgets.items.len > 0) {
-                    self.scroll_view.item_count = @intCast(message_widgets.items.len);
+                } else if (total_widgets > 0) {
+                    self.scroll_view.item_count = @intCast(total_widgets);
                 } else {
                     self.scroll_view.item_count = 0;
                     self.scroll_view.cursor = 0;
@@ -1760,13 +1916,23 @@ pub const Model = struct {
                 break :blk " │ SCROLL (j/k/↑↓ PgUp/PgDn g/G Enter q/Esc)";
             }
         } else "";
+        // Mode indicator: show active mode tags at the end of the status bar
+        const mode_tag: []const u8 = blk: {
+            if (self.crush_active) break :blk " [CRUSH]";
+            if (self.delegate_mode) break :blk " [DELEGATE]";
+            if (self.scroll_mode) break :blk " [SCROLL]";
+            break :blk "";
+        };
+        // Provider/model prefix for the status bar
+        const provider_prefix = try std.fmt.allocPrint(ctx.arena, "{s}/{s} │ ", .{ self.provider_name, self.model_name });
         const status_text = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Setup {d}/4 | {s}", .{
                 @min(self.setup_phase, @as(u8, 4)),
                 if (self.setup_phase == 1) "Choose a provider" else if (self.setup_phase == 2) "Enter your API key" else if (self.setup_phase == 3) "Choose a default model" else "Press Enter to continue",
             })
         else if (self.status_message.len > 0)
-            try std.fmt.allocPrint(ctx.arena, "{s} | Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}", .{
+            try std.fmt.allocPrint(ctx.arena, "{s}{s} | Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}{s}", .{
+                provider_prefix,
                 self.status_message,
                 self.total_input_tokens,
                 self.total_output_tokens,
@@ -1775,9 +1941,11 @@ pub const Model = struct {
                 session_time_mod.sessionMinutes(self),
                 session_time_mod.sessionSecondsPart(self),
                 scroll_indicator,
+                mode_tag,
             })
         else
-            try std.fmt.allocPrint(ctx.arena, "Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}", .{
+            try std.fmt.allocPrint(ctx.arena, "{s}Tokens: {d} in / {d} out | Cost: ${d:.4} | Turn {d} | {d}m{d}s{s}{s}", .{
+                provider_prefix,
                 self.total_input_tokens,
                 self.total_output_tokens,
                 token_tracking_mod.estimatedCostUsd(self),
@@ -1785,6 +1953,7 @@ pub const Model = struct {
                 session_time_mod.sessionMinutes(self),
                 session_time_mod.sessionSecondsPart(self),
                 scroll_indicator,
+                mode_tag,
             });
         const status_widget = vxfw.Text{
             .text = if (status_text.len > main_width) blk: {
@@ -1829,6 +1998,7 @@ pub const Model = struct {
             }
             const sidebar_context = SidebarContext{
                 .recent_files = self.recent_files.items,
+                .cwd_files = self.cwd_files.items,
                 .request_count = self.request_count,
                 .total_input_tokens = self.total_input_tokens,
                 .total_output_tokens = self.total_output_tokens,
@@ -1851,10 +2021,67 @@ pub const Model = struct {
             try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(main_width) }, .surface = sidebar_surface });
         }
 
+        // Right pane — file preview
+        if (self.right_pane_visible and self.right_pane_content != null) {
+            const content = self.right_pane_content.?;
+            const title = self.right_pane_title orelse "Preview";
+            const pane_height: u16 = header_height + safe_body_height;
+
+            // Build right pane surface with title bar + content
+            var pane_segs = std.ArrayList(vaxis.Segment).empty;
+            defer pane_segs.deinit(ctx.arena);
+
+            // Title bar
+            const title_bar = try std.fmt.allocPrint(ctx.arena, " {s} ", .{title});
+            try pane_segs.append(ctx.arena, .{
+                .text = title_bar,
+                .style = .{ .fg = self.current_theme.accent, .bold = true },
+            });
+            // Separator
+            try pane_segs.append(ctx.arena, .{
+                .text = "\n",
+                .style = .{ .fg = self.current_theme.border },
+            });
+
+            // Content with line numbers
+            var line_num: usize = 1;
+            var line_iter = std.mem.splitScalar(u8, content, '\n');
+            var content_lines = std.ArrayList(vaxis.Segment).empty;
+            defer content_lines.deinit(ctx.arena);
+
+            const max_lines: usize = if (pane_height > 2) @intCast(pane_height -| 2) else 0;
+            while (line_iter.next()) |line| : (line_num += 1) {
+                if (line_num > max_lines) break;
+                const numbered = try std.fmt.allocPrint(ctx.arena, "{d:>4}│ {s}\n", .{ line_num, line });
+                try content_lines.append(ctx.arena, .{
+                    .text = numbered,
+                    .style = .{ .fg = self.current_theme.assistant_fg },
+                });
+            }
+
+            // Combine title + content into rich text
+            var all_segs = std.ArrayList(vaxis.Segment).empty;
+            defer all_segs.deinit(ctx.arena);
+            try all_segs.appendSlice(ctx.arena, pane_segs.items);
+            try all_segs.appendSlice(ctx.arena, content_lines.items);
+
+            const rich = vxfw.RichText{
+                .text = all_segs.items,
+                .softwrap = false,
+                .width_basis = .longest_line,
+            };
+            const right_surface = try rich.draw(ctx.withConstraints(
+                .{ .width = right_pane_w, .height = pane_height },
+                .{ .width = right_pane_w, .height = pane_height },
+            ));
+            const right_col: u16 = max.width -| right_pane_w;
+            try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(right_col) }, .surface = right_surface });
+        }
+
         if (self.show_palette) {
             const palette = CommandPaletteWidget{
                 .field = &self.palette_input,
-                .commands = self.palette_commands,
+                .items = self.palette_items,
                 .filter = self.palette_filter,
                 .selected = self.palette_selected,
                 .theme = self.current_theme,
@@ -1998,6 +2225,8 @@ pub const Model = struct {
                 "",
                 "Ctrl+P    Command palette",
                 "Ctrl+B    Toggle sidebar",
+                "Ctrl+\\    Toggle file preview",
+"Ctrl+R    Refresh sidebar project files",
                 "Ctrl+H    This help",
                 "Ctrl+C    Quit",
                 "",
@@ -2105,7 +2334,9 @@ pub const Model = struct {
         self.memory.save() catch {};
         try history_mod.addMessageUnlocked(self, "assistant", "Thinking...");
         self.assistant_stream_index = self.messages.items.len - 1;
-        self.spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
+        var spinner = widget_spinner.AnimatedSpinner.init(self.current_theme);
+        spinner.setContextPhrase("Thinking...");
+        self.spinner = spinner;
         self.typewriter = widget_typewriter.TypewriterState.init(self.current_theme);
         self.request_active = true;
         self.request_done = false;
@@ -2206,16 +2437,94 @@ pub const Model = struct {
         try file.writeAll(content);
     }
 
+    /// Build dynamic palette items: commands + models from registry + files from cwd_files.
+    /// Called each time the palette opens so the list is always fresh.
+    pub fn buildPaletteItems(self: *Model) !void {
+        var items = std.ArrayList(PaletteItem).empty;
+        errdefer {
+            // On error, free only dynamically allocated items (skip static commands)
+            for (items.items) |*it| {
+                if (it.category != .command) {
+                    self.allocator.free(it.label);
+                    self.allocator.free(it.description);
+                    self.allocator.free(it.action);
+                }
+            }
+            items.deinit(self.allocator);
+        }
+
+        // 1. Add static commands from palette_command_data (comptime strings, no alloc)
+        for (palette_command_data) |cmd| {
+            try items.append(self.allocator, cmd);
+        }
+
+        // 2. Add models from provider registry (dynamically allocated)
+        var provider_iter = self.registry.providers.iterator();
+        while (provider_iter.next()) |entry| {
+            const provider_name = entry.key_ptr.*;
+            const provider = entry.value_ptr.*;
+            for (provider.config.models) |model_name| {
+                const label = try std.fmt.allocPrint(self.allocator, "{s}", .{model_name});
+                const description = try std.fmt.allocPrint(self.allocator, "{s}", .{provider_name});
+                const action = try std.fmt.allocPrint(self.allocator, "/model {s} {s}", .{ provider_name, model_name });
+                try items.append(self.allocator, .{
+                    .category = .model,
+                    .label = label,
+                    .description = description,
+                    .shortcut = "",
+                    .icon = "\xF0\x9F\xA4\x96",
+                    .action = action,
+                });
+            }
+        }
+
+        // 3. Add files from cwd_files (dynamically allocated)
+        for (self.cwd_files.items) |file_entry| {
+            // Strip 📁 prefix (4 bytes UTF-8 + space) and "  " prefix (2 bytes for files)
+            const path = if (std.mem.startsWith(u8, file_entry, "\xF0\x9F\x93\x81 ")) blk: {
+                break :blk file_entry[5..];
+            } else if (std.mem.startsWith(u8, file_entry, "  ")) blk: {
+                break :blk file_entry[2..];
+            } else blk: {
+                break :blk file_entry;
+            };
+            const label = try std.fmt.allocPrint(self.allocator, "{s}", .{path});
+            const action = try std.fmt.allocPrint(self.allocator, "/preview {s}", .{path});
+            try items.append(self.allocator, .{
+                .category = .file,
+                .label = label,
+                .description = "Open in preview",
+                .shortcut = "",
+                .icon = "\xF0\x9F\x93\x84",
+                .action = action,
+            });
+        }
+
+        // Free previous dynamic items if they were allocated (not the static default)
+        if (self.palette_items.ptr != @as([*]const PaletteItem, @ptrCast(&palette_command_data))) {
+            for (self.palette_items) |*it| {
+                if (it.category != .command) {
+                    self.allocator.free(it.label);
+                    self.allocator.free(it.description);
+                    self.allocator.free(it.action);
+                }
+            }
+            self.allocator.free(self.palette_items);
+        }
+
+        self.palette_items = try items.toOwnedSlice(self.allocator);
+    }
+
     fn executePaletteSelection(self: *Model, ctx: *vxfw.EventContext) !void {
-        var filtered_indices: [palette_command_data.len]usize = undefined;
-        const filtered_count = collectFilteredCommandIndices(self.palette_commands, self.palette_filter, filtered_indices[0..]);
+        var filtered_indices: [widget_palette.max_palette_items]usize = undefined;
+        const filtered_count = collectFilteredCommandIndices(self.palette_items, self.palette_filter, filtered_indices[0..]);
         if (filtered_count == 0) {
             return;
         }
 
-        const command = self.palette_commands[filtered_indices[self.palette_selected]];
+        const item = self.palette_items[filtered_indices[self.palette_selected]];
         try model_palette.closePalette(self, ctx);
-        try self.executePaletteCommand(command.name, ctx);
+        try self.executePaletteCommand(item.action, ctx);
     }
 
     fn executePaletteCommand(self: *Model, name: []const u8, ctx: *vxfw.EventContext) !void {
@@ -2934,6 +3243,66 @@ pub const Model = struct {
             const text = try std.fmt.allocPrint(self.allocator, "Current model: {s}/{s}", .{ self.provider_name, self.model_name });
             defer self.allocator.free(text);
             try history_mod.addMessageUnlocked(self, "assistant", text);
+        } else if (std.mem.startsWith(u8, name, "/model ")) {
+            // Parse: "/model provider_name model_name"
+            const rest = name["/model ".len..];
+            const space_idx = std.mem.indexOfScalar(u8, rest, ' ') orelse {
+                try history_mod.addMessageUnlocked(self, "error", "Usage: /model <provider> <model>");
+                return;
+            };
+            const provider = rest[0..space_idx];
+            const model = rest[space_idx + 1 ..];
+            if (provider.len == 0 or model.len == 0) {
+                try history_mod.addMessageUnlocked(self, "error", "Usage: /model <provider> <model>");
+                return;
+            }
+            self.allocator.free(self.provider_name);
+            self.allocator.free(self.model_name);
+            self.provider_name = try self.allocator.dupe(u8, provider);
+            self.model_name = try self.allocator.dupe(u8, model);
+            try self.initializeClient();
+            const msg = try std.fmt.allocPrint(self.allocator, "Switched to {s}/{s}", .{ provider, model });
+            defer self.allocator.free(msg);
+            try history_mod.addMessageUnlocked(self, "assistant", msg);
+        } else if (std.mem.eql(u8, name, "/preview")) {
+            self.right_pane_visible = !self.right_pane_visible;
+            if (!self.right_pane_visible) {
+                if (self.right_pane_content) |c| {
+                    self.allocator.free(c);
+                    self.right_pane_content = null;
+                }
+                if (self.right_pane_title) |t| {
+                    self.allocator.free(t);
+                    self.right_pane_title = null;
+                }
+            }
+            const state_text = if (self.right_pane_visible) "File preview pane enabled. Use `/preview <filepath>` to show a file." else "File preview pane disabled.";
+            try history_mod.addMessageUnlocked(self, "assistant", state_text);
+        } else if (std.mem.startsWith(u8, name, "/preview ")) {
+            const file_path = std.mem.trim(u8, name["/preview ".len..], &std.ascii.whitespace);
+            if (file_path.len == 0) {
+                try history_mod.addMessageUnlocked(self, "assistant", "Usage: /preview <filepath>");
+                return;
+            }
+            const content = std.fs.cwd().readFileAlloc(self.allocator, file_path, 10 * 1024 * 1024) catch |err| {
+                const err_msg = try std.fmt.allocPrint(self.allocator, "Failed to read file: {s}", .{@errorName(err)});
+                defer self.allocator.free(err_msg);
+                try history_mod.addMessageUnlocked(self, "assistant", err_msg);
+                return;
+            };
+            if (self.right_pane_content) |c| self.allocator.free(c);
+            if (self.right_pane_title) |t| self.allocator.free(t);
+            self.right_pane_content = content;
+            self.right_pane_title = try self.allocator.dupe(u8, file_path);
+            self.right_pane_visible = true;
+            const confirm = try std.fmt.allocPrint(self.allocator, "Previewing: {s} ({d} bytes)", .{ file_path, content.len });
+            defer self.allocator.free(confirm);
+            try history_mod.addMessageUnlocked(self, "assistant", confirm);
+        } else if (std.mem.eql(u8, name, "/refresh")) {
+            self.refreshCwdListing();
+            const refresh_msg = try std.fmt.allocPrint(self.allocator, "Sidebar refreshed. {d} project files.", .{self.cwd_files.items.len});
+            defer self.allocator.free(refresh_msg);
+            try history_mod.addMessageUnlocked(self, "assistant", refresh_msg);
         } else if (std.mem.startsWith(u8, name, "/cost")) {
             const sub = std.mem.trim(u8, name[5..], &std.ascii.whitespace);
             const db = session_mod.getSessionDb(self.allocator) catch |err| {
@@ -3669,17 +4038,17 @@ fn onPaletteSubmit(userdata: ?*anyopaque, ctx: *vxfw.EventContext, value: []cons
     const ptr = userdata orelse return;
     const model: *Model = @ptrCast(@alignCast(ptr));
 
-    // If user typed text and pressed Enter, check if it matches any command exactly
+    // If user typed text and pressed Enter, check if it matches any item exactly
     if (value.len > 0) {
-        var filtered_indices: [widget_palette.palette_command_data.len]usize = undefined;
-        const filtered_count = widget_palette.collectFilteredCommandIndices(model.palette_commands, value, filtered_indices[0..]);
+        var filtered_indices: [widget_palette.max_palette_items]usize = undefined;
+        const filtered_count = widget_palette.collectFilteredCommandIndices(model.palette_items, value, filtered_indices[0..]);
 
-        // If there's exactly one match and it's an exact name match, execute it
+        // If there's exactly one match and it's an exact label match, execute it
         if (filtered_count == 1) {
-            const command = model.palette_commands[filtered_indices[0]];
-            if (std.mem.eql(u8, command.name, value)) {
+            const item = model.palette_items[filtered_indices[0]];
+            if (std.mem.eql(u8, item.label, value) or std.mem.eql(u8, item.action, value)) {
                 try model_palette.closePalette(model, ctx);
-                try model.executePaletteCommand(command.name, ctx);
+                try model.executePaletteCommand(item.action, ctx);
                 return;
             }
         }

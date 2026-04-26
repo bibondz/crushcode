@@ -245,14 +245,76 @@ pub const ToolCallWidget = struct {
 
     fn draw(self: *const ToolCallWidget, ctx: vxfw.DrawContext) std.mem.Allocator.Error!vxfw.Surface {
         const max = widget_helpers.maxOrFallback(ctx, 80, 24);
+
+        // Build status marker and header based on tool status
+        // pending: 🔧 toolname...  (dim, in-progress)
+        // success: ✅ toolname (N lines) (success color)
+        // failed: ❌ toolname (error color)
+        const marker: []const u8 = switch (self.status) {
+            .pending => "🔧",
+            .success => "✅",
+            .failed => "❌",
+        };
+        const marker_style: vaxis.Style = switch (self.status) {
+            .pending => .{ .fg = self.theme.tool_pending, .dim = true },
+            .success => .{ .fg = self.theme.tool_success, .bold = true },
+            .failed => .{ .fg = self.theme.tool_error, .bold = true },
+        };
+
+        // Count output lines for success summary
+        var line_count: usize = 0;
+        if (self.status == .success and self.output != null) {
+            for (self.output.?) |ch| {
+                if (ch == '\n') line_count += 1;
+            }
+            line_count += 1; // count last line even without trailing newline
+        }
+
+        // Build header segments dynamically
+        const Segment = struct { text: []const u8, style: vaxis.Style };
+        var header_segs: [7]Segment = undefined;
+        var seg_count: usize = 0;
+
+        // Marker icon
+        header_segs[seg_count] = .{ .text = marker, .style = marker_style };
+        seg_count += 1;
+        header_segs[seg_count] = .{ .text = " ", .style = .{} };
+        seg_count += 1;
+
+        // Tool name
+        header_segs[seg_count] = .{ .text = self.tool_call.name, .style = .{ .fg = self.theme.header_fg, .bold = true } };
+        seg_count += 1;
+
+        // Pending: show "..." suffix
+        if (self.status == .pending) {
+            header_segs[seg_count] = .{ .text = "...", .style = .{ .fg = self.theme.dimmed, .dim = true } };
+            seg_count += 1;
+        }
+        // Success: show "(N lines)" summary
+        else if (self.status == .success and line_count > 0) {
+            const summary = std.fmt.allocPrint(ctx.arena, " ({d} lines)", .{line_count}) catch "";
+            header_segs[seg_count] = .{ .text = summary, .style = .{ .fg = self.theme.dimmed, .dim = true } };
+            seg_count += 1;
+        }
+
+        // Arguments (shown for pending and failed, truncated for success)
+        if (self.tool_call.arguments.len > 0) {
+            header_segs[seg_count] = .{ .text = " ", .style = .{} };
+            seg_count += 1;
+            header_segs[seg_count] = .{ .text = self.tool_call.arguments, .style = .{ .fg = self.theme.dimmed, .dim = true } };
+            seg_count += 1;
+        }
+
+        // Cast to RichText segment type
+        const TextSegment = @TypeOf(@as(vxfw.RichText, undefined).text);
+        const ChildSeg = std.meta.Child(TextSegment);
+        const arena_header_segs = try ctx.arena.alloc(ChildSeg, seg_count);
+        for (0..seg_count) |i| {
+            arena_header_segs[i] = .{ .text = header_segs[i].text, .style = header_segs[i].style };
+        }
+
         const header = vxfw.RichText{
-            .text = &.{
-                .{ .text = widget_helpers.toolCallStatusIcon(self.status), .style = widget_helpers.toolCallStatusStyle(self.theme, self.status) },
-                .{ .text = " ", .style = .{} },
-                .{ .text = self.tool_call.name, .style = .{ .fg = self.theme.header_fg, .bold = true } },
-                .{ .text = if (self.tool_call.arguments.len > 0) " " else "", .style = .{} },
-                .{ .text = self.tool_call.arguments, .style = .{ .fg = self.theme.dimmed, .dim = true } },
-            },
+            .text = arena_header_segs,
             .softwrap = true,
             .width_basis = .parent,
         };

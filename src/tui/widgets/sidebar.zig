@@ -14,6 +14,7 @@ pub const MCPServerStatus = struct {
 
 pub const SidebarContext = struct {
     recent_files: []const []const u8,
+    cwd_files: []const []const u8 = &.{},
     request_count: u32,
     total_input_tokens: u64,
     total_output_tokens: u64,
@@ -88,7 +89,7 @@ pub const SidebarWidget = struct {
         const w = width - 2;
 
         var child_idx: usize = 0;
-        var children = try ctx.arena.alloc(vxfw.SubSurface, 25);
+        var children = try ctx.arena.alloc(vxfw.SubSurface, 50);
         var row: u16 = 1;
 
         children[child_idx] = .{
@@ -125,6 +126,39 @@ pub const SidebarWidget = struct {
             };
             child_idx += 1;
             row += 1;
+        }
+
+        // Project Files section — CWD directory listing
+        if (self.context.cwd_files.len > 0) {
+            row += 1;
+            children[child_idx] = .{
+                .origin = .{ .row = row, .col = 1 },
+                .surface = try self.buildSectionTitle(ctx, "Project", w, theme),
+            };
+            child_idx += 1;
+            row += 1;
+
+            const max_cwd = if (height > row + 5) @as(usize, @min(self.context.cwd_files.len, 15)) else @as(usize, 5);
+            for (self.context.cwd_files[0..max_cwd]) |entry| {
+                const truncated = if (entry.len > w) entry[0..w] else entry;
+                const is_dir = std.mem.startsWith(u8, entry, "📁");
+                const style: vaxis.Style = if (is_dir) .{ .fg = theme.accent, .bold = true } else .{ .fg = theme.dimmed };
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, truncated, self.width - 2, style),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+            if (self.context.cwd_files.len > max_cwd) {
+                const overflow = try std.fmt.allocPrint(ctx.arena, "+{d} more", .{self.context.cwd_files.len - max_cwd});
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, overflow, self.width - 2, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
         }
 
         row += 1;
