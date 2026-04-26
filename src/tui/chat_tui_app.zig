@@ -4014,6 +4014,47 @@ pub const Model = struct {
         return true;
     }
 
+    // --- LLM Compaction Support ---
+    // Threadlocal refs used by sendToLLMWrapper to access the Model's AIClient
+    // without needing a closure (Zig has no closures).
+    // Set before calling compactWithLLM, cleared after.
+    threadlocal var llm_compact_model_ref: ?*Model = null;
+
+    /// Standalone function matching the sendToLLM signature required by compactWithLLM.
+    /// Uses the threadlocal Model ref to access the AIClient and send a summarization prompt.
+    fn sendToLLMWrapper(allocator: std.mem.Allocator, prompt: []const u8, model_name: []const u8) anyerror!?[]const u8 {
+        _ = model_name; // Use the Model's configured client/model instead
+
+        const model = llm_compact_model_ref orelse {
+            std.log.warn("[sendToLLMWrapper] no model ref set, returning null", .{});
+            return null;
+        };
+
+        var client = model.client orelse {
+            std.log.warn("[sendToLLMWrapper] no AIClient available, returning null", .{});
+            return null;
+        };
+
+        // Send the summarization prompt as a single user message
+        const response = client.sendChat(prompt) catch |err| {
+            std.log.warn("[sendToLLMWrapper] LLM call failed: {s}, returning null for fallback", .{@errorName(err)});
+            return null;
+        };
+
+        // Extract text from the first choice
+        if (response.choices.len == 0) {
+            std.log.warn("[sendToLLMWrapper] empty response choices, returning null", .{});
+            return null;
+        }
+
+        const content = response.choices[0].message.content orelse {
+            std.log.warn("[sendToLLMWrapper] null content in response, returning null", .{});
+            return null;
+        };
+
+        // Dupe the content (response will be freed by caller)
+        return try allocator.dupe(u8, content);
+    }
 
     fn performCompaction(self: *Model) !void {
         if (self.history.items.len <= self.compactor.recent_window) {
@@ -4032,7 +4073,17 @@ pub const Model = struct {
             };
         }
 
-        var result = try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+        // Try LLM-based compaction first, fall back to heuristic
+        var llm_config = compaction_mod.CompactionConfig{};
+        llm_config.llm_compaction_model = self.model_name;
+
+        llm_compact_model_ref = self;
+        defer llm_compact_model_ref = null;
+
+        var result = self.compactor.compactWithLLM(compact_messages, llm_config, sendToLLMWrapper) catch |err| blk: {
+            std.log.warn("[performCompaction] compactWithLLM failed: {s}, falling back to heuristic", .{@errorName(err)});
+            break :blk try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+        };
         defer result.deinit();
 
         if (result.messages_summarized == 0) {
@@ -4080,8 +4131,17 @@ pub const Model = struct {
         }
 
         if (ratio >= 0.95) {
-            // Full compaction: heuristic summary with decision extraction
-            var result = try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+            // Full compaction: try LLM-based summarization first, fall back to heuristic
+            var llm_config = compaction_mod.CompactionConfig{};
+            llm_config.llm_compaction_model = self.model_name;
+
+            llm_compact_model_ref = self;
+            defer llm_compact_model_ref = null;
+
+            var result = self.compactor.compactWithLLM(compact_messages, llm_config, sendToLLMWrapper) catch |err| blk: {
+                std.log.warn("[performCompactionAuto] compactWithLLM failed: {s}, falling back to heuristic", .{@errorName(err)});
+                break :blk try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+            };
             defer result.deinit();
 
             if (result.messages_summarized == 0) return;

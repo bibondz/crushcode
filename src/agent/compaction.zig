@@ -11,6 +11,17 @@ pub const CompactionTier = enum {
     full,
 };
 
+/// Importance category for tool output messages.
+/// Used by importance-based pruning to decide how aggressively to truncate.
+pub const ToolImportance = enum {
+    /// Never prune — critical tool outputs (skill, write, edit, decision)
+    protected,
+    /// Standard truncation — normal tools (bash, grep, search, read, list)
+    normal,
+    /// Prune first, more aggressively — low-value tools (web_fetch, web_search)
+    aggressive,
+};
+
 /// Auto-Context Compaction — automatically compresses long conversation sessions
 ///
 /// When context approaches the model's token limit, this system:
@@ -203,14 +214,24 @@ pub const ContextCompactor = struct {
             const is_stale_tool = i < boundary and std.mem.eql(u8, msg.role, "tool");
 
             if (is_stale_tool and msg.content.len > 0) {
-                // Prune stale tool output — replace with compact placeholder
-                const placeholder = "[tool output pruned]";
-                result_messages[i] = .{
-                    .role = try self.allocator.dupe(u8, msg.role),
-                    .content = try self.allocator.dupe(u8, placeholder),
-                    .timestamp = msg.timestamp,
-                };
-                pruned_count += 1;
+                const importance = self.classifyToolMessage(msg.content);
+                if (importance == .protected) {
+                    // Never prune protected tools — keep intact even when stale
+                    result_messages[i] = .{
+                        .role = try self.allocator.dupe(u8, msg.role),
+                        .content = try self.allocator.dupe(u8, msg.content),
+                        .timestamp = msg.timestamp,
+                    };
+                } else {
+                    // Prune stale non-protected tool output — replace with compact placeholder
+                    const placeholder = "[tool output pruned]";
+                    result_messages[i] = .{
+                        .role = try self.allocator.dupe(u8, msg.role),
+                        .content = try self.allocator.dupe(u8, placeholder),
+                        .timestamp = msg.timestamp,
+                    };
+                    pruned_count += 1;
+                }
             } else {
                 // Keep message intact — user, assistant, and recent tool outputs
                 result_messages[i] = .{
@@ -433,12 +454,102 @@ pub const ContextCompactor = struct {
         return text[0..max_len];
     }
 
+    /// Classify a tool message's importance based on content analysis.
+    /// Checks for known tool name patterns to determine pruning priority.
+    /// Priority: protected > aggressive > normal (default).
+    fn classifyToolMessage(_: *ContextCompactor, content: []const u8) ToolImportance {
+        // Protected tools — never prune (check first to avoid false matches)
+        const protected_names = [_][]const u8{ "skill", "write", "edit", "decision" };
+        for (protected_names) |name| {
+            if (std.mem.indexOf(u8, content, name) != null) return .protected;
+        }
+
+        // Aggressive tools — prune first and harder
+        const aggressive_names = [_][]const u8{ "web_fetch", "web_search" };
+        for (aggressive_names) |name| {
+            if (std.mem.indexOf(u8, content, name) != null) return .aggressive;
+        }
+
+        // Default: standard truncation
+        return .normal;
+    }
+
     fn storePreviousSummary(self: *ContextCompactor, summary: []const u8) !void {
         const duped = try self.allocator.dupe(u8, summary);
         if (self.previous_summary.len > 0) {
             self.allocator.free(self.previous_summary);
         }
         self.previous_summary = duped;
+    }
+
+    /// Validate that an LLM-generated summary contains all 8 required sections.
+    /// If any section is missing, append it with "(none)" placeholder content.
+    /// Returns an owned slice with the validated/augmented summary.
+    pub fn enforceSummaryTemplate(
+        self: *ContextCompactor,
+        summary_text: []const u8,
+    ) ![]const u8 {
+        const required_sections = [_][]const u8{
+            "Goal",
+            "Constraints",
+            "Discoveries",
+            "Accomplished",
+            "Errors + Fixes",
+            "Files",
+            "Pending",
+            "Next Step",
+        };
+
+        var result = array_list_compat.ArrayList(u8).init(self.allocator);
+        errdefer result.deinit();
+        const writer = result.writer();
+
+        // Copy original summary
+        try writer.writeAll(summary_text);
+
+        // Check each required section — append missing ones
+        for (required_sections) |section_name| {
+            if (!sectionHeadingExists(summary_text, section_name)) {
+                try writer.print("\n\n**{s}**\n(none)\n", .{section_name});
+            }
+        }
+
+        return try result.toOwnedSlice();
+    }
+
+    /// Check if a section heading exists in the text using flexible matching.
+    /// Accepts: "## Goal", "**Goal**", "Goal —", "Goal:", or just "Goal" at line start.
+    fn sectionHeadingExists(text: []const u8, heading: []const u8) bool {
+        var search_start: usize = 0;
+        while (search_start < text.len) {
+            const idx = std.mem.indexOfPos(u8, text, search_start, heading) orelse break;
+
+            // Check if heading appears at a valid position (line start with optional markdown)
+            const is_at_line_start = if (idx == 0) true else blk: {
+                const before = text[0..idx];
+                const last_newline = std.mem.lastIndexOfScalar(u8, before, '\n');
+                if (last_newline) |nl_pos| {
+                    const line_prefix = std.mem.trimRight(u8, before[nl_pos + 1 ..], " \t");
+                    // Valid prefixes: empty, "##", "###", "**", "#"
+                    if (line_prefix.len == 0) break :blk true;
+                    if (std.mem.endsWith(u8, line_prefix, "#")) break :blk true;
+                    if (std.mem.endsWith(u8, line_prefix, "**")) break :blk true;
+                }
+                break :blk false;
+            };
+
+            if (is_at_line_start) {
+                // Verify heading is followed by word boundary or formatting
+                const after_idx = idx + heading.len;
+                if (after_idx >= text.len) return true;
+                const next_char = text[after_idx];
+                // Valid: newline, space, **, —, :, end of text
+                if (next_char == '\n' or next_char == ' ' or next_char == ':' or next_char == '*') return true;
+            }
+
+            search_start = idx + 1;
+        }
+        return false;
     }
 
     /// Compact using LLM summarization instead of heuristic.
@@ -495,8 +606,11 @@ pub const ContextCompactor = struct {
         const llm_summary_opt = sendToLLM(self.allocator, prompt, config.llm_compaction_model) catch null;
 
         // 6. If LLM returns null or error: fall back to compactHeuristic
-        if (llm_summary_opt) |llm_summary| {
-            // 7. LLM succeeded — use response as summary
+        if (llm_summary_opt) |raw_summary| {
+            // 7. Enforce template structure — ensure all 8 sections present
+            const llm_summary = try self.enforceSummaryTemplate(raw_summary);
+            self.allocator.free(raw_summary);
+
             try self.storePreviousSummary(llm_summary);
 
             // Calculate tokens saved
@@ -576,6 +690,93 @@ pub const ContextCompactor = struct {
                     .timestamp = msg.timestamp,
                 };
             } else {
+                const content_copy = if (msg.content.len > 0)
+                    try self.allocator.dupe(u8, msg.content)
+                else
+                    "";
+
+                result_messages[i] = .{
+                    .role = role_copy,
+                    .content = content_copy,
+                    .timestamp = msg.timestamp,
+                };
+            }
+            initialized += 1;
+        }
+
+        return ToolTruncationResult{
+            .messages = result_messages,
+            .truncated_count = truncated_count,
+            .chars_saved = chars_saved,
+            .allocator = self.allocator,
+        };
+    }
+
+    /// Truncate tool outputs based on importance category.
+    /// - Protected tools (skill, write, edit, decision): never truncated
+    /// - Normal tools (bash, grep, search, read, list): truncated to max_chars
+    /// - Aggressive tools (web_fetch, web_search): truncated to max_chars/4
+    pub fn truncateToolOutputsByImportance(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+        max_chars: u32,
+    ) !ToolTruncationResult {
+        const result_messages = try self.allocator.alloc(CompactMessage, messages.len);
+        var truncated_count: u32 = 0;
+        var chars_saved: u64 = 0;
+        var initialized: usize = 0;
+
+        errdefer {
+            for (result_messages[0..initialized]) |msg| {
+                self.allocator.free(msg.role);
+                if (msg.content.len > 0) self.allocator.free(msg.content);
+            }
+            self.allocator.free(result_messages);
+        }
+
+        const trunc_suffix = "... (truncated)";
+
+        for (messages, 0..) |msg, i| {
+            const role_copy = try self.allocator.dupe(u8, msg.role);
+
+            if (std.mem.eql(u8, msg.role, "tool")) {
+                const importance = self.classifyToolMessage(msg.content);
+                const effective_max: u32 = switch (importance) {
+                    .protected => std.math.maxInt(u32), // never truncate
+                    .aggressive => max_chars / 4,       // 4x more aggressive
+                    .normal => max_chars,               // standard
+                };
+
+                if (importance != .protected and msg.content.len > effective_max and effective_max > 0) {
+                    const truncated_content = try std.fmt.allocPrint(
+                        self.allocator,
+                        "{s}{s}",
+                        .{ msg.content[0..@as(usize, @min(effective_max, msg.content.len))], trunc_suffix },
+                    );
+                    const saved = msg.content.len -| truncated_content.len;
+                    chars_saved += @intCast(saved);
+                    truncated_count += 1;
+
+                    result_messages[i] = .{
+                        .role = role_copy,
+                        .content = truncated_content,
+                        .timestamp = msg.timestamp,
+                    };
+                } else {
+                    // Protected or within limit — preserve intact
+                    const content_copy = if (msg.content.len > 0)
+                        try self.allocator.dupe(u8, msg.content)
+                    else
+                        "";
+
+                    result_messages[i] = .{
+                        .role = role_copy,
+                        .content = content_copy,
+                        .timestamp = msg.timestamp,
+                    };
+                }
+            } else {
+                // Non-tool messages preserved unchanged
                 const content_copy = if (msg.content.len > 0)
                     try self.allocator.dupe(u8, msg.content)
                 else
@@ -1301,4 +1502,335 @@ test "microCompact - messages_summarized is zero (no messages removed)" {
     try testing.expect(result.tokens_saved > 0);
     try testing.expectEqual(@as(u32, 0), result.messages_summarized);
     try testing.expectEqual(@as(usize, 2), result.messages.len);
+}
+
+// ========== Tests for enforceSummaryTemplate ==========
+
+test "enforceSummaryTemplate - no-op when all sections present" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const complete_summary =
+        \\**Goal**
+        \\Build a compaction system.
+        \\
+        \\**Constraints**
+        \\Zig stdlib only.
+        \\
+        \\**Discoveries**
+        \\Found existing heuristic compaction works well.
+        \\
+        \\**Accomplished**
+        \\Implemented truncateToolOutputs.
+        \\
+        \\**Errors + Fixes**
+        \\None.
+        \\
+        \\**Files**
+        \\src/agent/compaction.zig
+        \\
+        \\**Pending**
+        \\Add template enforcement.
+        \\
+        \\**Next Step**
+        \\Write tests.
+    ;
+
+    const result = try c.enforceSummaryTemplate(complete_summary);
+    defer testing.allocator.free(result);
+
+    // Should be identical to input (all sections present)
+    try testing.expectEqualStrings(complete_summary, result);
+}
+
+test "enforceSummaryTemplate - appends missing sections with (none)" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const partial_summary =
+        \\**Goal**
+        \\Build a compaction system.
+        \\
+        \\**Accomplished**
+        \\Implemented truncateToolOutputs.
+    ;
+
+    const result = try c.enforceSummaryTemplate(partial_summary);
+    defer testing.allocator.free(result);
+
+    // Original content preserved
+    try testing.expect(std.mem.indexOf(u8, result, "Build a compaction system.") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "Implemented truncateToolOutputs.") != null);
+
+    // Missing sections appended
+    try testing.expect(std.mem.indexOf(u8, result, "**Constraints**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Discoveries**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Errors + Fixes**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Files**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Pending**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Next Step**") != null);
+
+    // Count (none) placeholders — should be 6 missing sections
+    var none_count: usize = 0;
+    var search_pos: usize = 0;
+    while (search_pos < result.len) {
+        const idx = std.mem.indexOfPos(u8, result, search_pos, "(none)") orelse break;
+        none_count += 1;
+        search_pos = idx + 6;
+    }
+    try testing.expectEqual(@as(usize, 6), none_count);
+}
+
+test "enforceSummaryTemplate - recognizes markdown heading format" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const md_summary =
+        \\## Goal
+        \\Build something great.
+        \\
+        \\## Constraints
+        \\No external deps.
+        \\
+        \\## Discoveries
+        \\Found interesting patterns.
+        \\
+        \\## Accomplished
+        \\Did a lot.
+        \\
+        \\## Errors + Fixes
+        \\Fixed a bug.
+        \\
+        \\## Files
+        \\main.zig
+        \\
+        \\## Pending
+        \\Finish up.
+        \\
+        \\## Next Step
+        \\Write docs.
+    ;
+
+    const result = try c.enforceSummaryTemplate(md_summary);
+    defer testing.allocator.free(result);
+
+    // All sections recognized via ## heading format — no additions needed
+    try testing.expectEqualStrings(md_summary, result);
+}
+
+test "enforceSummaryTemplate - recognizes bare heading at line start" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const bare_summary =
+        \\Goal — build the system
+        \\Constraints: none
+        \\Discoveries here
+        \\Accomplished: yes
+        \\Errors + Fixes: none
+        \\Files: main.zig
+        \\Pending: finish
+        \\Next Step: testing
+    ;
+
+    const result = try c.enforceSummaryTemplate(bare_summary);
+    defer testing.allocator.free(result);
+
+    // All sections recognized via bare text at line start
+    try testing.expectEqualStrings(bare_summary, result);
+}
+
+test "enforceSummaryTemplate - empty input gets all 8 sections" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const result = try c.enforceSummaryTemplate("");
+    defer testing.allocator.free(result);
+
+    try testing.expect(std.mem.indexOf(u8, result, "**Goal**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Constraints**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Discoveries**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Accomplished**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Errors + Fixes**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Files**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Pending**") != null);
+    try testing.expect(std.mem.indexOf(u8, result, "**Next Step**") != null);
+}
+
+// ========== Tests for truncateToolOutputsByImportance ==========
+
+test "truncateToolOutputsByImportance - protected tools never truncated" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_edit = "edit: applied changes to src/main.zig — " ++ ("x" ** 5000);
+    const long_write = "write: saved file output — " ++ ("x" ** 5000);
+    const long_skill = "skill: executed bash_skill — " ++ ("x" ** 5000);
+    const long_decision = "decision: chose architecture — " ++ ("x" ** 5000);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_edit, .timestamp = null },
+        .{ .role = "tool", .content = long_write, .timestamp = null },
+        .{ .role = "tool", .content = long_skill, .timestamp = null },
+        .{ .role = "tool", .content = long_decision, .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputsByImportance(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 0), result.truncated_count);
+    try testing.expectEqual(@as(u64, 0), result.chars_saved);
+    // All protected tool outputs preserved in full
+    for (result.messages) |msg| {
+        try testing.expect(!std.mem.endsWith(u8, msg.content, "... (truncated)"));
+    }
+}
+
+test "truncateToolOutputsByImportance - aggressive tools truncated to max_chars/4" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_fetch = "web_fetch: " ++ ("x" ** 5000);
+    const long_search = "web_search: " ++ ("x" ** 5000);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_fetch, .timestamp = null },
+        .{ .role = "tool", .content = long_search, .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputsByImportance(&messages, 400);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 2), result.truncated_count);
+    try testing.expect(result.chars_saved > 0);
+    // Aggressive truncation: 400/4 = 100 chars + suffix
+    for (result.messages) |msg| {
+        try testing.expect(std.mem.endsWith(u8, msg.content, "... (truncated)"));
+        try testing.expect(msg.content.len <= 120); // 100 + suffix length
+    }
+}
+
+test "truncateToolOutputsByImportance - normal tools truncated to max_chars" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_bash = "bash: " ++ ("x" ** 5000);
+    const long_grep = "grep: found matches " ++ ("x" ** 5000);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_bash, .timestamp = null },
+        .{ .role = "tool", .content = long_grep, .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputsByImportance(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 2), result.truncated_count);
+    // Normal truncation: 100 chars + suffix
+    for (result.messages) |msg| {
+        try testing.expect(std.mem.endsWith(u8, msg.content, "... (truncated)"));
+        try testing.expect(msg.content.len <= 120);
+    }
+}
+
+test "truncateToolOutputsByImportance - mixed importance categories" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_edit = "edit: important change — " ++ ("x" ** 5000);
+    const long_bash = "bash: command output — " ++ ("x" ** 5000);
+    const long_fetch = "web_fetch: fetched page — " ++ ("x" ** 5000);
+    const long_assistant = "response text " ++ ("x" ** 5000);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_edit, .timestamp = null },
+        .{ .role = "tool", .content = long_bash, .timestamp = null },
+        .{ .role = "tool", .content = long_fetch, .timestamp = null },
+        .{ .role = "assistant", .content = long_assistant, .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputsByImportance(&messages, 400);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 4), result.messages.len);
+    // Protected (edit) — not truncated
+    try testing.expect(!std.mem.endsWith(u8, result.messages[0].content, "... (truncated)"));
+    // Normal (bash) — truncated to 400 chars
+    try testing.expect(std.mem.endsWith(u8, result.messages[1].content, "... (truncated)"));
+    // Aggressive (web_fetch) — truncated to 100 chars
+    try testing.expect(std.mem.endsWith(u8, result.messages[2].content, "... (truncated)"));
+    try testing.expect(result.messages[2].content.len < result.messages[1].content.len);
+    // Non-tool — preserved
+    try testing.expect(!std.mem.endsWith(u8, result.messages[3].content, "... (truncated)"));
+}
+
+test "truncateToolOutputsByImportance - empty messages" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{};
+    var result = try c.truncateToolOutputsByImportance(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 0), result.messages.len);
+    try testing.expectEqual(@as(u32, 0), result.truncated_count);
+}
+
+// ========== Tests for microCompact with tool importance ==========
+
+test "microCompact - preserves protected tool outputs even when stale" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const long_edit = "edit: Applied changes to src/main.zig — " ++ ("x" ** 500);
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_edit, .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    // Protected tool should NOT be pruned — content preserved
+    try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "edit:") != null);
+    try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "[tool output pruned]") == null);
+    // No tokens saved since protected tool was kept intact
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+}
+
+test "microCompact - prunes normal tool outputs when stale" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "bash: ran build command with output", .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    // Normal tool should be pruned
+    try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "[tool output pruned]") != null);
+    try testing.expect(result.tokens_saved > 0);
+}
+
+test "microCompact - prunes aggressive tool outputs when stale" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "web_fetch: fetched https://example.com content", .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    // Aggressive tool should be pruned
+    try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "[tool output pruned]") != null);
+    try testing.expect(result.tokens_saved > 0);
 }
