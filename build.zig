@@ -658,6 +658,18 @@ pub fn build(b: *std.Build) !void {
     const retry_policy_mod = simpleMod(b, "src/retry/policy.zig", target, optimize);
     const retry_self_heal_mod = simpleMod(b, "src/retry/self_heal.zig", target, optimize);
 
+    // Wire trace + retry into agent loop
+    addImports(agent_loop_mod, &.{
+        imp("trace_span", trace_span_mod),
+        imp("self_heal", retry_self_heal_mod),
+    });
+
+    // Wire trace + retry into AI client
+    addImports(client_mod, &.{
+        imp("trace_span", trace_span_mod),
+        imp("retry_policy", retry_policy_mod),
+    });
+
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
     const orchestration_mod = createMod(b, "src/agent/orchestrator.zig", target, optimize, &.{
         imp("worker", worker_mod),

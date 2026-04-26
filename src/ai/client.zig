@@ -6,6 +6,8 @@ const registry_mod = @import("registry");
 const tool_types = @import("tool_types");
 const error_handler_mod = @import("error_handler.zig");
 const streaming_parsers = @import("ai_streaming_parsers");
+const trace_span = @import("trace_span");
+const retry_policy = @import("retry_policy");
 
 pub const ChatMessage = ai_types.ChatMessage;
 pub const ToolCallInfo = ai_types.ToolCallInfo;
@@ -233,6 +235,19 @@ pub const AIClient = struct {
             return error.AuthenticationError;
         }
 
+        // Create trace span for observability
+        var llm_span: ?*trace_span.Span = null;
+        if (trace_span.context.currentTrace()) |trace| {
+            const span_name = std.fmt.allocPrint(self.allocator, "llm.{s}", .{self.provider.name}) catch "llm.unknown";
+            defer self.allocator.free(span_name);
+            llm_span = trace.rootSpan(span_name, .llm) catch null;
+            if (llm_span) |span| {
+                span.model = self.allocator.dupe(u8, self.model) catch null;
+                span.provider = self.allocator.dupe(u8, self.provider.name) catch null;
+            }
+        }
+        defer if (llm_span) |span| span.deinit();
+
         const allocator = self.allocator;
         const endpoint = try std.fmt.allocPrint(allocator, "{s}{s}", .{ self.provider.config.base_url, self.getChatPath() });
         defer allocator.free(endpoint);
@@ -240,6 +255,11 @@ pub const AIClient = struct {
         const uri = try std.Uri.parse(endpoint);
         const json_body = try self.buildStreamingBodyFromMessages(messages);
         defer allocator.free(json_body);
+
+        // Store input payload on span (truncated)
+        if (llm_span) |span| {
+            span.input_json = allocator.dupe(u8, json_body[0..@min(json_body.len, 4096)]) catch null;
+        }
 
         const headers = try self.buildHeaders();
         defer freeHeaders(allocator, headers);
@@ -270,6 +290,11 @@ pub const AIClient = struct {
                 const bytes_read = response_reader.readSliceShort(&error_chunk) catch return error.NetworkError;
                 if (bytes_read == 0) break;
                 try error_body.appendSlice(error_chunk[0..bytes_read]);
+            }
+
+            // End trace span with error status
+            if (llm_span) |span| {
+                span.end(.@"error", error_body.items);
             }
 
             return error.ServerError;
@@ -320,6 +345,16 @@ pub const AIClient = struct {
 
         if (!saw_done) {
             callback("", true);
+        }
+
+        // Populate trace span with usage data and end it
+        if (llm_span) |span| {
+            if (usage) |u| {
+                span.prompt_tokens = u.prompt_tokens;
+                span.completion_tokens = u.completion_tokens;
+                span.total_tokens = u.total_tokens;
+            }
+            span.end(.ok, null);
         }
 
         return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage, streaming_tool_calls.items);
@@ -395,8 +430,8 @@ pub const AIClient = struct {
             return error.InvalidRequest;
         }
 
-        const retry_config = error_handler_mod.RetryConfig.default();
-        var attempt: u32 = 0;
+        var retry_state = retry_policy.RetryState.init(self.allocator, retry_policy.RetryPolicy.forProvider());
+        defer retry_state.deinit();
 
         // Early validation for required fields
         if (self.model.len == 0) {
@@ -410,6 +445,22 @@ pub const AIClient = struct {
             return error.AuthenticationError;
         }
 
+        // Create trace span for observability
+        var llm_span: ?*trace_span.Span = null;
+        if (trace_span.context.currentTrace()) |trace| {
+            const span_name = std.fmt.allocPrint(self.allocator, "llm.{s}", .{self.provider.name}) catch "llm.unknown";
+            defer self.allocator.free(span_name);
+            llm_span = trace.rootSpan(span_name, .llm) catch null;
+            if (llm_span) |span| {
+                span.model = self.allocator.dupe(u8, self.model) catch null;
+                span.provider = self.allocator.dupe(u8, self.provider.name) catch null;
+                if (single_message) |msg| {
+                    span.input_json = self.allocator.dupe(u8, msg[0..@min(msg.len, 4096)]) catch null;
+                }
+            }
+        }
+        defer if (llm_span) |span| span.deinit();
+
         if (debug) {
             std.log.debug("\n=== Crushcode AI Client ===", .{});
             std.log.debug("Provider: {s}", .{self.provider.name});
@@ -422,36 +473,70 @@ pub const AIClient = struct {
             }
         }
 
-        while (attempt < retry_config.max_attempts) {
-            attempt += 1;
-            if (debug) std.log.debug("\n[Attempt {d}/{d}]", .{ attempt, retry_config.max_attempts });
+        while (retry_state.nextAttempt()) |delay_ms| {
+            if (debug) std.log.debug("\n[Attempt {d}/{d}]", .{ retry_state.current_attempt, retry_state.policy.max_attempts });
 
-            if (attempt > 1) {
-                const delay_ms = error_handler_mod.calculateDelay(attempt - 1, retry_config);
+            if (retry_state.current_attempt > 1) {
                 if (debug) std.log.debug("Waiting {d}ms before retry...", .{delay_ms});
-                std.Thread.sleep(@as(u64, delay_ms) * std.time.ns_per_ms);
+                std.Thread.sleep(delay_ms * std.time.ns_per_ms);
             }
 
             const result = if (single_message != null)
-                try self.performHttpRequest(single_message.?, has_key, is_local, attempt, debug)
+                try self.performHttpRequest(single_message.?, has_key, is_local, retry_state.current_attempt, debug)
             else
-                try self.performHttpRequestHistory(messages.?, has_key, is_local, attempt, debug);
+                try self.performHttpRequestHistory(messages.?, has_key, is_local, retry_state.current_attempt, debug);
 
             if (result.err) |err| {
-                std.log.err("Request failed (attempt {d}): {s}", .{ attempt, error_handler_mod.formatError(err) });
+                std.log.err("Request failed (attempt {d}): {s}", .{ retry_state.current_attempt, error_handler_mod.formatError(err) });
                 if (debug) std.log.debug("Request failed: {s}", .{error_handler_mod.formatError(err)});
-                if (!error_handler_mod.isRetryableError(err.error_type)) {
+
+                // Derive approximate HTTP status from error type for classification
+                const http_status: u16 = switch (err.error_type) {
+                    error.AuthenticationError => 401,
+                    error.RateLimitError => 429,
+                    error.InvalidRequest => 400,
+                    error.ModelNotFound => 404,
+                    error.ServerError => 500,
+                    error.NetworkError => 503,
+                    error.TimeoutError => 408,
+                    else => 500,
+                };
+                // Classify error with the new retry policy system
+                const error_class = retry_policy.RetryPolicy.classifyError(http_status, err.message);
+                const can_retry = retry_state.recordError(error_class, err.message);
+
+                // Keep backward compat: also check legacy isRetryableError
+                if (!can_retry and !error_handler_mod.isRetryableError(err.error_type)) {
+                    if (llm_span) |span| span.end(.@"error", err.message);
+                    return error.RetryExhausted;
+                }
+                if (!can_retry) {
+                    // New policy says stop but legacy says retryable — respect new policy
+                    if (llm_span) |span| span.end(.@"error", err.message);
                     return error.RetryExhausted;
                 }
                 continue;
             }
 
             if (result.response) |response| {
-                if (debug) std.log.debug("✅ Request succeeded", .{});
+                if (debug) std.log.debug("Request succeeded", .{});
+                retry_state.recordSuccess();
+
+                // Populate trace span with usage data
+                if (llm_span) |span| {
+                    if (response.usage) |usage| {
+                        span.prompt_tokens = usage.prompt_tokens;
+                        span.completion_tokens = usage.completion_tokens;
+                        span.total_tokens = usage.total_tokens;
+                    }
+                    span.end(.ok, null);
+                }
+
                 return response;
             }
         }
 
+        if (llm_span) |span| span.end(.@"error", "max attempts reached");
         return error.RetryExhausted;
     }
 

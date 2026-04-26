@@ -2,6 +2,8 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
+const trace_span = @import("trace_span");
+const self_heal_mod = @import("self_heal");
 
 const Allocator = std.mem.Allocator;
 
@@ -274,6 +276,8 @@ pub const AgentLoop = struct {
     total_tool_calls: u32,
     total_retries: u32,
     running: bool,
+    recent_tool_names: array_list_compat.ArrayList([]const u8),
+    recent_error_messages: array_list_compat.ArrayList([]const u8),
 
     pub fn init(allocator: Allocator) AgentLoop {
         return AgentLoop{
@@ -285,6 +289,8 @@ pub const AgentLoop = struct {
             .total_tool_calls = 0,
             .total_retries = 0,
             .running = false,
+            .recent_tool_names = array_list_compat.ArrayList([]const u8).init(allocator),
+            .recent_error_messages = array_list_compat.ArrayList([]const u8).init(allocator),
         };
     }
 
@@ -320,6 +326,20 @@ pub const AgentLoop = struct {
             return null;
         };
 
+        // Create tool span if there's an active trace
+        var tool_span: ?*trace_span.Span = null;
+        if (trace_span.context.currentTrace()) |trace| {
+            const parent = trace_span.context.currentSpan();
+            tool_span = if (parent) |p|
+                trace.childSpan(p, call.name, .tool) catch null
+            else
+                trace.rootSpan(call.name, .tool) catch null;
+            if (tool_span) |span| {
+                span.input_json = self.allocator.dupe(u8, call.arguments) catch null;
+            }
+        }
+        defer if (tool_span) |span| span.deinit();
+
         var attempt: u32 = 0;
         while (attempt <= self.config.retry_config.max_retries) : (attempt += 1) {
             if (attempt > 0) {
@@ -339,12 +359,15 @@ pub const AgentLoop = struct {
                     std.log.err("Tool '{s}' error: {}", .{ call.name, err });
                 }
                 if (attempt >= self.config.retry_config.max_retries) {
+                    if (tool_span) |span| span.end(.@"error", "Tool execution failed after max retries");
                     return ToolResult.init(self.allocator, call.id, "Tool execution failed after max retries", false) catch null;
                 }
                 continue;
             };
+            if (tool_span) |span| span.end(.ok, result.output);
             return result;
         }
+        if (tool_span) |span| span.end(.@"error", "Exhausted retries");
         return null;
     }
 
@@ -359,6 +382,20 @@ pub const AgentLoop = struct {
     pub fn run(self: *AgentLoop, ai_send: AISendFn, user_message: []const u8) !LoopResult {
         self.running = true;
         self.reset();
+
+        // Create trace for this agent session
+        const trace = trace_span.Trace.init(self.allocator, "agent-loop") catch null;
+        if (trace) |t| {
+            trace_span.context.setCurrentTrace(t);
+        }
+        defer {
+            if (trace) |t| {
+                t.finish();
+                t.deinit();
+            }
+            trace_span.context.setCurrentTrace(null);
+            trace_span.context.setCurrentSpan(null);
+        }
 
         var result = LoopResult{
             .final_response = "",
@@ -437,6 +474,19 @@ pub const AgentLoop = struct {
                             const status = if (tr.success) "OK" else "FAILED";
                             std.log.info("Tool result [{s}]: {s}", .{ status, tr.output });
                         }
+
+                        // Track failed tool calls for repetition detection
+                        if (!tr.success) {
+                            self.recent_tool_names.append(try self.allocator.dupe(u8, tc.name)) catch {};
+                            self.recent_error_messages.append(try self.allocator.dupe(u8, tr.output)) catch {};
+                            if (self_heal_mod.detectRepetition(self.allocator, self.recent_tool_names.items, self.recent_error_messages.items, 3)) {
+                                if (self.config.show_intermediate) {
+                                    std.log.warn("Repetition detected: tool '{s}' failing repeatedly. Breaking loop.", .{tc.name});
+                                }
+                                done = true;
+                                break;
+                            }
+                        }
                     } else {
                         // Tool not found or failed — report error back to AI
                         const err_msg = try std.fmt.allocPrint(self.allocator, "Tool '{s}' not found or execution failed", .{tc.name});
@@ -510,6 +560,14 @@ pub const AgentLoop = struct {
             if (msg.tool_name) |n| self.allocator.free(n);
         }
         self.history.clearRetainingCapacity();
+        for (self.recent_tool_names.items) |name| {
+            self.allocator.free(name);
+        }
+        self.recent_tool_names.clearRetainingCapacity();
+        for (self.recent_error_messages.items) |msg| {
+            self.allocator.free(msg);
+        }
+        self.recent_error_messages.clearRetainingCapacity();
         self.iteration = 0;
         self.total_tool_calls = 0;
         self.total_retries = 0;
@@ -524,6 +582,14 @@ pub const AgentLoop = struct {
             if (msg.tool_name) |n| self.allocator.free(n);
         }
         self.history.deinit();
+        for (self.recent_tool_names.items) |name| {
+            self.allocator.free(name);
+        }
+        self.recent_tool_names.deinit();
+        for (self.recent_error_messages.items) |msg| {
+            self.allocator.free(msg);
+        }
+        self.recent_error_messages.deinit();
         self.registered_tools.deinit();
     }
 };

@@ -1,6 +1,9 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 
+/// Re-export context module for consumers that need trace/span context
+pub const context = @import("context.zig");
+
 const Allocator = std.mem.Allocator;
 
 /// Kind of span for categorizing operations
