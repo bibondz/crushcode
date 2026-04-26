@@ -662,6 +662,9 @@ pub fn build(b: *std.Build) !void {
     // Harness Engineering: Guardrail modules (P1)
     const guardrail_pipeline_mod = simpleMod(b, "src/guardrail/pipeline.zig", target, optimize);
 
+    // Harness Engineering: Observability Metrics (P2)
+    const metrics_collector_mod = simpleMod(b, "src/metrics/collector.zig", target, optimize);
+
     // Wire trace + retry into agent loop
     addImports(agent_loop_mod, &.{
         imp("trace_span", trace_span_mod),
@@ -876,6 +879,7 @@ pub fn build(b: *std.Build) !void {
         retry_policy_mod,
         retry_self_heal_mod,
         guardrail_pipeline_mod,
+        metrics_collector_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -945,6 +949,7 @@ pub fn build(b: *std.Build) !void {
         router_mod,
         circuit_breaker_mod,
         guardrail_pipeline_mod,
+        metrics_collector_mod,
         knowledge_schema_mod,
         knowledge_ops_mod,
         knowledge_knowledge_lint_mod,

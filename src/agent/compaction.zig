@@ -351,6 +351,163 @@ pub const ContextCompactor = struct {
         self.previous_summary = duped;
     }
 
+    /// Compact using LLM summarization instead of heuristic.
+    /// Builds a summary prompt, sends it to an LLM via the provided function pointer,
+    /// and uses the response as the context summary.
+    /// Falls back to heuristic compaction on LLM failure.
+    ///
+    /// The `sendToLLM` function pointer allows decoupling from AIClient:
+    ///   fn sendToLLM(allocator, prompt, model) anyerror!?[]const u8
+    pub fn compactWithLLM(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+        config: CompactionConfig,
+        sendToLLM: *const fn (std.mem.Allocator, []const u8, []const u8) anyerror!?[]const u8,
+    ) !CompactResult {
+        const effective_window = if (config.recent_window > 0) config.recent_window else self.recent_window;
+
+        // 1. If messages.len <= effective_window, return identity result (no compaction needed)
+        if (messages.len <= effective_window) {
+            return CompactResult{
+                .messages = messages,
+                .tokens_saved = 0,
+                .messages_summarized = 0,
+                .summary = "",
+                .agent_metadata = std.StringHashMap([]const u8).init(self.allocator),
+            };
+        }
+
+        // 2. Split messages: old = messages[0..split_point], recent = messages[split_point..]
+        const split_point = messages.len - effective_window;
+        const old_messages = messages[0..split_point];
+        const recent_messages = messages[split_point..];
+
+        // 3. Truncate tool outputs in old messages if preserve_tool_outputs == false
+        var trunc_result: ?ToolTruncationResult = null;
+        defer {
+            if (trunc_result) |*tr| tr.deinit();
+        }
+
+        const summarization_messages: []const CompactMessage = blk: {
+            if (!config.preserve_tool_outputs) {
+                trunc_result = try self.truncateToolOutputs(old_messages, config.max_tool_output_chars);
+                break :blk trunc_result.?.messages;
+            } else {
+                break :blk old_messages;
+            }
+        };
+
+        // 4. Build summarization prompt using existing method
+        const prompt = try self.buildSummarizationPrompt(summarization_messages, self.previous_summary);
+        defer self.allocator.free(prompt);
+
+        // 5. Call sendToLLM, fall back on null or error
+        const llm_summary_opt = sendToLLM(self.allocator, prompt, config.llm_compaction_model) catch null;
+
+        // 6. If LLM returns null or error: fall back to compactHeuristic
+        if (llm_summary_opt) |llm_summary| {
+            // 7. LLM succeeded — use response as summary
+            try self.storePreviousSummary(llm_summary);
+
+            // Calculate tokens saved
+            var total_tokens_before: u64 = 0;
+            for (messages) |msg| {
+                total_tokens_before += estimateTokens(msg.content);
+            }
+            var tokens_after: u64 = estimateTokens(llm_summary);
+            for (recent_messages) |msg| {
+                tokens_after += estimateTokens(msg.content);
+            }
+
+            // 8. Copy agent metadata into result
+            var result_metadata = std.StringHashMap([]const u8).init(self.allocator);
+            var meta_iter = self.agent_metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                try result_metadata.put(
+                    try self.allocator.dupe(u8, entry.key_ptr.*),
+                    try self.allocator.dupe(u8, entry.value_ptr.*),
+                );
+            }
+
+            // 9. Return CompactResult
+            return CompactResult{
+                .messages = recent_messages,
+                .tokens_saved = total_tokens_before -| tokens_after,
+                .messages_summarized = @intCast(old_messages.len),
+                .summary = llm_summary,
+                .agent_metadata = result_metadata,
+                .allocator = self.allocator,
+            };
+        }
+
+        // Fallback to heuristic compaction
+        return self.compactHeuristic(messages, self.previous_summary);
+    }
+
+    /// Truncate tool-role messages to max_chars, adding "... (truncated)" suffix.
+    /// Non-tool messages are preserved unchanged.
+    pub fn truncateToolOutputs(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+        max_chars: u32,
+    ) !ToolTruncationResult {
+        const result_messages = try self.allocator.alloc(CompactMessage, messages.len);
+        var truncated_count: u32 = 0;
+        var chars_saved: u64 = 0;
+        var initialized: usize = 0;
+
+        errdefer {
+            for (result_messages[0..initialized]) |msg| {
+                self.allocator.free(msg.role);
+                if (msg.content.len > 0) self.allocator.free(msg.content);
+            }
+            self.allocator.free(result_messages);
+        }
+
+        const trunc_suffix = "... (truncated)";
+
+        for (messages, 0..) |msg, i| {
+            const role_copy = try self.allocator.dupe(u8, msg.role);
+
+            if (std.mem.eql(u8, msg.role, "tool") and msg.content.len > max_chars) {
+                // Truncate to max_chars and append suffix
+                const truncated_content = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}{s}",
+                    .{ msg.content[0..@as(usize, @min(max_chars, msg.content.len))], trunc_suffix },
+                );
+                const saved = msg.content.len -| truncated_content.len;
+                chars_saved += @intCast(saved);
+                truncated_count += 1;
+
+                result_messages[i] = .{
+                    .role = role_copy,
+                    .content = truncated_content,
+                    .timestamp = msg.timestamp,
+                };
+            } else {
+                const content_copy = if (msg.content.len > 0)
+                    try self.allocator.dupe(u8, msg.content)
+                else
+                    "";
+
+                result_messages[i] = .{
+                    .role = role_copy,
+                    .content = content_copy,
+                    .timestamp = msg.timestamp,
+                };
+            }
+            initialized += 1;
+        }
+
+        return ToolTruncationResult{
+            .messages = result_messages,
+            .truncated_count = truncated_count,
+            .chars_saved = chars_saved,
+            .allocator = self.allocator,
+        };
+    }
+
     pub fn printStatus(self: *ContextCompactor, current_tokens: u64) void {
         const stdout = file_compat.File.stdout().writer();
         const ratio = @as(f64, @floatFromInt(current_tokens)) / @as(f64, @floatFromInt(self.max_tokens)) * 100.0;
@@ -377,6 +534,33 @@ pub const ContextCompactor = struct {
         if (self.previous_summary.len > 0) {
             self.allocator.free(self.previous_summary);
         }
+    }
+};
+
+/// Configuration for context compaction behavior
+pub const CompactionConfig = struct {
+    max_tokens: u64 = 128000,
+    compact_threshold: f64 = 0.8,
+    recent_window: u32 = 10,
+    preserve_tool_outputs: bool = false,
+    max_summary_tokens: u32 = 512,
+    max_tool_output_chars: u32 = 2000,
+    llm_compaction_model: []const u8 = "haiku",
+};
+
+/// Result of truncating tool output messages
+pub const ToolTruncationResult = struct {
+    messages: []CompactMessage,
+    truncated_count: u32,
+    chars_saved: u64,
+    allocator: std.mem.Allocator,
+
+    pub fn deinit(self: *ToolTruncationResult) void {
+        for (self.messages) |msg| {
+            self.allocator.free(msg.role);
+            if (msg.content.len > 0) self.allocator.free(msg.content);
+        }
+        self.allocator.free(self.messages);
     }
 };
 
@@ -666,4 +850,240 @@ test "CompactResult - struct field access" {
     try testing.expectEqual(@as(u32, 10), result.messages_summarized);
     try testing.expectEqualStrings("Summary text", result.summary);
     try testing.expectEqual(@as(usize, 1), result.messages.len);
+}
+
+// ========== Tests for new additions ==========
+
+test "CompactionConfig - default values" {
+    const config = CompactionConfig{};
+    try testing.expectEqual(@as(u64, 128000), config.max_tokens);
+    try testing.expect(config.compact_threshold > 0.79 and config.compact_threshold < 0.81);
+    try testing.expectEqual(@as(u32, 10), config.recent_window);
+    try testing.expect(!config.preserve_tool_outputs);
+    try testing.expectEqual(@as(u32, 512), config.max_summary_tokens);
+    try testing.expectEqual(@as(u32, 2000), config.max_tool_output_chars);
+    try testing.expectEqualStrings("haiku", config.llm_compaction_model);
+}
+
+test "ToolTruncationResult - deinit frees allocations" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "short", .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputs(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 1), result.messages.len);
+    try testing.expectEqual(@as(u32, 0), result.truncated_count);
+    try testing.expectEqual(@as(u64, 0), result.chars_saved);
+}
+
+test "truncateToolOutputs - truncates tool messages exceeding max_chars" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_tool_output = "x" ** 5000;
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_tool_output, .timestamp = null },
+        .{ .role = "assistant", .content = "response", .timestamp = null },
+        .{ .role = "tool", .content = "short tool output", .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputs(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 3), result.messages.len);
+    try testing.expectEqual(@as(u32, 1), result.truncated_count);
+    try testing.expect(result.chars_saved > 0);
+    try testing.expect(std.mem.endsWith(u8, result.messages[0].content, "... (truncated)"));
+    try testing.expectEqualStrings("response", result.messages[1].content);
+    try testing.expectEqualStrings("short tool output", result.messages[2].content);
+}
+
+test "truncateToolOutputs - preserves non-tool messages unchanged" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "a" ** 5000, .timestamp = null },
+        .{ .role = "assistant", .content = "b" ** 5000, .timestamp = null },
+    };
+
+    var result = try c.truncateToolOutputs(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 0), result.truncated_count);
+    try testing.expectEqual(@as(u64, 0), result.chars_saved);
+    try testing.expectEqualStrings("a" ** 5000, result.messages[0].content);
+    try testing.expectEqualStrings("b" ** 5000, result.messages[1].content);
+}
+
+test "truncateToolOutputs - empty messages" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{};
+    var result = try c.truncateToolOutputs(&messages, 100);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 0), result.messages.len);
+    try testing.expectEqual(@as(u32, 0), result.truncated_count);
+}
+
+fn mockSendToLLM(allocator: Allocator, prompt: []const u8, model: []const u8) anyerror!?[]const u8 {
+    _ = prompt;
+    _ = model;
+    return try allocator.dupe(u8, "Goal\n- Build compaction system.\nAccomplished\n- Added truncateToolOutputs.");
+}
+
+test "compactWithLLM - successful LLM summarization" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(2);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "I decided to use Zig for this CLI implementation", .timestamp = null },
+        .{ .role = "assistant", .content = "Zig fits the zero-dependency goal well.", .timestamp = null },
+        .{ .role = "user", .content = "We also chose PostgreSQL for the database layer", .timestamp = null },
+        .{ .role = "assistant", .content = "PostgreSQL is excellent for this use case.", .timestamp = null },
+        .{ .role = "user", .content = "Recent question", .timestamp = null },
+        .{ .role = "assistant", .content = "Recent answer", .timestamp = null },
+    };
+
+    const config = CompactionConfig{};
+    var result = try c.compactWithLLM(&messages, config, mockSendToLLM);
+    defer result.deinit();
+
+    try testing.expect(result.summary.len > 0);
+    try testing.expectEqual(@as(u32, 4), result.messages_summarized);
+    try testing.expectEqual(@as(usize, 2), result.messages.len);
+    try testing.expectEqualStrings("user", result.messages[0].role);
+    try testing.expect(result.tokens_saved > 0);
+    try testing.expectEqualStrings(result.summary, c.previous_summary);
+}
+
+test "compactWithLLM - falls back to heuristic on LLM null" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(2);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "I decided to use React for the frontend", .timestamp = null },
+        .{ .role = "assistant", .content = "React is well-supported.", .timestamp = null },
+        .{ .role = "user", .content = "Recent question", .timestamp = null },
+        .{ .role = "assistant", .content = "Recent answer", .timestamp = null },
+    };
+
+    const config = CompactionConfig{};
+
+    const nullLLM = struct {
+        fn call(allocator: Allocator, prompt: []const u8, model: []const u8) anyerror!?[]const u8 {
+            _ = allocator;
+            _ = prompt;
+            _ = model;
+            return null;
+        }
+    }.call;
+
+    var result = try c.compactWithLLM(&messages, config, nullLLM);
+    defer result.deinit();
+
+    // Should have fallen back to heuristic compaction
+    try testing.expect(result.summary.len > 0);
+    try testing.expect(std.mem.indexOf(u8, result.summary, "compacted") != null);
+}
+
+test "compactWithLLM - falls back to heuristic on LLM error" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(2);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "I decided to use JWT for auth", .timestamp = null },
+        .{ .role = "assistant", .content = "JWT auth is secure.", .timestamp = null },
+        .{ .role = "user", .content = "Recent question", .timestamp = null },
+        .{ .role = "assistant", .content = "Recent answer", .timestamp = null },
+    };
+
+    const config = CompactionConfig{};
+
+    const errorLLM = struct {
+        fn call(allocator: Allocator, prompt: []const u8, model: []const u8) anyerror!?[]const u8 {
+            _ = allocator;
+            _ = prompt;
+            _ = model;
+            return error.NetworkError;
+        }
+    }.call;
+
+    var result = try c.compactWithLLM(&messages, config, errorLLM);
+    defer result.deinit();
+
+    // Should have fallen back to heuristic compaction
+    try testing.expect(result.summary.len > 0);
+    try testing.expect(std.mem.indexOf(u8, result.summary, "compacted") != null);
+}
+
+test "compactWithLLM - returns identity for small message count" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "Hello", .timestamp = null },
+        .{ .role = "assistant", .content = "Hi there", .timestamp = null },
+    };
+
+    const config = CompactionConfig{};
+    const result = try c.compactWithLLM(&messages, config, mockSendToLLM);
+
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+    try testing.expectEqual(@as(u32, 0), result.messages_summarized);
+    try testing.expectEqual(@as(usize, 2), result.messages.len);
+}
+
+test "compactWithLLM - uses config recent_window over default" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(5);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "msg1", .timestamp = null },
+        .{ .role = "assistant", .content = "msg2", .timestamp = null },
+        .{ .role = "user", .content = "msg3", .timestamp = null },
+        .{ .role = "assistant", .content = "msg4", .timestamp = null },
+        .{ .role = "user", .content = "msg5", .timestamp = null },
+        .{ .role = "assistant", .content = "msg6", .timestamp = null },
+    };
+
+    // Config overrides the default recent_window of 5 with 2
+    const config = CompactionConfig{ .recent_window = 2 };
+    var result = try c.compactWithLLM(&messages, config, mockSendToLLM);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u32, 4), result.messages_summarized);
+    try testing.expectEqual(@as(usize, 2), result.messages.len);
+}
+
+test "compactWithLLM - truncates tool outputs when not preserving" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(2);
+
+    const long_tool = "x" ** 5000;
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_tool, .timestamp = null },
+        .{ .role = "assistant", .content = "Got it.", .timestamp = null },
+        .{ .role = "user", .content = "Recent question", .timestamp = null },
+        .{ .role = "assistant", .content = "Recent answer", .timestamp = null },
+    };
+
+    const config = CompactionConfig{ .preserve_tool_outputs = false, .max_tool_output_chars = 100 };
+    var result = try c.compactWithLLM(&messages, config, mockSendToLLM);
+    defer result.deinit();
+
+    try testing.expect(result.summary.len > 0);
+    try testing.expectEqual(@as(u32, 2), result.messages_summarized);
 }

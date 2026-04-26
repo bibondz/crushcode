@@ -1150,6 +1150,86 @@ pub const AIClient = struct {
     }
 };
 
+/// Cache control marker for Anthropic prompt caching
+pub const CacheControl = struct {
+    type: []const u8, // "ephemeral"
+};
+
+/// Message with optional cache breakpoint
+pub const CacheMarkedMessage = struct {
+    role: []const u8,
+    content: []const u8,
+    tool_call_id: ?[]const u8 = null,
+    cache_control: ?CacheControl = null,
+};
+
+/// Build cache-aware messages for Anthropic providers.
+/// Injects cache_control breakpoints:
+/// - System prompt marked as cacheable
+/// - Last 2 tool results marked as cacheable
+/// Returns original messages unchanged for non-Anthropic providers.
+/// Caller owns the returned slice and must free each field + the array.
+pub fn buildCacheAwareMessages(
+    allocator: std.mem.Allocator,
+    system_prompt: []const u8,
+    messages: []const ChatMessage,
+    provider_name: []const u8,
+) ![]CacheMarkedMessage {
+    const is_anthropic = std.mem.eql(u8, provider_name, "anthropic") or
+        std.mem.eql(u8, provider_name, "bedrock") or
+        std.mem.eql(u8, provider_name, "vertexai");
+
+    // Find indices of last 2 tool-result messages (from the end)
+    var last_tool_indices: [2]usize = .{ 0, 0 };
+    var tools_found: usize = 0;
+
+    if (is_anthropic and messages.len > 0) {
+        var i: isize = @as(isize, @intCast(messages.len)) - 1;
+        while (i >= 0 and tools_found < 2) : (i -= 1) {
+            const idx: usize = @intCast(i);
+            if (std.mem.eql(u8, messages[idx].role, "tool")) {
+                last_tool_indices[tools_found] = idx;
+                tools_found += 1;
+            }
+        }
+    }
+
+    // Total output: 1 (system) + messages.len
+    const total = messages.len + 1;
+    const result = try allocator.alloc(CacheMarkedMessage, total);
+
+    // System prompt with cache control for Anthropic
+    result[0] = .{
+        .role = try allocator.dupe(u8, "system"),
+        .content = try allocator.dupe(u8, system_prompt),
+        .cache_control = if (is_anthropic) .{ .type = "ephemeral" } else null,
+    };
+
+    for (messages, 0..) |msg, msg_idx| {
+        // Check if this message should be cache-marked (one of last 2 tool results)
+        var should_mark = false;
+        if (is_anthropic and std.mem.eql(u8, msg.role, "tool")) {
+            for (last_tool_indices[0..tools_found]) |ti| {
+                if (ti == msg_idx) {
+                    should_mark = true;
+                    break;
+                }
+            }
+        }
+
+        const content_str = msg.content orelse "";
+
+        result[msg_idx + 1] = .{
+            .role = try allocator.dupe(u8, msg.role),
+            .content = try allocator.dupe(u8, content_str),
+            .tool_call_id = if (msg.tool_call_id) |tcid| try allocator.dupe(u8, tcid) else null,
+            .cache_control = if (should_mark) .{ .type = "ephemeral" } else null,
+        };
+    }
+
+    return result;
+}
+
 // ========== UNIT TESTS ==========
 
 const testing = std.testing;
