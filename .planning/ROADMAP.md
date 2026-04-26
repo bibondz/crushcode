@@ -313,21 +313,20 @@ Plans:
 - [x] 22-01-PLAN.md — Wire compaction + auto-compact trigger + /compact command ✅
 - [x] 22-02-PLAN.md — Relevance-based context selection + token-aware system prompt ✅
 
-### Phase 23: Myers Diff + Edit Preview
+### Phase 23: Myers Diff + Edit Preview ✅ DONE
 **Goal:** Real diff algorithm and edit preview before applying changes
-**ปัญหา**: visualizer.zig is naive line-by-line compare that breaks on insertions/deletions. AI edits files directly with no preview — user can't see what will change.
+**ปัญญา**: visualizer.zig is naive line-by-line compare that breaks on insertions/deletions. AI edits files directly with no preview — user can't see what will change.
 **ทำ**:
-- Implement Myers diff algorithm in `src/diff/myers.zig` (O(ND) diff)
-- Replace naive visualizer with Myers-based hunk generation
-- Edit preview: show diff before apply, user confirms with [y/n]
-- Wire `validated_edit.zig` hash-based edits into TUI edit tool (detect concurrent changes)
-- Show diff in TUI with proper coloring (+ green, - red, context dimmed)
-- ไฟล์: new `src/diff/myers.zig`, modify `src/diff/visualizer.zig`, modify TUI edit tool
+- Implement Myers diff algorithm in `src/diff/myers.zig` (O(ND) diff) ✅ (596 lines)
+- Replace naive visualizer with Myers-based hunk generation ✅
+- Edit preview: show diff before apply, user confirms with [y/n] ✅ (diff_preview.zig, 274 lines)
+- Wire `validated_edit.zig` hash-based edits into TUI edit tool ✅ (220 lines)
+- Show diff in TUI with proper coloring (+ green, - red, context dimmed) ✅ (diff.zig, 311 lines)
 
 **Plans:** 2 plans
 Plans:
-- [ ] 23-01-PLAN.md — Myers diff algorithm + hunk generation
-- [ ] 23-02-PLAN.md — Edit preview flow (diff display + confirm/reject) + hash validation
+- [x] 23-01-PLAN.md — Myers diff algorithm + hunk generation ✅
+- [x] 23-02-PLAN.md — Edit preview flow (diff display + confirm/reject) + hash validation ✅
 
 ### Phase 24: System Prompt Engineering + Project Config
 **Goal:** Rich system prompt with project-specific instructions, AGENTS.md support, and .crushcode/ project config

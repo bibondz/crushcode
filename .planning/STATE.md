@@ -150,8 +150,8 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 22 | Smart Context + Auto-Compact | ✅ Phase A+B Done |
-| Phase 23 | Myers Diff + Edit Preview | Not started |
-| Phase 24 | System Prompt Engineering + Project Config | Not started |
+| Phase 23 | Myers Diff + Edit Preview | ✅ Already implemented (1898 lines) |
+| Phase 24 | System Prompt Engineering + Project Config | **Next** |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |
 
 ---
@@ -159,5 +159,5 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 ## Session Continuity
 
 **Last Updated:** 2026-04-26
-**Current Work:** Phase 22 Phase A+B shipped (micro-compact, multi-tier, dynamic limits, agent framing, template enforcement, tool importance, wired LLM compaction).
-**Next Step:** Phase 23 (Myers Diff + Edit Preview), or remaining items (guardrail redaction, cache wiring).
+**Current Work:** Phase 22 A+B shipped. Phase 23 already implemented. Phase 24 (System Prompt + Project Config) next.
+**Next Step:** Phase 24 — AGENTS.md loading, .crushcode/instructions.md, project detection, rich system prompt.

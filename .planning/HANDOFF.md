@@ -179,8 +179,8 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 | Phase | Description | Status |
 |-------|-------------|--------|
 | Phase 22 | Smart Context + Auto-Compact | ✅ Done (Phase A+B) |
-| Phase 23 | Myers Diff + Edit Preview | Not started |
-| Phase 24 | System Prompt Engineering + Project Config | Not started |
+| Phase 23 | Myers Diff + Edit Preview | ✅ Already done (1898 lines) |
+| Phase 24 | System Prompt Engineering + Project Config | **Next** |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |
 
 ## How To Continue
