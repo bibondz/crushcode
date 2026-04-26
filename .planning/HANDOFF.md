@@ -1,14 +1,14 @@
 # Crushcode — Session Handoff
 
 **Updated:** 2026-04-26
-**Status:** v1.4.0 Harness Engineering COMPLETE ✅ + Phase 22 Auto-Compact ✅
-**Branch:** `master` | **Last commit:** `555aaa0` | **Build:** ✅ clean | **Tests:** ✅ pass
+**Status:** v1.4.x Compaction Phase A COMPLETE ✅ — Phase B next
+**Branch:** `master` | **Last commit:** `c274109` | **Build:** ✅ clean | **Tests:** ✅ pass
 
 ---
 
 ## What Is This Project
 
-Zig-based AI coding CLI/TUI. Single binary, zero deps. ~280 `.zig` files, ~112K lines.
+Zig-based AI coding CLI/TUI. Single binary, zero deps. ~282 `.zig` files, ~113K lines.
 Build: `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zigcache`
 Test: `cd /mnt/d/crushcode && zig build test --cache-dir /tmp/zigcache`
 Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
@@ -46,6 +46,13 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 5. `src/mcp/server.zig` — server_info version + test assertion
 
 ## Recent Work (v1.2.0–v1.4.0)
+
+### v1.4.x — Compaction Improvements Phase A (1 commit, +572 lines)
+
+- **Micro-Compact**: Prune stale tool outputs older than recent window — 0 quality loss, 20-40% token savings
+- **Multi-Tier Thresholds**: micro@<85%, light@85-95%, summary@95%+ — graduated response vs one-size-fits-all
+- **Dynamic Context Limits**: context_limits.zig maps 15+ provider families (Claude 200K, Gemini 1M, GPT-4o 128K, etc.) — no more hardcoded 128K
+- **Agent Framing**: 8-section structured prompt (Goal/Constraints/Discoveries/Accomplished/Errors+Fixes/Files/Pending/NextStep) for AI-to-AI context recovery
 
 ### v1.4.0 — Harness Engineering (7 commits, +6192 lines)
 

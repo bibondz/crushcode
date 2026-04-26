@@ -1,7 +1,7 @@
 # Crushcode — TODO & Known Issues
 
 **Updated:** 2026-04-26
-**Version:** v1.4.0 (Harness Engineering complete, Phase 22 auto-compact shipped)
+**Version:** v1.4.x (Phase A compaction improvements shipped)
 
 ---
 
@@ -115,6 +115,14 @@
 | Proper dialog overlay abstraction | Medium | Currently 6 ad-hoc overlays |
 
 ---
+
+## Done (v1.4.x Phase A — 2026-04-26)
+
+- [x] Micro-compact: prune stale tool outputs older than recent window (compaction.zig +239 lines)
+- [x] Multi-tier auto-compact: micro@<85%, light@85-95%, summary@95%+
+- [x] Dynamic context limits per provider/model (context_limits.zig, 28 tests)
+- [x] Agent-to-agent framing in summarization prompt (8-section structured)
+- [x] Model switch updates compactor.max_tokens dynamically
 
 ## Done (v1.4.0 session — 2026-04-26)
 

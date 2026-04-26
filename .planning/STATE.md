@@ -22,10 +22,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v1.4.0 Harness Engineering — COMPLETE |
-| Phase | Phase 22 (Smart Context + Auto-Compact) — auto-compact trigger shipped |
+| Milestone | v1.4.x Compaction Improvements — Phase A COMPLETE |
+| Phase | Phase 22 (Smart Context + Auto-Compact) — Phase A shipped, Phase B next |
 | Status | ✅ Clean build, all tests pass |
-| Code Version | 1.4.0 (tagged) |
+| Commit | c274109 |
 | Last Tag | v1.4.0 |
 | Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 |
 
@@ -47,6 +47,10 @@
 | P3: Parallel Execution | `src/tool/parallel.zig` (437 lines) — ParallelExecutor, chunked thread-per-task, ordered results | 0ce2048 |
 | Wiring | All P1-P3 wired into client.zig, loop.zig, router.zig — guardrails, metrics, circuit breaker feedback | 5b2f2ee, 3375db1 |
 | Phase 22: Auto-Compact | Trigger performCompactionAuto() after each AI response when context >70% | 555aaa0 |
+| Phase A: Micro-Compact | Prune stale tool outputs older than recent window, 0 quality loss | c274109 |
+| Phase A: Multi-Tier Thresholds | micro@<85%, light@85-95%, summary@95%+ graduated compaction | c274109 |
+| Phase A: Dynamic Context Limits | context_limits.zig — per-provider/model window sizes (15+ providers, 28 tests) | c274109 |
+| Phase A: Agent Framing | 8-section structured prompt for AI-to-AI context recovery | c274109 |
 
 ---
 
@@ -81,7 +85,11 @@
 ```
 src/tui/chat_tui_app.zig      — Main TUI app: Model, draw(), handleEvent(), buildPaletteItems()
 src/tui/model/streaming.zig   — Streaming worker, finishRequestSuccess(), auto-compact trigger
-src/agent/compaction.zig      — ContextCompactor (1089 lines): compactWithLLM, compactLight, compactWithSummary
+src/agent/compaction.zig      — ContextCompactor (1328 lines): microCompact, compactLight, compactWithSummary, compactWithLLM
+src/ai/context_limits.zig     — Per-provider/model context window sizes (15+ providers, 28 tests)
+src/tui/chat_tui_app.zig      — Main TUI app: Model, draw(), handleEvent(), multi-tier auto-compact
+src/tui/model/streaming.zig   — Streaming worker, finishRequestSuccess(), auto-compact trigger
+src/tui/model/token_tracking.zig — Cost estimation, model-aware context percent
 src/agent/circuit_breaker.zig — CircuitBreaker FSM (closed/open/half_open)
 src/agent/router.zig          — ModelRouter with routing strategies, latency tracking
 src/ai/client.zig             — AIClient with guardrails, metrics, circuit breaker feedback, cache hints
@@ -114,7 +122,8 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 | Circuit Breaker | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Guardrails | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Execution Traces | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
-| Auto-Compact | **✅** | ✅ | ❌ | ❌ | ❌ |
+| Auto-Compact | **multi-tier** ✅ | ✅ single-tier | ❌ | ❌ | ❌ |
+| Dynamic Context Limits | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Diff Preview | **apply/reject** ✅ | apply/reject | apply/reject | ❌ | ❌ |
 
 ---
@@ -125,21 +134,23 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 |------|----------|-------|
 | KnowledgePipeline fix (KP-1) | Medium | Dangling pointer, currently disabled |
 | Build.zig cleanup (1115→~700 lines) | Medium | Create `createStdModule()` helper |
+| **Phase B: Template-enforced structured summarization** | Medium | Enforce markdown section structure in compactWithLLM output |
+| **Phase B: Tool importance-based pruning** | Medium | Protect decision/skill outputs, prune verbose grep/read first |
+| **Phase B: Wire compactWithLLM()** | Medium | sendToLLM function pointer plumbed through agent loop |
 | Vault→persistence merge | Medium | Circular dep risk |
 | Cache-aware Anthropic HTTP body | Low | CacheControl structs exist, not wired to HTTP body format |
 | Guardrail redaction pass | Low | deny works, redact→modified content not fully sent |
-| LLM compaction full wiring | Low | Needs sendToLLM function pointer plumbed through loop |
 | Responsive layout (FlexRow/FlexColumn) | Low | vaxis widgets available but unused |
 | Mouse-resizable panes | Low | vaxis SplitView available |
 | Input history search | Low | Ctrl+R taken by /refresh |
 
 ---
 
-## Next Roadmap Items (after Phase 22)
+## Next Roadmap Items
 
 | Phase | Description | Status |
 |-------|-------------|--------|
-| Phase 22 | Smart Context + Auto-Compact | ✅ Mostly done (auto-compact trigger shipped, relevance scoring already exists) |
+| Phase 22 | Smart Context + Auto-Compact | Phase A ✅ Done, Phase B in progress |
 | Phase 23 | Myers Diff + Edit Preview | Not started |
 | Phase 24 | System Prompt Engineering + Project Config | Not started |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |
@@ -149,5 +160,5 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 ## Session Continuity
 
 **Last Updated:** 2026-04-26
-**Current Work:** v1.4.0 Harness Engineering COMPLETE. Phase 22 auto-compact trigger shipped.
-**Next Step:** Phase 23 (Myers Diff + Edit Preview), or remaining small items (guardrail redaction, cache wiring).
+**Current Work:** Phase 22 Phase A shipped (micro-compact, multi-tier, dynamic limits, agent framing). Phase B next.
+**Next Step:** Phase B (template-enforced summaries, tool importance pruning, wire compactWithLLM).
