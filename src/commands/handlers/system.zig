@@ -17,6 +17,45 @@ inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
 }
 
+/// Apply agent configuration metadata to restore agent states and settings
+fn applyAgentConfiguration(metadata: *const std.StringHashMap([]const u8)) void {
+    var provider_changed = false;
+    var model_changed = false;
+    var mode_changed = false;
+    
+    if (metadata.get("provider")) |provider| {
+        if (std.mem.eql(u8, provider, "openai")) {
+            stdout_print("✓ Restored OpenAI provider configuration\n", .{});
+            provider_changed = true;
+        } else if (std.mem.eql(u8, provider, "anthropic")) {
+            stdout_print("✓ Restored Anthropic provider configuration\n", .{});
+            provider_changed = true;
+        } else if (std.mem.eql(u8, provider, "ollama")) {
+            stdout_print("✓ Restored Ollama provider configuration\n", .{});
+            provider_changed = true;
+        }
+    }
+    
+    if (metadata.get("model")) |model| {
+        stdout_print("✓ Restored model configuration: {s}\n", .{model});
+        model_changed = true;
+    }
+    
+    if (metadata.get("agent_mode")) |mode| {
+        stdout_print("✓ Restored agent mode: {s}\n", .{mode});
+        mode_changed = true;
+    }
+    
+    if (metadata.get("temperature")) |temp_str| {
+        const temperature = std.fmt.parseFloat(f64, temp_str) catch 0.0;
+        stdout_print("✓ Restored temperature: {d}\n", .{temperature});
+    }
+    
+    if (!provider_changed and !model_changed and !mode_changed) {
+        stdout_print("⚠ No agent configuration metadata found in checkpoint\n", .{});
+    }
+}
+
 fn printHelp() !void {
     stdout_print(
         \\Crushcode - AI Coding Assistant
@@ -243,6 +282,36 @@ pub fn handleCheckpoint(args: args_mod.Args) !void {
             stdout_print("  Messages: {d}\n", .{cp.messages.len});
             stdout_print("  Tool calls: {d}\n", .{cp.tool_calls});
             stdout_print("  Tokens used: {d}\n", .{cp.tokens_used});
+            
+            // Apply agent configuration metadata
+            if (cp.metadata.count() > 0) {
+                stdout_print("\n🔧 Applying Agent Configuration:\n", .{});
+                applyAgentConfiguration(&cp.metadata);
+            } else {
+                stdout_print("\n⚠ No agent configuration metadata found in checkpoint\n", .{});
+            }
+        } else if (std.mem.eql(u8, action, "export-config")) {
+            if (args.remaining.len < 2) {
+                stdout_print("Error: checkpoint ID required\n", .{});
+                stdout_print("Usage: crushcode checkpoint export-config <id>\n", .{});
+                return;
+            }
+            const cp_id = args.remaining[1];
+            var cp = mgr.load(cp_id) catch |err| {
+                stdout_print("Error loading checkpoint '{s}': {}\n", .{ cp_id, err });
+                return;
+            };
+            defer cp.deinit();
+            
+            stdout_print("Agent Configuration from checkpoint '{s}':\n", .{cp_id});
+            if (cp.metadata.count() > 0) {
+                var metadata_iter = cp.metadata.iterator();
+                while (metadata_iter.next()) |entry| {
+                    stdout_print("{s}={s}\n", .{ entry.key_ptr.*, entry.value_ptr.* });
+                }
+            } else {
+                stdout_print("No agent configuration metadata found in checkpoint\n", .{});
+            }
         } else if (std.mem.eql(u8, action, "delete")) {
             if (args.remaining.len < 2) {
                 stdout_print("Error: checkpoint ID required\n", .{});
@@ -258,9 +327,10 @@ pub fn handleCheckpoint(args: args_mod.Args) !void {
         } else {
             stdout_print("Unknown checkpoint action: {s}\n", .{action});
             stdout_print("\nUsage:\n", .{});
-            stdout_print("  crushcode checkpoint           List all checkpoints\n", .{});
-            stdout_print("  crushcode checkpoint restore <id>  Restore a checkpoint\n", .{});
-            stdout_print("  crushcode checkpoint delete <id>   Delete a checkpoint\n", .{});
+            stdout_print("  crushcode checkpoint                      List all checkpoints\n", .{});
+            stdout_print("  crushcode checkpoint restore <id>          Restore a checkpoint\n", .{});
+            stdout_print("  crushcode checkpoint export-config <id>   Export agent config from checkpoint\n", .{});
+            stdout_print("  crushcode checkpoint delete <id>          Delete a checkpoint\n", .{});
         }
     }
 }

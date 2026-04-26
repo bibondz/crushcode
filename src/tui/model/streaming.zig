@@ -726,6 +726,11 @@ pub fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64)
     self.total_input_tokens += input_tokens;
     self.total_output_tokens += output_tokens;
     self.request_count += 1;
+    
+    // Record per-turn token usage for sparkline
+    const turn_total: u32 = @intCast(@min(input_tokens + output_tokens, std.math.maxInt(u32)));
+    self.turn_token_history.append(turn_total) catch {};
+    
     const cost = self.pricing_table.estimateCostSimple(self.provider_name, helpers.resolvedPricingModel(self), @intCast(@min(input_tokens, std.math.maxInt(u32))), @intCast(@min(output_tokens, std.math.maxInt(u32))));
     self.budget_mgr.recordCost(cost);
     if (self.budget_mgr.shouldAlert()) {

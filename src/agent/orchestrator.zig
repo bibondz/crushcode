@@ -636,7 +636,12 @@ pub const OrchestrationEngine = struct {
                 const msgs = [_]Checkpoint.CheckpointMessage{
                     .{ .role = "system", .content = "phase execution" },
                 };
-                var cp = cm.create(&msgs, 0, 0) catch break :saveCpBlk;
+                var metadata = std.StringHashMap([]const u8).init(self.allocator);
+                errdefer metadata.deinit();
+                try metadata.put("phase", phase.phase_name);
+                try metadata.put("agent_mode", "orchestration");
+                
+                var cp = cm.create(&msgs, 0, 0, metadata) catch break :saveCpBlk;
                 errdefer cp.deinit();
                 cm.save(&cp) catch break :saveCpBlk;
                 checkpoint_id = self.allocator.dupe(u8, cp.id) catch null;
@@ -674,7 +679,13 @@ pub const OrchestrationEngine = struct {
         const msgs = [_]Checkpoint.CheckpointMessage{
             .{ .role = "system", .content = content },
         };
-        var cp = try cm.create(&msgs, 0, 0);
+        
+        var metadata = std.StringHashMap([]const u8).init(self.allocator);
+        defer metadata.deinit();
+        try metadata.put("team_id", team_id);
+        try metadata.put("operation", "checkpoint_team");
+        
+        var cp = try cm.create(&msgs, 0, 0, metadata);
         try cm.save(&cp);
         cp.deinit();
 

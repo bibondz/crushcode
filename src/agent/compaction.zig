@@ -18,6 +18,7 @@ pub const CompactionTier = enum {
 /// 2. Preserves recent messages at full fidelity
 /// 3. Summarizes older messages into a compact representation
 /// 4. Maintains key decisions and context markers
+/// 5. Preserves agent configuration metadata
 ///
 /// Reference: OpenHarness auto-compaction for long session context
 pub const ContextCompactor = struct {
@@ -27,6 +28,7 @@ pub const ContextCompactor = struct {
     recent_window: u32,
     preserved_topics: array_list_compat.ArrayList([]const u8),
     previous_summary: []const u8 = "",
+    agent_metadata: std.StringHashMap([]const u8),
 
     pub fn init(allocator: Allocator, max_tokens: u64) ContextCompactor {
         return ContextCompactor{
@@ -36,6 +38,7 @@ pub const ContextCompactor = struct {
             .recent_window = 10,
             .preserved_topics = array_list_compat.ArrayList([]const u8).init(allocator),
             .previous_summary = "",
+            .agent_metadata = std.StringHashMap([]const u8).init(allocator),
         };
     }
 
@@ -49,6 +52,19 @@ pub const ContextCompactor = struct {
 
     pub fn preserveTopic(self: *ContextCompactor, topic: []const u8) !void {
         try self.preserved_topics.append(try self.allocator.dupe(u8, topic));
+    }
+
+    /// Preserve agent configuration metadata during compaction
+    pub fn preserveAgentMetadata(self: *ContextCompactor, key: []const u8, value: []const u8) !void {
+        try self.agent_metadata.put(try self.allocator.dupe(u8, key), try self.allocator.dupe(u8, value));
+    }
+
+    /// Set agent metadata from a source metadata hashmap
+    pub fn setAgentMetadata(self: *ContextCompactor, source_metadata: *const std.StringHashMap([]const u8)) !void {
+        var iter = source_metadata.iterator();
+        while (iter.next()) |entry| {
+            try self.preserveAgentMetadata(entry.key_ptr.*, entry.value_ptr.*);
+        }
     }
 
     pub fn needsCompaction(self: *const ContextCompactor, current_tokens: u64) bool {
@@ -72,6 +88,18 @@ pub const ContextCompactor = struct {
         self: *ContextCompactor,
         messages: []const CompactMessage,
     ) !CompactResult {
+        return self.compactHeuristic(messages, "");
+    }
+
+    pub fn compactWithMetadata(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+        metadata: ?*const std.StringHashMap([]const u8),
+    ) !CompactResult {
+        // Set agent metadata if provided
+        if (metadata) |meta| {
+            try self.setAgentMetadata(meta);
+        }
         return self.compactHeuristic(messages, "");
     }
 
@@ -122,11 +150,22 @@ pub const ContextCompactor = struct {
             total_tokens_after += estimateTokens(content);
         }
 
+        // Copy agent metadata for the result
+        var result_metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer result_metadata.deinit();
+        
+        var meta_iter = self.agent_metadata.iterator();
+        while (meta_iter.next()) |entry| {
+            try result_metadata.put(try self.allocator.dupe(u8, entry.key_ptr.*), 
+                                 try self.allocator.dupe(u8, entry.value_ptr.*));
+        }
+        
         return CompactResult{
             .messages = copied_messages,
             .tokens_saved = total_tokens_before -| total_tokens_after,
             .messages_summarized = 0,
             .summary = "",
+            .agent_metadata = result_metadata,
             .allocator = self.allocator,
         };
     }
@@ -183,6 +222,7 @@ pub const ContextCompactor = struct {
                 .tokens_saved = 0,
                 .messages_summarized = 0,
                 .summary = "",
+                .agent_metadata = std.StringHashMap([]const u8).init(self.allocator),
             };
         }
 
@@ -264,11 +304,29 @@ pub const ContextCompactor = struct {
             tokens_after += estimateTokens(msg.content);
         }
 
+        // Copy agent metadata for the result
+        var result_metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var meta_iter = result_metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            result_metadata.deinit();
+        }
+        
+        var meta_iter = self.agent_metadata.iterator();
+        while (meta_iter.next()) |entry| {
+            try result_metadata.put(try self.allocator.dupe(u8, entry.key_ptr.*), 
+                                 try self.allocator.dupe(u8, entry.value_ptr.*));
+        }
+        
         return CompactResult{
             .messages = recent_messages,
             .tokens_saved = total_tokens_before -| tokens_after,
             .messages_summarized = @intCast(old_messages.len),
             .summary = summary,
+            .agent_metadata = result_metadata,
             .allocator = self.allocator,
         };
     }
@@ -333,6 +391,7 @@ pub const CompactResult = struct {
     tokens_saved: u64,
     messages_summarized: u32,
     summary: []const u8,
+    agent_metadata: std.StringHashMap([]const u8),
     allocator: ?Allocator = null,
 
     pub fn deinit(self: *CompactResult) void {
@@ -595,12 +654,14 @@ test "CompactResult - struct field access" {
     const msgs = [_]CompactMessage{
         .{ .role = "user", .content = "hi", .timestamp = null },
     };
-    const result = CompactResult{
+    var result = CompactResult{
         .messages = &msgs,
         .tokens_saved = 500,
         .messages_summarized = 10,
         .summary = "Summary text",
+        .agent_metadata = std.StringHashMap([]const u8).init(testing.allocator),
     };
+    defer result.agent_metadata.deinit();
     try testing.expectEqual(@as(u64, 500), result.tokens_saved);
     try testing.expectEqual(@as(u32, 10), result.messages_summarized);
     try testing.expectEqualStrings("Summary text", result.summary);

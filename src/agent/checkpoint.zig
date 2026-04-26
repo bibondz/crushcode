@@ -76,7 +76,21 @@ pub const CheckpointManager = struct {
             if (i < checkpoint.messages.len - 1) try writer.writeAll(",");
             try writer.writeAll("\n");
         }
-        try writer.writeAll("  ]\n");
+        try writer.writeAll("  ],\n");
+
+        // Write metadata
+        try writer.writeAll("  \"metadata\": {\n");
+        var metadata_iter = checkpoint.metadata.iterator();
+        var metadata_index: usize = 0;
+        while (metadata_iter.next()) |entry| {
+            try writer.print("    \"{s}\": \"{s}\"", .{ entry.key_ptr.*, entry.value_ptr.* });
+            if (metadata_index < checkpoint.metadata.count() - 1) {
+                try writer.writeAll(",");
+            }
+            try writer.writeAll("\n");
+            metadata_index += 1;
+        }
+        try writer.writeAll("  }\n");
         try writer.writeAll("}\n");
     }
 
@@ -121,6 +135,25 @@ pub const CheckpointManager = struct {
             }
         }
 
+        // Parse metadata
+        var metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var meta_iter = metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            metadata.deinit();
+        }
+
+        if (root.object.get("metadata")) |meta_val| {
+            var meta_iter = meta_val.object.iterator();
+            while (meta_iter.next()) |entry| {
+                    try metadata.put(try self.allocator.dupe(u8, entry.key_ptr.*), 
+                                   try self.allocator.dupe(u8, entry.value_ptr.*.string));
+            }
+        }
+
         return Checkpoint{
             .allocator = self.allocator,
             .id = try self.allocator.dupe(u8, root.object.get("id").?.string),
@@ -128,7 +161,7 @@ pub const CheckpointManager = struct {
             .messages = try messages.toOwnedSlice(),
             .tool_calls = @intCast(root.object.get("tool_calls").?.integer),
             .tokens_used = @intCast(root.object.get("tokens_used").?.integer),
-            .metadata = std.StringHashMap([]const u8).init(self.allocator),
+            .metadata = metadata,
         };
     }
 
@@ -170,7 +203,7 @@ pub const CheckpointManager = struct {
     }
 
     /// Create a new checkpoint from current state
-    pub fn create(self: *CheckpointManager, messages: []const Checkpoint.CheckpointMessage, tool_calls: u32, tokens_used: u32) !Checkpoint {
+    pub fn create(self: *CheckpointManager, messages: []const Checkpoint.CheckpointMessage, tool_calls: u32, tokens_used: u32, metadata: ?std.StringHashMap([]const u8)) !Checkpoint {
         const timestamp = std.time.timestamp();
 
         // Generate ID from timestamp
@@ -184,6 +217,25 @@ pub const CheckpointManager = struct {
             };
         }
 
+        var checkpoint_metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var meta_iter = checkpoint_metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            checkpoint_metadata.deinit();
+        }
+
+        // Copy metadata if provided
+        if (metadata) |source_metadata| {
+            var meta_iter = source_metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                try checkpoint_metadata.put(try self.allocator.dupe(u8, entry.key_ptr.*), 
+                                          try self.allocator.dupe(u8, entry.value_ptr.*));
+            }
+        }
+
         return Checkpoint{
             .allocator = self.allocator,
             .id = id,
@@ -191,7 +243,7 @@ pub const CheckpointManager = struct {
             .messages = cp_messages,
             .tool_calls = tool_calls,
             .tokens_used = tokens_used,
-            .metadata = std.StringHashMap([]const u8).init(self.allocator),
+            .metadata = checkpoint_metadata,
         };
     }
 };
@@ -211,7 +263,12 @@ test "CheckpointManager - create and save" {
         .{ .role = "assistant", .content = "Hi there!" },
     };
 
-    var cp = try mgr.create(&messages, 3, 150);
+    var metadata = std.StringHashMap([]const u8).init(allocator);
+    defer metadata.deinit();
+    try metadata.put("agent_mode", "debug");
+    try metadata.put("provider", "test");
+    
+    var cp = try mgr.create(&messages, 3, 150, metadata);
     defer cp.deinit();
 
     try mgr.save(&cp);
@@ -238,7 +295,11 @@ test "CheckpointManager - save and load" {
         .{ .role = "assistant", .content = "Test response" },
     };
 
-    var cp = try mgr.create(&messages, 1, 50);
+    var metadata = std.StringHashMap([]const u8).init(allocator);
+    defer metadata.deinit();
+    try metadata.put("model", "test-model");
+    
+    var cp = try mgr.create(&messages, 1, 50, metadata);
     try mgr.save(&cp);
     const cp_id = try allocator.dupe(u8, cp.id);
     defer allocator.free(cp_id);
@@ -253,6 +314,11 @@ test "CheckpointManager - save and load" {
     try std.testing.expect(std.mem.eql(u8, loaded.messages[1].content, "Test response"));
     try std.testing.expect(loaded.tool_calls == 1);
     try std.testing.expect(loaded.tokens_used == 50);
+    
+    // Test metadata preservation
+    try std.testing.expect(loaded.metadata.count() == 2);
+    try std.testing.expect(std.mem.eql(u8, loaded.metadata.get("agent_mode").?, "debug"));
+    try std.testing.expect(std.mem.eql(u8, loaded.metadata.get("provider").?, "test"));
 
     std.fs.cwd().deleteTree(tmp_dir) catch {};
 }

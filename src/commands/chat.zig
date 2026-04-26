@@ -2148,6 +2148,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                         .tokens_saved = total_tokens_before -| tokens_after,
                         .messages_summarized = @intCast(recent_split),
                         .summary = llm_summary,
+                        .agent_metadata = std.StringHashMap([]const u8).init(allocator),
                     };
 
                     replaceMessagesFromCompaction(allocator, &messages, llm_result.summary, llm_result.messages) catch continue;

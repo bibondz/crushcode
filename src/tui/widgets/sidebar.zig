@@ -18,6 +18,7 @@ pub const SidebarContext = struct {
     request_count: u32,
     total_input_tokens: u64,
     total_output_tokens: u64,
+    turn_token_history: []const u32 = &.{},
     estimated_cost_usd: f64,
     session_minutes: u32,
     session_seconds_part: u32,
@@ -193,13 +194,77 @@ pub const SidebarWidget = struct {
         child_idx += 1;
         row += 1;
 
-        const time_txt = try std.fmt.allocPrint(ctx.arena, "{d}m{d}s", .{ self.context.session_minutes, self.context.session_seconds_part });
+const time_txt = try std.fmt.allocPrint(ctx.arena, "{d}m{d}s", .{ self.context.session_minutes, self.context.session_seconds_part });
         children[child_idx] = .{
             .origin = .{ .row = row, .col = 1 },
             .surface = try self.buildText(ctx, time_txt, self.width - 2, .{ .fg = theme.dimmed }),
         };
         child_idx += 1;
         row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme catppuccin", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme nord", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+        children[child_idx] = .{
+            .origin = .{ .row = row, .col = 1 },
+            .surface = try self.buildText(ctx, "/theme dracula", self.width - 2, .{ .fg = theme.dimmed }),
+        };
+        child_idx += 1;
+        row += 1;
+
+        // Token usage sparkline (last 20 turns)
+        if (self.context.turn_token_history.len > 0) {
+            row += 1;
+            const sparkline_width = w - 2; // Leave room for borders
+            if (sparkline_width > 0) {
+                const history = self.context.turn_token_history;
+                const max_items = @min(history.len, sparkline_width);
+                const start_idx = history.len - max_items;
+                
+                // Find max for scaling
+                var max_tokens: u32 = 1;
+                for (history[start_idx..]) |t| {
+                    if (t > max_tokens) max_tokens = t;
+                }
+                
+                // Render sparkline bars using unicode block characters
+                // ▁▂▃▄▅▆▇█ (8 levels)
+                const spark_chars = [_][]const u8{ "▁", "▂", "▃", "▄", "▅", "▆", "▇", "█" };
+                var spark_buf = try ctx.arena.alloc(u8, max_items * 4); // 4 bytes per char max
+                var spark_len: usize = 0;
+                
+                for (history[start_idx..]) |tokens| {
+                    const level = @min((@as(u64, tokens) * 7) / max_tokens, 7);
+                    const ch = spark_chars[level];
+                    @memcpy(spark_buf[spark_len..spark_len + ch.len], ch);
+                    spark_len += ch.len;
+                }
+                
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, spark_buf[0..spark_len], self.width - 2, .{ .fg = theme.accent }),
+                };
+                child_idx += 1;
+                row += 1;
+                
+                // Min/max labels
+                const spark_label = try std.fmt.allocPrint(ctx.arena, "  min:{d} max:{d}", .{ history[start_idx], history[history.len - 1] });
+                children[child_idx] = .{
+                    .origin = .{ .row = row, .col = 1 },
+                    .surface = try self.buildText(ctx, spark_label, self.width - 2, .{ .fg = theme.dimmed }),
+                };
+                child_idx += 1;
+                row += 1;
+            }
+        }
 
         // Context section
         row += 1;

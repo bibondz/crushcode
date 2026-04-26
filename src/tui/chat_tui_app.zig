@@ -341,6 +341,7 @@ pub const Model = struct {
     should_quit: bool,
     total_input_tokens: u64,
     total_output_tokens: u64,
+    turn_token_history: array_list_compat.ArrayList(u32),
     request_count: u32,
     session_start: i128,
     pricing_table: usage_pricing.PricingTable,
@@ -453,6 +454,7 @@ pub const Model = struct {
             .client = null,
             .messages = std.ArrayList(Message).empty,
             .history = std.ArrayList(core.ChatMessage).empty,
+            .turn_token_history = undefined, // initialized below
             .input = widget_input.MultiLineInputState.init(allocator),
             .show_palette = false,
             .palette_input = vxfw.TextField.init(allocator),
@@ -568,6 +570,7 @@ pub const Model = struct {
 
         model.messages = try std.ArrayList(Message).initCapacity(allocator, 8);
         model.history = try std.ArrayList(core.ChatMessage).initCapacity(allocator, 8);
+        model.turn_token_history = array_list_compat.ArrayList(u32).init(allocator);
         model.fallback_providers = try std.ArrayList(FallbackProvider).initCapacity(allocator, setup_provider_data.len);
         model.always_allow_tools = try std.ArrayList([]const u8).initCapacity(allocator, 4);
         model.workers = try std.ArrayList(WorkerItem).initCapacity(allocator, 4);
@@ -737,6 +740,7 @@ pub const Model = struct {
             freeChatMessage(self.allocator, message);
         }
         self.history.deinit(self.allocator);
+        self.turn_token_history.deinit();
         self.registry.deinit();
         self.toast_stack.deinit();
         self.pricing_table.deinit();
@@ -2002,6 +2006,7 @@ pub const Model = struct {
                 .request_count = self.request_count,
                 .total_input_tokens = self.total_input_tokens,
                 .total_output_tokens = self.total_output_tokens,
+                .turn_token_history = self.turn_token_history.items,
                 .estimated_cost_usd = token_tracking_mod.estimatedCostUsd(self),
                 .session_minutes = @intCast(session_time_mod.sessionMinutes(self)),
                 .session_seconds_part = @intCast(session_time_mod.sessionSecondsPart(self)),
