@@ -1272,7 +1272,9 @@ pub const Model = struct {
                 if (ctx_set.files.items.len > 0) {
                     rw.print("\n\n<memory>\n", .{}) catch {};
                     for (ctx_set.files.items) |f| {
-                        rw.print("<file path=\"{s}\">\n{s}\n</file>\n", .{ f.path, f.content }) catch {};
+                        const escaped = project_mod.escapeXml(self.allocator, f.content) catch f.content;
+                        defer if (escaped.ptr != f.content.ptr) self.allocator.free(escaped);
+                        rw.print("<file path=\"{s}\">\n{s}\n</file>\n", .{ f.path, escaped }) catch {};
                     }
                     rw.print("</memory>", .{}) catch {};
                 }
@@ -1287,7 +1289,9 @@ pub const Model = struct {
                         rw.print("\n\n<memory>\n", .{}) catch {};
                         has_any = true;
                     }
-                    rw.print("<file path=\"AGENTS.md\">\n{s}\n</file>\n", .{agents_content}) catch {};
+                    const escaped = project_mod.escapeXml(self.allocator, agents_content) catch agents_content;
+                    defer if (escaped.ptr != agents_content.ptr) self.allocator.free(escaped);
+                    rw.print("<file path=\"AGENTS.md\">\n{s}\n</file>\n", .{escaped}) catch {};
                 }
             }
             if (project_mod.loadInstructionsMd(self.allocator) catch null) |instructions| {
@@ -1297,7 +1301,9 @@ pub const Model = struct {
                         rw.print("\n\n<memory>\n", .{}) catch {};
                         has_any = true;
                     }
-                    rw.print("<file path=\"instructions.md\">\n{s}\n</file>\n", .{instructions}) catch {};
+                    const escaped = project_mod.escapeXml(self.allocator, instructions) catch instructions;
+                    defer if (escaped.ptr != instructions.ptr) self.allocator.free(escaped);
+                    rw.print("<file path=\"instructions.md\">\n{s}\n</file>\n", .{escaped}) catch {};
                 }
             }
             if (has_any) {

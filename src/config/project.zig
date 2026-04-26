@@ -161,6 +161,51 @@ pub fn loadInstructionsMd(allocator: Allocator) !?[]const u8 {
     return dir.readFileAlloc(allocator, "instructions.md", 1024 * 1024) catch return null;
 }
 
+/// Escape special XML characters in content to prevent tag injection.
+/// Replaces: & → &amp;  < → &lt;  > → &gt;  " → &quot;
+/// Caller must free returned slice.
+pub fn escapeXml(allocator: Allocator, content: []const u8) ![]const u8 {
+    // Count special chars to estimate output size
+    var extra: usize = 0;
+    for (content) |c| {
+        extra += switch (c) {
+            '&' => 4, // &amp;
+            '<', '>' => 3, // &lt; &gt;
+            '"' => 5, // &quot;
+            else => 0,
+        };
+    }
+    if (extra == 0) return allocator.dupe(u8, content);
+
+    const buf = try allocator.alloc(u8, content.len + extra);
+    var i: usize = 0;
+    for (content) |c| {
+        switch (c) {
+            '&' => {
+                @memcpy(buf[i..][0..5], "&amp;");
+                i += 5;
+            },
+            '<' => {
+                @memcpy(buf[i..][0..4], "&lt;");
+                i += 4;
+            },
+            '>' => {
+                @memcpy(buf[i..][0..4], "&gt;");
+                i += 4;
+            },
+            '"' => {
+                @memcpy(buf[i..][0..6], "&quot;");
+                i += 6;
+            },
+            else => {
+                buf[i] = c;
+                i += 1;
+            },
+        }
+    }
+    return buf[0..i];
+}
+
 /// A single discovered context file with its loaded content.
 pub const ContextFile = struct {
     path: []const u8, // Statically allocated string literal (no free needed)
@@ -356,4 +401,20 @@ test "loadContextFiles finds AGENTS.md in cwd" {
         try testing.expectEqualStrings("test agents content", set.files.items[0].content);
         set.deinit(testing.allocator);
     }
+}
+
+test "escapeXml handles special characters" {
+    const testing = std.testing;
+    const input = "Use <div> & \"attrs\"";
+    const escaped = try escapeXml(testing.allocator, input);
+    defer testing.allocator.free(escaped);
+    try testing.expectEqualStrings("Use &lt;div&gt; &amp; &quot;attrs&quot;", escaped);
+}
+
+test "escapeXml returns original when no special chars" {
+    const testing = std.testing;
+    const input = "hello world";
+    const escaped = try escapeXml(testing.allocator, input);
+    defer testing.allocator.free(escaped);
+    try testing.expectEqualStrings("hello world", escaped);
 }
