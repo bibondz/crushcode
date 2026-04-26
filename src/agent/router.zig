@@ -1,7 +1,10 @@
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
+const circuit_breaker = @import("circuit_breaker");
 
 const Allocator = std.mem.Allocator;
+const CircuitBreaker = circuit_breaker.CircuitBreaker;
+const CircuitBreakerMap = circuit_breaker.CircuitBreakerMap;
 
 /// Task category for routing decisions.
 /// Each category maps to a model tier based on complexity and cost.
@@ -46,6 +49,95 @@ const default_pricing = [_]PricingTier{
     .{ .model = "default", .input_cost_per_million = 3.0, .output_cost_per_million = 15.0 },
 };
 
+/// Routing strategy for model selection.
+pub const RoutingStrategy = enum {
+    /// Use current category→model mapping
+    default,
+    /// Pick cheapest model meeting quality threshold
+    cost_optimized,
+    /// Pick provider with lowest recent P95
+    latency_aware,
+    /// Try models in order, skip circuit-open providers
+    fallback_chain,
+};
+
+/// Ordered fallback chain of model names.
+/// Tries each model in sequence, skipping circuit-open providers.
+pub const FallbackChain = struct {
+    models: []const []const u8,
+    allocator: Allocator,
+    /// Internal index tracking (not exposed)
+    current_index: usize,
+
+    /// Initialize a fallback chain with an ordered list of model names.
+    /// Models slice is duped and owned by the chain.
+    pub fn init(allocator: Allocator, models: []const []const u8) !FallbackChain {
+        const duped = try allocator.alloc([]const u8, models.len);
+        for (models, 0..) |m, i| {
+            duped[i] = try allocator.dupe(u8, m);
+        }
+        return FallbackChain{
+            .models = duped,
+            .allocator = allocator,
+            .current_index = 0,
+        };
+    }
+
+    /// Get the next available model, skipping circuit-open providers.
+    /// Returns null if all models exhausted.
+    pub fn next(self: *FallbackChain, breakers: *const CircuitBreakerMap) ?[]const u8 {
+        while (self.current_index < self.models.len) {
+            const model = self.models[self.current_index];
+            self.current_index += 1;
+
+            // Check circuit breaker for this provider
+            if (breakers.get(model)) |*breaker| {
+                if (!breaker.allow()) continue;
+            }
+            return model;
+        }
+        return null;
+    }
+
+    /// Reset chain to start from the beginning.
+    pub fn resetIndex(self: *FallbackChain) void {
+        self.current_index = 0;
+    }
+
+    pub fn deinit(self: *FallbackChain) void {
+        for (self.models) |m| {
+            self.allocator.free(m);
+        }
+        self.allocator.free(self.models);
+    }
+};
+
+/// Per-provider latency tracking for latency-aware routing.
+pub const ProviderLatency = struct {
+    provider: []const u8,
+    model: []const u8,
+    p50_ms: u64,
+    p95_ms: u64,
+    sample_count: u32,
+    last_updated_ns: i64,
+
+    /// Record a latency sample. Updates P50/P95 estimates using exponential moving average.
+    pub fn record(self: *ProviderLatency, latency_ms: u64) void {
+        if (self.sample_count == 0) {
+            self.p50_ms = latency_ms;
+            self.p95_ms = latency_ms;
+        } else {
+            // Exponential moving average: blend new value with 70/30 weight
+            self.p50_ms = @intCast(@divFloor(self.p50_ms * 7 + latency_ms * 3, 10));
+            // P95 tracks higher values with 90/10 blend
+            const p95_new = @max(self.p95_ms, latency_ms);
+            self.p95_ms = @intCast(@divFloor(self.p95_ms * 9 + p95_new, 10));
+        }
+        self.sample_count += 1;
+        self.last_updated_ns = @intCast(std.time.nanoTimestamp());
+    }
+};
+
 /// Model router — maps task categories to appropriate models.
 ///
 /// Default rules:
@@ -59,6 +151,10 @@ pub const ModelRouter = struct {
     allocator: Allocator,
     rules: array_list_compat.ArrayList(RoutingRule),
     default_model: []const u8,
+    strategy: RoutingStrategy,
+    latency_history: std.StringHashMap(ProviderLatency),
+    circuit_breakers: CircuitBreakerMap,
+    fallback_chain: ?FallbackChain,
 
     /// Initialize a new ModelRouter with default routing rules.
     pub fn init(allocator: Allocator) !ModelRouter {
@@ -66,6 +162,10 @@ pub const ModelRouter = struct {
             .allocator = allocator,
             .rules = array_list_compat.ArrayList(RoutingRule).init(allocator),
             .default_model = try allocator.dupe(u8, "sonnet"),
+            .strategy = .default,
+            .latency_history = std.StringHashMap(ProviderLatency).init(allocator),
+            .circuit_breakers = CircuitBreakerMap.init(allocator),
+            .fallback_chain = null,
         };
         errdefer {
             router.rules.deinit();
@@ -89,6 +189,22 @@ pub const ModelRouter = struct {
         }
         self.rules.deinit();
         self.allocator.free(self.default_model);
+        // Clean up latency history keys
+        var lat_it = self.latency_history.keyIterator();
+        while (lat_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.latency_history.deinit();
+        // Clean up circuit breakers keys
+        var cb_it = self.circuit_breakers.keyIterator();
+        while (cb_it.next()) |key| {
+            self.allocator.free(key.*);
+        }
+        self.circuit_breakers.deinit();
+        // Clean up fallback chain
+        if (self.fallback_chain) |*fc| {
+            fc.deinit();
+        }
     }
 
     /// Route a task category to the appropriate model.
@@ -197,6 +313,101 @@ pub const ModelRouter = struct {
             return .search;
         }
         return null;
+    }
+
+    /// Set the routing strategy.
+    pub fn setStrategy(self: *ModelRouter, strategy: RoutingStrategy) void {
+        self.strategy = strategy;
+    }
+
+    /// Set the fallback chain for fallback_chain strategy.
+    /// Models are duped and owned by the router.
+    pub fn setFallbackChain(self: *ModelRouter, models: []const []const u8) !void {
+        if (self.fallback_chain) |*fc| {
+            fc.deinit();
+        }
+        self.fallback_chain = try FallbackChain.init(self.allocator, models);
+    }
+
+    /// Get or create a circuit breaker for a provider.
+    /// Returns null only on allocation failure.
+    pub fn getCircuitBreaker(self: *ModelRouter, provider: []const u8) ?*CircuitBreaker {
+        if (self.circuit_breakers.getPtr(provider)) |cb| {
+            return cb;
+        }
+        // Create a new circuit breaker: 5 failures, 60s reset timeout
+        const cb = CircuitBreaker.init(provider, 5, 60 * std.time.ns_per_s);
+        const key = self.allocator.dupe(u8, provider) catch return null;
+        self.circuit_breakers.put(key, cb) catch {
+            self.allocator.free(key);
+            return null;
+        };
+        return self.circuit_breakers.getPtr(provider);
+    }
+
+    /// Record latency for a provider+model combination.
+    pub fn recordLatency(self: *ModelRouter, provider: []const u8, model: []const u8, latency_ms: u64) void {
+        // Build composite key: "provider|model"
+        const key_len = provider.len + 1 + model.len;
+        const key = self.allocator.alloc(u8, key_len) catch return;
+        @memcpy(key[0..provider.len], provider);
+        key[provider.len] = '|';
+        @memcpy(key[provider.len + 1 ..], model);
+
+        if (self.latency_history.getPtr(key)) |latency| {
+            latency.record(latency_ms);
+            self.allocator.free(key);
+        } else {
+            var latency = ProviderLatency{
+                .provider = provider,
+                .model = model,
+                .p50_ms = 0,
+                .p95_ms = 0,
+                .sample_count = 0,
+                .last_updated_ns = 0,
+            };
+            latency.record(latency_ms);
+            self.latency_history.put(key, latency) catch {
+                self.allocator.free(key);
+            };
+        }
+    }
+
+    /// Route using the configured strategy.
+    pub fn routeWithStrategy(self: *ModelRouter, category: TaskCategory) []const u8 {
+        switch (self.strategy) {
+            .default => return self.routeForTask(category),
+            .cost_optimized => return self.routeForTask(category),
+            .latency_aware => {
+                const model = self.routeForTask(category);
+                // Check if this provider has high P95 latency
+                var it = self.latency_history.iterator();
+                var best_model: ?[]const u8 = null;
+                var best_p95: u64 = std.math.maxInt(u64);
+                while (it.next()) |entry| {
+                    if (entry.value_ptr.p95_ms < best_p95) {
+                        best_p95 = entry.value_ptr.p95_ms;
+                        best_model = entry.value_ptr.model;
+                    }
+                }
+                // If best latency is significantly better, use it; otherwise keep default
+                if (best_model) |bm| {
+                    if (best_p95 < 5000) {
+                        return bm;
+                    }
+                }
+                return model;
+            },
+            .fallback_chain => {
+                if (self.fallback_chain) |*fc| {
+                    fc.resetIndex();
+                    if (fc.next(&self.circuit_breakers)) |model| {
+                        return model;
+                    }
+                }
+                return self.routeForTask(category);
+            },
+        }
     }
 };
 

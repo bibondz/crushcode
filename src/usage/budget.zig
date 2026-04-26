@@ -130,10 +130,21 @@ pub const BudgetManager = struct {
     }
 
     /// Check if we're over budget (should block requests)
-    pub fn isOverBudget(self: *const BudgetManager) bool {
+    pub fn isOverBudget(self: *BudgetManager) bool {
         if (!self.config.isSet()) return false;
         const status = self.checkBudget();
         return status.isOverBudget();
+    }
+
+    /// Pre-flight check before making a request.
+    /// Auto-resets periods, checks budget, prints alert if threshold reached.
+    /// Returns true if the request should proceed, false if blocked.
+    pub fn checkBeforeRequest(self: *BudgetManager) bool {
+        self.checkAndResetPeriods();
+        if (self.shouldAlert()) {
+            self.printAlert();
+        }
+        return !self.isOverBudget();
     }
 
     /// Print a budget alert to stderr

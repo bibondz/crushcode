@@ -643,6 +643,7 @@ pub fn build(b: *std.Build) !void {
         imp("guardian", guardian_mod),
     });
     const crush_mode_mod = simpleMod(b, "src/execution/crush_mode.zig", target, optimize);
+    const circuit_breaker_mod = simpleMod(b, "src/agent/circuit_breaker.zig", target, optimize);
     const router_mod = simpleMod(b, "src/agent/router.zig", target, optimize);
 
     // Harness Engineering: Trace + Retry modules (P0)
@@ -658,6 +659,9 @@ pub fn build(b: *std.Build) !void {
     const retry_policy_mod = simpleMod(b, "src/retry/policy.zig", target, optimize);
     const retry_self_heal_mod = simpleMod(b, "src/retry/self_heal.zig", target, optimize);
 
+    // Harness Engineering: Guardrail modules (P1)
+    const guardrail_pipeline_mod = simpleMod(b, "src/guardrail/pipeline.zig", target, optimize);
+
     // Wire trace + retry into agent loop
     addImports(agent_loop_mod, &.{
         imp("trace_span", trace_span_mod),
@@ -671,6 +675,7 @@ pub fn build(b: *std.Build) !void {
     });
 
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
+    addImports(router_mod, &.{imp("circuit_breaker", circuit_breaker_mod)});
     const orchestration_mod = createMod(b, "src/agent/orchestrator.zig", target, optimize, &.{
         imp("worker", worker_mod),
         imp("coordinator", coordinator_mod),
@@ -825,7 +830,7 @@ pub fn build(b: *std.Build) !void {
         widget_header_mod,        widget_input_mod,             widget_sidebar_mod,      widget_palette_mod,    widget_permission_mod,      widget_setup_mod,     widget_spinner_mod,        widget_gradient_mod, widget_toast_mod,
         widget_typewriter_mod,    multiline_input_mod,          migrate_mod,             update_mod,            custom_commands_mod,        project_mod,          permission_audit_mod,      shell_state_mod,     shell_history_mod,
         permission_lists_mod, permission_lists_mod,      run_mod,                 batch_mod,             file_tracker_mod,           structured_log_mod,   logs_mod,                  tool_exposition_mod, mcp_server_mod,
-        governance_mod,           permission_lists_mod,          context_optimizer_mod,   worker_mod,            router_mod,                 capability_mod,       knowledge_schema_mod,      knowledge_vault_mod, knowledge_ops_mod,
+        governance_mod,           permission_lists_mod,          context_optimizer_mod,   worker_mod,            router_mod,                 circuit_breaker_mod,       capability_mod,       knowledge_schema_mod,      knowledge_vault_mod, knowledge_ops_mod,
         knowledge_ops_mod,      knowledge_knowledge_lint_mod, widget_code_view_mod,    widget_data_table_mod, widget_scroll_panel_mod,    widget_diff_preview_mod, worker_runner_mod,    skills_agents_parser_mod,  skills_resolver_mod, knowledge_persistence_mod,
         hooks_executor_mod,       coordinator_mod,              background_agent_mod,    skill_pipeline_mod,    layered_memory_mod,         adversarial_mod,              skill_sync_mod,            template_mod,        code_preview_mod,     file_type_mod,
         cognition_mod,             guardian_mod,              phase_runner_mod,             autopilot_mod,
@@ -870,6 +875,7 @@ pub fn build(b: *std.Build) !void {
         trace_writer_mod,
         retry_policy_mod,
         retry_self_heal_mod,
+        guardrail_pipeline_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -937,7 +943,8 @@ pub fn build(b: *std.Build) !void {
         context_optimizer_mod,
         worker_mod,
         router_mod,
-        capability_mod,
+        circuit_breaker_mod,
+        guardrail_pipeline_mod,
         knowledge_schema_mod,
         knowledge_ops_mod,
         knowledge_knowledge_lint_mod,
