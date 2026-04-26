@@ -78,7 +78,7 @@ pub fn handleAutopilot(args: args_mod.Args) !void {
     if (std.mem.eql(u8, subcommand, "list")) {
         var pipeline = cognition_mod.KnowledgePipeline.init(allocator, ".") catch return;
         defer pipeline.deinit();
-        var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/autopilot/") catch return;
+        var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/autopilot/") catch return;
         defer engine.deinit();
         const listing = engine.listAgents(allocator) catch return;
         defer allocator.free(listing);
@@ -111,7 +111,7 @@ pub fn handleAutopilot(args: args_mod.Args) !void {
 
         var engine = autopilot_mod.AutopilotEngine.init(
             allocator,
-            &pipeline,
+            pipeline,
             if (guardian != null) &guardian.? else null,
             ".",
             ".crushcode/autopilot/",
@@ -160,7 +160,7 @@ pub fn handleAutopilot(args: args_mod.Args) !void {
 
         var pipeline = cognition_mod.KnowledgePipeline.init(allocator, ".") catch return;
         defer pipeline.deinit();
-        var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/autopilot/") catch return;
+        var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/autopilot/") catch return;
         defer engine.deinit();
 
         const status_str = engine.getAgentStatus(agent_id) orelse {
@@ -175,7 +175,7 @@ pub fn handleAutopilot(args: args_mod.Args) !void {
     if (std.mem.eql(u8, subcommand, "schedule")) {
         var pipeline = cognition_mod.KnowledgePipeline.init(allocator, ".") catch return;
         defer pipeline.deinit();
-        var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/autopilot/") catch return;
+        var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/autopilot/") catch return;
         defer engine.deinit();
 
         const schedule = engine.bg_manager.listSchedule(allocator) catch return;
@@ -191,7 +191,7 @@ pub fn handleAutopilot(args: args_mod.Args) !void {
         defer if (guardian != null) guardian.?.deinit();
         var engine = autopilot_mod.AutopilotEngine.init(
             allocator,
-            &pipeline,
+            pipeline,
             if (guardian != null) &guardian.? else null,
             ".",
             ".crushcode/autopilot/",

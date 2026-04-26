@@ -133,9 +133,12 @@ pub const KnowledgePipeline = struct {
     source_tracker: SourceTracker,
 
     /// Initialize the pipeline and all sub-components.
+    /// Returns a heap-allocated KnowledgePipeline to ensure internal
+    /// pointers (ingester/querier → vault) remain stable.
     /// If project_dir is provided, LayeredMemory is created for that directory.
     /// If null, memory stays null (graceful degradation).
-    pub fn init(allocator: Allocator, project_dir: ?[]const u8) !KnowledgePipeline {
+    /// Caller owns the returned pointer — call deinit() when done.
+    pub fn init(allocator: Allocator, project_dir: ?[]const u8) !*KnowledgePipeline {
         var detector = FileDetector.init(allocator) catch
             return error.PipelineInitFailed;
         errdefer detector.deinit();
@@ -150,12 +153,18 @@ pub const KnowledgePipeline = struct {
                 allocator.destroy(mem);
                 // Graceful degradation: continue without memory
                 memory = null;
-                var pipeline_no_mem = KnowledgePipeline{
+                const self = allocator.create(KnowledgePipeline) catch {
+                    detector.deinit();
+                    return error.PipelineInitFailed;
+                };
+                errdefer allocator.destroy(self);
+                self.* = KnowledgePipeline{
                     .allocator = allocator,
                     .detector = detector,
                     .kg = KnowledgeGraph.init(allocator),
                     .vault = KnowledgeVault.init(allocator, ".knowledge/raw") catch {
                         detector.deinit();
+                        allocator.destroy(self);
                         return error.PipelineInitFailed;
                     },
                     .ingester = undefined,
@@ -165,14 +174,23 @@ pub const KnowledgePipeline = struct {
                     .memory = null,
                     .source_tracker = SourceTracker.init(allocator),
                 };
-                pipeline_no_mem.ingester = KnowledgeIngester.init(allocator, &pipeline_no_mem.vault);
-                pipeline_no_mem.querier = KnowledgeQuerier.init(allocator, &pipeline_no_mem.vault);
-                return pipeline_no_mem;
+                self.ingester = KnowledgeIngester.init(allocator, &self.vault);
+                self.querier = KnowledgeQuerier.init(allocator, &self.vault);
+                return self;
             };
             memory = mem;
         }
 
-        var pipeline = KnowledgePipeline{
+        const self = allocator.create(KnowledgePipeline) catch {
+            detector.deinit();
+            if (memory) |mem| {
+                mem.deinit();
+                allocator.destroy(mem);
+            }
+            return error.PipelineInitFailed;
+        };
+        errdefer allocator.destroy(self);
+        self.* = KnowledgePipeline{
             .allocator = allocator,
             .detector = detector,
             .kg = KnowledgeGraph.init(allocator),
@@ -182,6 +200,7 @@ pub const KnowledgePipeline = struct {
                     mem.deinit();
                     allocator.destroy(mem);
                 }
+                allocator.destroy(self);
                 return error.PipelineInitFailed;
             },
             .ingester = undefined,
@@ -192,17 +211,18 @@ pub const KnowledgePipeline = struct {
             .source_tracker = SourceTracker.init(allocator),
         };
         // Fix up ingester/querier — they need a pointer to the vault field
-        pipeline.ingester = KnowledgeIngester.init(allocator, &pipeline.vault);
-        pipeline.querier = KnowledgeQuerier.init(allocator, &pipeline.vault);
-        return pipeline;
+        self.ingester = KnowledgeIngester.init(allocator, &self.vault);
+        self.querier = KnowledgeQuerier.init(allocator, &self.vault);
+        return self;
     }
 
-    /// Clean up all resources owned by the pipeline.
+    /// Clean up all resources owned by the pipeline and free the heap allocation.
     pub fn deinit(self: *KnowledgePipeline) void {
         if (!self.initialized) return;
+        const allocator = self.allocator;
         if (self.memory) |mem| {
             mem.deinit();
-            self.allocator.destroy(mem);
+            allocator.destroy(mem);
         }
         self.source_tracker.deinit();
         self.detector.deinit();
@@ -210,6 +230,7 @@ pub const KnowledgePipeline = struct {
         self.vault.deinit();
         // ingester and querier are stack structs pointing to vault — no extra deinit
         self.initialized = false;
+        allocator.destroy(self);
     }
 
     /// Scan a project directory, detect file types, index code files

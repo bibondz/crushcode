@@ -387,7 +387,7 @@ test "AutopilotEngine init/deinit" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};
@@ -403,7 +403,7 @@ test "runAgentWork health-check returns stats" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};
@@ -426,7 +426,7 @@ test "runAgentWork unknown agent returns error" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};
@@ -441,7 +441,7 @@ test "listAgents returns formatted string" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};
@@ -462,7 +462,7 @@ test "AutopilotEngine with null guardian still works" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};
@@ -509,7 +509,7 @@ test "runAgentWork updates agent status and stats" {
     var pipeline = try KnowledgePipeline.init(allocator, null);
     defer pipeline.deinit();
 
-    var engine = try AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/test_autopilot/");
+    var engine = try AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/test_autopilot/");
     defer {
         engine.deinit();
         std.fs.cwd().deleteTree(".crushcode/test_autopilot/") catch {};

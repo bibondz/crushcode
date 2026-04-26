@@ -677,7 +677,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         }
     }
 
-    var pipeline: cognition_mod.KnowledgePipeline = undefined;
+    var pipeline: *cognition_mod.KnowledgePipeline = undefined;
     var pipeline_initialized = false;
 
     // Try with memory first (project dir "."), fall back without
@@ -1016,7 +1016,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     continue;
                 }
                 const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
-                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                     out("  Failed to initialize autopilot engine\n", .{});
                     continue;
                 };
@@ -1042,7 +1042,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     continue;
                 }
                 const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
-                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                     out("  Failed to initialize autopilot engine\n", .{});
                     continue;
                 };
@@ -1064,7 +1064,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     continue;
                 }
                 const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
-                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                     out("  Failed to initialize autopilot engine\n", .{});
                     continue;
                 };
@@ -1078,7 +1078,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     continue;
                 }
                 const guardian_ptr: ?*Guardian = if (guardian) |*g| g else null;
-                var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
+                var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                     out("  Failed to initialize autopilot engine\n", .{});
                     continue;
                 };

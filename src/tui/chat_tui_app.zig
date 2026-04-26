@@ -325,7 +325,7 @@ pub const Model = struct {
     memory: memory_mod.Memory,
     parallel_executor: parallel_mod.ParallelExecutor,
     guardian: ?guardian_mod.Guardian = null,
-    pipeline: ?cognition_mod.KnowledgePipeline = null,
+    pipeline: ?*cognition_mod.KnowledgePipeline = null,
     pipeline_initialized: bool = false,
     user_model: ?user_model_mod.UserModel = null,
     auto_gen: ?auto_gen_mod.AutoSkillGenerator = null,
@@ -457,16 +457,13 @@ pub const Model = struct {
         errdefer model.destroy();
 
         // Initialize cognition pipeline (non-fatal)
-        // TODO: KnowledgePipeline stores internal *KnowledgeVault pointers that dangle
-        // when returned by value. Needs heap allocation refactor to fix.
-        // Disabled for now to prevent TUI crash during context building.
-        // {
-        //     var pipeline = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
-        //     if (pipeline) |*p| {
-        //         model.pipeline = p.*;
-        //         model.pipeline_initialized = true;
-        //     }
-        // }
+        {
+            const p = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
+            if (p) |pl| {
+                model.pipeline = pl;
+                model.pipeline_initialized = true;
+            }
+        }
         // Initialize user model (non-fatal)
         {
             var um = user_model_mod.UserModel.init(model.allocator) catch null;
@@ -625,7 +622,7 @@ pub const Model = struct {
 
     pub fn destroy(self: *Model) void {
         // Cleanup cognition pipeline and guardian
-        if (self.pipeline) |*p| p.deinit();
+        if (self.pipeline) |p| p.deinit();
         if (self.user_model) |*um| um.deinit();
         if (self.auto_gen) |*ag| ag.deinit();
         if (self.feedback) |*fb| fb.deinit();
@@ -965,7 +962,7 @@ pub const Model = struct {
 
         // Prefer pipeline-based context if available
         if (self.pipeline_initialized) {
-            if (self.pipeline) |*p| {
+            if (self.pipeline) |p| {
                 p.scanProject("src", 50) catch {};
                 p.indexGraphToVault() catch {};
 
@@ -1028,7 +1025,7 @@ pub const Model = struct {
 
         // Prefer pipeline-based scoring
         if (self.pipeline_initialized) {
-            if (self.pipeline) |*p| {
+            if (self.pipeline) |p| {
                 const scored_opt = p.buildSmartContext(query, .normal) catch return;
                 const scored_ctx = scored_opt orelse return;
                 errdefer self.allocator.free(scored_ctx);
@@ -2329,7 +2326,7 @@ pub const Model = struct {
         } else if (std.mem.eql(u8, name, "/cognition")) {
             if (!self.pipeline_initialized) {
                 try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
-            } else if (self.pipeline) |*p| {
+            } else if (self.pipeline) |p| {
                 const s = p.stats();
                 const text = try std.fmt.allocPrint(self.allocator,
                     \\Cognition Pipeline:
@@ -2445,7 +2442,7 @@ pub const Model = struct {
                     try history_mod.addMessageUnlocked(self, "assistant", "Usage: /autopilot run <agent-id>");
                 } else if (!self.pipeline_initialized) {
                     try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized — cannot run autopilot.");
-                } else if (self.pipeline) |*p| {
+                } else if (self.pipeline) |p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                         try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
@@ -2483,7 +2480,7 @@ pub const Model = struct {
                 const status_arg = std.mem.trim(u8, auto_sub["status".len..], " ");
                 if (!self.pipeline_initialized) {
                     try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
-                } else if (self.pipeline) |*p| {
+                } else if (self.pipeline) |p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                         try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
@@ -2509,7 +2506,7 @@ pub const Model = struct {
             } else if (std.mem.eql(u8, auto_sub, "schedule")) {
                 if (!self.pipeline_initialized) {
                     try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized — cannot run schedule.");
-                } else if (self.pipeline) |*p| {
+                } else if (self.pipeline) |p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                         try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
@@ -2524,7 +2521,7 @@ pub const Model = struct {
             } else if (std.mem.eql(u8, auto_sub, "list")) {
                 if (!self.pipeline_initialized) {
                     try history_mod.addMessageUnlocked(self, "assistant", "Pipeline not initialized.");
-                } else if (self.pipeline) |*p| {
+                } else if (self.pipeline) |p| {
                     const guardian_ptr: ?*guardian_mod.Guardian = if (self.guardian) |*g| g else null;
                     var engine = autopilot_mod.AutopilotEngine.init(self.allocator, p, guardian_ptr, ".", ".crushcode/autopilot/") catch {
                         try history_mod.addMessageUnlocked(self, "assistant", "Failed to initialize autopilot engine.");
