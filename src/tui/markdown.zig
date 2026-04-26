@@ -61,7 +61,7 @@ const java_keywords = [_][]const u8{ "public", "private", "protected", "class", 
 const nix_keywords = [_][]const u8{ "let", "in", "if", "then", "else", "with", "import", "inherit", "rec", "true", "false", "null", "or", "assert", "throw", "abort", "builtins", "map", "builtins" };
 const swift_keywords = [_][]const u8{ "func", "let", "var", "if", "else", "for", "while", "switch", "case", "return", "import", "class", "struct", "enum", "protocol", "extension", "typealias", "guard", "do", "try", "catch", "throw", "throws", "async", "await", "public", "private", "internal", "open", "fileprivate", "static", "override", "init", "deinit", "self", "Self", "super", "nil", "true", "false", "where", "as", "is", "in", "inout", "mutating", "associatedtype", "some", "any", "subscript", "optional" };
 
-const CodeLanguage = enum {
+pub const CodeLanguage = enum {
     plain,
     zig,
     python,
@@ -285,7 +285,7 @@ fn appendInline(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allo
     try appendPlainRange(segments, allocator, text, plain_start, text.len, base_style);
 }
 
-fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage, code_block_sty: vaxis.Style, code_keyword_sty: vaxis.Style, code_string_sty: vaxis.Style, code_comment_sty: vaxis.Style, code_number_sty: vaxis.Style, code_type_sty: vaxis.Style, code_function_sty: vaxis.Style, code_operator_sty: vaxis.Style) !void {
+pub fn appendHighlightedCodeLine(segments: *std.ArrayList(vaxis.Segment), allocator: std.mem.Allocator, line: []const u8, language: CodeLanguage, code_block_sty: vaxis.Style, code_keyword_sty: vaxis.Style, code_string_sty: vaxis.Style, code_comment_sty: vaxis.Style, code_number_sty: vaxis.Style, code_type_sty: vaxis.Style, code_function_sty: vaxis.Style, code_operator_sty: vaxis.Style) !void {
     var cursor: usize = 0;
     var plain_start: usize = 0;
 
@@ -642,7 +642,7 @@ fn parseInlineLink(text: []const u8, start: usize) ?InlineLink {
     return .{ .label = text[start + 1 .. label_end], .end = url_end + 1 };
 }
 
-fn parseCodeLanguage(tag: []const u8) CodeLanguage {
+pub fn parseCodeLanguage(tag: []const u8) CodeLanguage {
     if (tag.len == 0) return .plain;
     if (std.ascii.eqlIgnoreCase(tag, "zig")) return .zig;
     if (std.ascii.eqlIgnoreCase(tag, "python") or std.ascii.eqlIgnoreCase(tag, "py")) return .python;

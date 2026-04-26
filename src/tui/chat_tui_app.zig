@@ -2048,19 +2048,47 @@ pub const Model = struct {
                 .style = .{ .fg = self.current_theme.border },
             });
 
-            // Content with line numbers
+            // Detect language from file extension
+            const lang = markdown.parseCodeLanguage(title);
+
+            // Content with line numbers and syntax highlighting
             var line_num: usize = 1;
             var line_iter = std.mem.splitScalar(u8, content, '\n');
             var content_lines = std.ArrayList(vaxis.Segment).empty;
             defer content_lines.deinit(ctx.arena);
 
             const max_lines: usize = if (pane_height > 2) @intCast(pane_height -| 2) else 0;
+            const theme = self.current_theme;
             while (line_iter.next()) |line| : (line_num += 1) {
                 if (line_num > max_lines) break;
-                const numbered = try std.fmt.allocPrint(ctx.arena, "{d:>4}│ {s}\n", .{ line_num, line });
+                
+                // Line number prefix
+                const prefix = try std.fmt.allocPrint(ctx.arena, "{d:>4}│ ", .{line_num});
                 try content_lines.append(ctx.arena, .{
-                    .text = numbered,
-                    .style = .{ .fg = self.current_theme.assistant_fg },
+                    .text = prefix,
+                    .style = .{ .fg = theme.dimmed },
+                });
+                
+                // Syntax-highlighted code line
+                try markdown.appendHighlightedCodeLine(
+                    &content_lines,
+                    ctx.arena,
+                    line,
+                    lang,
+                    .{ .fg = theme.md_code_fg },         // default code style
+                    .{ .fg = theme.md_keyword_fg },       // keywords
+                    .{ .fg = theme.md_string_fg },        // strings
+                    .{ .fg = theme.md_comment_fg },       // comments
+                    .{ .fg = theme.md_number_fg },        // numbers
+                    .{ .fg = theme.md_type_fg },          // types
+                    .{ .fg = theme.md_function_fg },       // functions
+                    .{ .fg = theme.md_operator_fg },      // operators
+                );
+                
+                // Newline after each line
+                try content_lines.append(ctx.arena, .{
+                    .text = "\n",
+                    .style = .{ .fg = theme.md_code_fg },
                 });
             }
 
