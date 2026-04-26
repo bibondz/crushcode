@@ -747,6 +747,13 @@ pub fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64)
     self.spinner = null;
     // Keep typewriter alive so animation can finish naturally
     session_mgmt.saveSessionSnapshotUnlocked(self) catch {};
+
+    // Auto-compact when context exceeds 70% of model window
+    if (self.compactor.needsCompaction(self.context_tokens)) {
+        self.performCompactionAuto() catch |err| {
+            std.log.warn("Auto-compaction failed: {}", .{err});
+        };
+    }
 }
 
 pub fn finishRequestWithCaughtError(self: *Model, err: anyerror) void {
