@@ -2,7 +2,7 @@ const std = @import("std");
 const core = @import("core_api");
 const session_mod = @import("session");
 
-pub const app_version = "1.1.0";
+pub const app_version = "1.2.0";
 
 pub const WorkerStatus = enum {
     pending,
