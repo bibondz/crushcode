@@ -1221,13 +1221,30 @@ pub const Model = struct {
             rw.print(
                 \\You are Crushcode, an expert AI coding assistant with access to the user's codebase.
                 \\
-                \\## Guidelines
-                \\- Read files before editing to understand context
-                \\- Make minimal, focused changes — don't refactor unless asked
-                \\- Use the edit tool for surgical changes, write_file only for new files
-                \\- Verify your changes by reading the file after editing
-                \\- Follow existing code patterns and conventions in the project
-                \\- When running commands, prefer non-destructive operations first
+                \\## Core Principles
+                \\- Read files thoroughly before editing to understand full context
+                \\- Make minimal, focused changes — never refactor unless explicitly asked
+                \\- Follow existing code patterns, naming conventions, and style in the project
+                \\- Verify changes by reading the file after editing
+                \\
+                \\## Editing Guidelines
+                \\- Use the edit tool for surgical changes to existing files
+                \\- Use write_file only for creating new files
+                \\- Preserve existing indentation and formatting exactly
+                \\- When replacing code, include enough surrounding context to be unambiguous
+                \\- Never suppress errors or warnings — fix the root cause
+                \\
+                \\## Communication
+                \\- Be concise — skip preamble and status updates
+                \\- Explain your reasoning only when asked or when the change is non-obvious
+                \\- Report what changed, where, and why after edits
+                \\- If something seems wrong with the user's approach, say so concisely
+                \\
+                \\## Safety
+                \\- Prefer non-destructive operations first (read before write)
+                \\- Never delete files unless explicitly asked
+                \\- When running shell commands, show the command before executing
+                \\- Back up awareness: warn if editing files with uncommitted changes
             , .{}) catch {};
         }
 
@@ -1246,27 +1263,45 @@ pub const Model = struct {
             }
         }
 
-        // Load AGENTS.md project instructions
-        if (project_mod.loadAgentsMd(self.allocator) catch null) |agents_content| {
-            defer self.allocator.free(agents_content);
-            if (agents_content.len > 0) {
-                rw.print(
-                    \\
-                    \\## Project Instructions (AGENTS.md)
-                    \\{s}
-                , .{agents_content}) catch {};
+        // Load all context files (AGENTS.md, instructions.md, CLAUDE.md, etc.) via unified loader
+        if (@hasDecl(project_mod, "loadContextFiles")) {
+            const maybe_ctx = project_mod.loadContextFiles(self.allocator) catch null;
+            if (maybe_ctx) |ctx_set_val| {
+                var ctx_set = ctx_set_val;
+                defer ctx_set.deinit(self.allocator);
+                if (ctx_set.files.items.len > 0) {
+                    rw.print("\n\n<memory>\n", .{}) catch {};
+                    for (ctx_set.files.items) |f| {
+                        rw.print("<file path=\"{s}\">\n{s}\n</file>\n", .{ f.path, f.content }) catch {};
+                    }
+                    rw.print("</memory>", .{}) catch {};
+                }
             }
-        }
-
-        // Load .crushcode/instructions.md
-        if (project_mod.loadInstructionsMd(self.allocator) catch null) |instructions| {
-            defer self.allocator.free(instructions);
-            if (instructions.len > 0) {
-                rw.print(
-                    \\
-                    \\## Custom Instructions
-                    \\{s}
-                , .{instructions}) catch {};
+        } else {
+            // Fallback: load individual context files separately and wrap in XML
+            var has_any = false;
+            if (project_mod.loadAgentsMd(self.allocator) catch null) |agents_content| {
+                defer self.allocator.free(agents_content);
+                if (agents_content.len > 0) {
+                    if (!has_any) {
+                        rw.print("\n\n<memory>\n", .{}) catch {};
+                        has_any = true;
+                    }
+                    rw.print("<file path=\"AGENTS.md\">\n{s}\n</file>\n", .{agents_content}) catch {};
+                }
+            }
+            if (project_mod.loadInstructionsMd(self.allocator) catch null) |instructions| {
+                defer self.allocator.free(instructions);
+                if (instructions.len > 0) {
+                    if (!has_any) {
+                        rw.print("\n\n<memory>\n", .{}) catch {};
+                        has_any = true;
+                    }
+                    rw.print("<file path=\"instructions.md\">\n{s}\n</file>\n", .{instructions}) catch {};
+                }
+            }
+            if (has_any) {
+                rw.print("</memory>", .{}) catch {};
             }
         }
 
@@ -1367,6 +1402,47 @@ pub const Model = struct {
                 \\- git_log(count?, oneline?, file_path?)
                 \\- search_files(pattern, directory?, max_results?)
             , .{}) catch {};
+            // Add project-specific tool usage tips
+            if (self.cached_project_info) |project| {
+                w.print("\n\n## Tool Usage Tips ({s})\n", .{project.language}) catch {};
+                if (std.mem.eql(u8, project.language, "Zig")) {
+                    w.print(
+                        \\- Use `zig build` to compile, `zig build test` to run tests
+                        \\- Use `zig fmt` to check/format code
+                        \\- Zig uses `defer` for cleanup, `errdefer` for rollback
+                        \\- Error unions with `try`/`catch`, optionals with `orelse`
+                    , .{}) catch {};
+                } else if (std.mem.eql(u8, project.language, "Rust")) {
+                    w.print(
+                        \\- Use `cargo build` to compile, `cargo test` to run tests
+                        \\- Use `cargo clippy` for linting, `cargo fmt` for formatting
+                        \\- Prefer `Result<T,E>` over panics for error handling
+                    , .{}) catch {};
+                } else if (std.mem.eql(u8, project.language, "Go")) {
+                    w.print(
+                        \\- Use `go build` to compile, `go test ./...` to run all tests
+                        \\- Use `go vet` for static analysis, `gofmt` for formatting
+                        \\- Use `defer` for cleanup, multiple return values for errors
+                    , .{}) catch {};
+                } else if (std.mem.eql(u8, project.language, "JavaScript/TypeScript")) {
+                    w.print(
+                        \\- Use `npm run build` to compile, `npm test` to run tests
+                        \\- Check package.json for available scripts
+                        \\- Use `npx` for one-off tool execution
+                    , .{}) catch {};
+                } else if (std.mem.eql(u8, project.language, "Python")) {
+                    w.print(
+                        \\- Use `pytest` to run tests, `pip install -e .` for development
+                        \\- Follow PEP 8 style, use type hints
+                        \\- Use virtual environments (venv) for isolation
+                    , .{}) catch {};
+                } else if (std.mem.eql(u8, project.language, "C/C++")) {
+                    w.print(
+                        \\- Use cmake/make for building, ctest for testing
+                        \\- Check CMakeLists.txt or Makefile for available targets
+                    , .{}) catch {};
+                }
+            }
             if (self.hybrid_bridge) |hb| {
                 const all_schemas = hb.getAllToolSchemas() catch null;
                 if (all_schemas) |schemas| {

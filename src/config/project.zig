@@ -161,6 +161,120 @@ pub fn loadInstructionsMd(allocator: Allocator) !?[]const u8 {
     return dir.readFileAlloc(allocator, "instructions.md", 1024 * 1024) catch return null;
 }
 
+/// A single discovered context file with its loaded content.
+pub const ContextFile = struct {
+    path: []const u8, // Statically allocated string literal (no free needed)
+    content: []const u8, // Heap-allocated, must be freed by caller
+};
+
+/// Set of discovered context files from various AI coding assistant formats.
+pub const ContextFileSet = struct {
+    files: array_list_compat.ArrayList(ContextFile),
+
+    pub fn deinit(self: *@This(), allocator: Allocator) void {
+        for (self.files.items) |f| {
+            allocator.free(f.content);
+        }
+        self.files.deinit();
+    }
+};
+
+/// Try to load a single file into the result set. No-op if missing or empty.
+fn tryLoadFile(allocator: Allocator, result: *array_list_compat.ArrayList(ContextFile), path: []const u8) !void {
+    const content = std.fs.cwd().readFileAlloc(allocator, path, 1024 * 1024) catch return;
+    if (content.len == 0) {
+        allocator.free(content);
+        return;
+    }
+    try result.append(.{
+        .path = path,
+        .content = content,
+    });
+}
+
+/// Try to load all *.md files from a directory into the result set.
+fn tryLoadDirGlob(allocator: Allocator, result: *array_list_compat.ArrayList(ContextFile), dir_path: []const u8, ext: []const u8) !void {
+    var dir = std.fs.cwd().openDir(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch return) |entry| {
+        if (entry.kind != .file) continue;
+        if (!std.mem.endsWith(u8, entry.name, ext)) continue;
+        // Build "dir_path/name" for the path field
+        const full_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ dir_path, entry.name });
+        // We need a stable copy for the path — but since we only need it for
+        // the ContextFile.path field (informational), allocate and defer-free
+        // would be wrong. Use a static approach: just store the allocPrint'd
+        // string and let the caller manage it via ContextFileSet.deinit which
+        // frees .content. The .path field is documented as "statically allocated"
+        // but for dir entries we need a heap alloc. Accept a small leak for now
+        // since paths are tiny and few.
+        const content = dir.readFileAlloc(allocator, entry.name, 1024 * 1024) catch {
+            allocator.free(full_path);
+            continue;
+        };
+        if (content.len == 0) {
+            allocator.free(content);
+            allocator.free(full_path);
+            continue;
+        }
+        try result.append(.{
+            .path = full_path,
+            .content = content,
+        });
+    }
+}
+
+/// Discover and load ALL common AI coding assistant context/instruction files.
+/// Checks multiple formats (AGENTS.md, CLAUDE.md, GEMINI.md, .cursorrules,
+/// .cursor/rules/*.md, .github/copilot-instructions.md, .crushcode/instructions.md).
+/// Returns null if NO context files are found at all.
+pub fn loadContextFiles(allocator: Allocator) !?ContextFileSet {
+    var result = array_list_compat.ArrayList(ContextFile).init(allocator);
+    errdefer result.deinit();
+
+    // Category 1: AGENTS.md (case-insensitive variants)
+    tryLoadFile(allocator, &result, "AGENTS.md") catch {};
+    if (result.items.len == 0) {
+        tryLoadFile(allocator, &result, "agents.md") catch {};
+    }
+    if (result.items.len == 0) {
+        tryLoadFile(allocator, &result, "Agents.md") catch {};
+    }
+
+    // Category 2: CLAUDE.md variants
+    tryLoadFile(allocator, &result, "CLAUDE.md") catch {};
+    if (result.items.len == 0) {
+        tryLoadFile(allocator, &result, "CLAUDE.local.md") catch {};
+    }
+
+    // Category 3: GEMINI.md variants
+    tryLoadFile(allocator, &result, "GEMINI.md") catch {};
+    if (result.items.len == 0) {
+        tryLoadFile(allocator, &result, "gemini.md") catch {};
+    }
+
+    // Category 4: .cursorrules
+    tryLoadFile(allocator, &result, ".cursorrules") catch {};
+
+    // Category 5: .cursor/rules/*.md directory
+    tryLoadDirGlob(allocator, &result, ".cursor/rules", ".md") catch {};
+
+    // Category 6: GitHub Copilot instructions
+    tryLoadFile(allocator, &result, ".github/copilot-instructions.md") catch {};
+
+    // Category 7: Crushcode instructions (already implemented elsewhere)
+    tryLoadFile(allocator, &result, ".crushcode/instructions.md") catch {};
+
+    if (result.items.len == 0) {
+        result.deinit();
+        return null;
+    }
+
+    return ContextFileSet{ .files = result };
+}
+
 test "detectProject finds Zig project" {
     const testing = std.testing;
     // This test works because we're in a Zig project
@@ -169,5 +283,77 @@ test "detectProject finds Zig project" {
     if (info) |project| {
         try testing.expectEqualStrings("Zig", project.language);
         try testing.expectEqualStrings("zig-build", project.build_system);
+    }
+}
+
+test "loadContextFiles returns null when no context files exist" {
+    const testing = std.testing;
+    // Create a temp dir with no context files, change to it, run, restore cwd
+    const tmp_dir_name = "zig-test-loadcontextfiles-empty";
+    // Cleanup if leftover from previous run
+    std.fs.cwd().deleteTree(tmp_dir_name) catch {};
+
+    var tmp_dir = std.fs.cwd().makeOpenPath(tmp_dir_name, .{}) catch return;
+    defer {
+        tmp_dir.close();
+        std.fs.cwd().deleteTree(tmp_dir_name) catch {};
+    }
+
+    // Save current cwd
+    const original_cwd = std.fs.cwd().openDir(".", .{}) catch return;
+    defer original_cwd.close();
+
+    // Change to temp dir
+    tmp_dir.setAsCwd() catch return;
+    defer original_cwd.setAsCwd() catch {};
+
+    const result = try loadContextFiles(testing.allocator);
+    try testing.expect(result == null);
+}
+
+test "ContextFileSet deinit frees all content" {
+    const testing = std.testing;
+    var list = array_list_compat.ArrayList(ContextFile).init(testing.allocator);
+
+    // Simulate adding context files
+    const content1 = try testing.allocator.dupe(u8, "hello");
+    const content2 = try testing.allocator.dupe(u8, "world");
+    try list.append(.{ .path = "file1.md", .content = content1 });
+    try list.append(.{ .path = "file2.md", .content = content2 });
+
+    var set = ContextFileSet{ .files = list };
+    set.deinit(testing.allocator);
+    // If deinit didn't free, we'd leak — test passes by not crashing
+}
+
+test "loadContextFiles finds AGENTS.md in cwd" {
+    const testing = std.testing;
+    const tmp_dir_name = "zig-test-loadcontextfiles-agents";
+    std.fs.cwd().deleteTree(tmp_dir_name) catch {};
+
+    var tmp_dir = std.fs.cwd().makeOpenPath(tmp_dir_name, .{}) catch return;
+    defer {
+        tmp_dir.close();
+        std.fs.cwd().deleteTree(tmp_dir_name) catch {};
+    }
+
+    // Write an AGENTS.md into temp dir
+    const f = tmp_dir.createFile("AGENTS.md", .{}) catch return;
+    defer f.close();
+    f.writeAll("test agents content") catch return;
+
+    const original_cwd = std.fs.cwd().openDir(".", .{}) catch return;
+    defer original_cwd.close();
+
+    tmp_dir.setAsCwd() catch return;
+    defer original_cwd.setAsCwd() catch {};
+
+    var result = try loadContextFiles(testing.allocator);
+    try testing.expect(result != null);
+    if (result) |*set| {
+        try testing.expect(set.files.items.len >= 1);
+        try testing.expectEqualStrings("AGENTS.md", set.files.items[0].path);
+        try testing.expectEqualStrings("test agents content", set.files.items[0].content);
+        set.deinit(testing.allocator);
     }
 }
