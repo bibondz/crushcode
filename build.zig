@@ -662,6 +662,10 @@ pub fn build(b: *std.Build) !void {
     // Harness Engineering: Guardrail modules (P1)
     const guardrail_pipeline_mod = simpleMod(b, "src/guardrail/pipeline.zig", target, optimize);
 
+    // Tool inspection pipeline
+    const tool_inspection_mod = simpleMod(b, "src/tool/inspection.zig", target, optimize);
+    const tool_parallel_mod = simpleMod(b, "src/tool/parallel.zig", target, optimize);
+
     // Harness Engineering: Observability Metrics (P2)
     const metrics_collector_mod = simpleMod(b, "src/metrics/collector.zig", target, optimize);
 
@@ -880,6 +884,7 @@ pub fn build(b: *std.Build) !void {
         retry_self_heal_mod,
         guardrail_pipeline_mod,
         metrics_collector_mod,
+        tool_parallel_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -1006,7 +1011,9 @@ pub fn build(b: *std.Build) !void {
         recipe_mod,
         recipe_loader_mod,
         recipe_runner_mod,
-        // Harness Engineering modules
+        // Tool inspection pipeline
+        tool_inspection_mod,
+        tool_parallel_mod,
         trace_span_mod,
         trace_context_mod,
         trace_writer_mod,
