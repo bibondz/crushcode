@@ -380,7 +380,7 @@ fn cmdExport(allocator: Allocator, args: []const u8) !CommandResult {
         \\# Crushcode Session Export
         \\Generated: {d}
         \\
-        \\> Use /export in TUI mode for full session export with message history.
+        \\> This is a CLI export. In TUI mode, /export includes full message history.
         \\
     , .{timestamp});
     defer allocator.free(header);

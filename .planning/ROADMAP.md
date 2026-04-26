@@ -146,7 +146,7 @@ Created: 2026-04-14 · Updated: 2026-04-27
 | Build.zig cleanup | ✅ DONE | 1123→1037 lines (-86). Consolidated compat loop, test array, addImports. |
 | /export stub | ✅ DONE (CLI) | Real implementation: creates timestamped markdown file. TUI handler pending. |
 | /doctor, /review, /commit | ✅ VERIFIED REAL | 512L, 168L, 411L — all fully implemented, not stubs. |
-| TUI /export handler | 🔲 TODO | CLI works, TUI mode has no /export handler in chat_tui_app.zig. |
+| TUI /export handler | ✅ DONE | Full message history export to markdown file in TUI mode. |
 
 ### Backlog (researched but deferred)
 - Streaming diff preview (diffpane, tuicr)

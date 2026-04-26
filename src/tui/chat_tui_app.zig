@@ -4081,6 +4081,49 @@ pub const Model = struct {
              };
              defer self.allocator.free(result);
              try history_mod.addMessageUnlocked(self, "assistant", result);
+        } else if (std.mem.eql(u8, name, "/export") or std.mem.startsWith(u8, name, "/export ")) {
+            const export_args = std.mem.trim(u8, name["/export".len..], " ");
+            const timestamp = std.time.timestamp();
+            const filename = if (export_args.len > 0)
+                try self.allocator.dupe(u8, export_args)
+            else
+                try std.fmt.allocPrint(self.allocator, "session-export-{d}.md", .{timestamp});
+            defer if (export_args.len > 0) {} else self.allocator.free(filename);
+
+            const file = std.fs.cwd().createFile(filename, .{ .truncate = true }) catch |err| {
+                const err_msg = try std.fmt.allocPrint(self.allocator, "Export failed: {}", .{err});
+                try history_mod.addMessageUnlocked(self, "assistant", err_msg);
+                ctx.redraw = true;
+                return;
+            };
+            defer file.close();
+
+            var buf = array_list_compat.ArrayList(u8).init(self.allocator);
+            defer buf.deinit();
+            const writer = buf.writer();
+            writer.print("# Crushcode Session Export\nGenerated: {d}\nMessages: {d}\n\n---\n\n", .{ timestamp, self.messages.items.len }) catch {};
+
+            for (self.messages.items, 0..) |msg, i| {
+                const role_label = if (std.mem.eql(u8, msg.role, "user"))
+                    "## You"
+                else if (std.mem.eql(u8, msg.role, "assistant"))
+                    "## Assistant"
+                else if (std.mem.eql(u8, msg.role, "system"))
+                    "## System"
+                else
+                    "## Tool";
+                writer.print("{s} (#{d})\n\n{s}\n\n---\n\n", .{ role_label, i + 1, msg.content }) catch {};
+            }
+
+            file.writeAll(buf.items) catch |err| {
+                const err_msg = try std.fmt.allocPrint(self.allocator, "Export write failed: {}", .{err});
+                try history_mod.addMessageUnlocked(self, "assistant", err_msg);
+                ctx.redraw = true;
+                return;
+            };
+
+            const success_msg = try std.fmt.allocPrint(self.allocator, "Session exported to {s} ({d} messages, {d} bytes)", .{ filename, self.messages.items.len, buf.items.len });
+            try history_mod.addMessageUnlocked(self, "assistant", success_msg);
         } else if (std.mem.eql(u8, name, "/recipe") or std.mem.startsWith(u8, name, "/recipe ")) {
             const recipe_args = std.mem.trim(u8, name["/recipe".len..], " ");
             if (recipe_args.len == 0 or std.mem.eql(u8, recipe_args, "list")) {

@@ -39,7 +39,7 @@
 | Build.zig cleanup | ✅ Done (cd81742) | 1123→1037 lines, consolidated imports |
 | /export CLI | ✅ Done (cd81742) | Real markdown export, custom path support |
 | /doctor, /review, /commit | ✅ Verified real | 512L, 168L, 411L — fully implemented |
-| TUI /export handler | 🔲 Next | Wire into chat_tui_app.zig |
+| TUI /export handler | ✅ Done | Wire into chat_tui_app.zig, full message history |
 | Cache-aware Anthropic body | Low | CacheControl structs exist, not wired |
 | Guardrail redaction | Low | deny works, redact not fully wired |
 
@@ -79,4 +79,4 @@
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** v1.5.0 in progress. Build.zig cleanup + /export CLI done. TUI /export handler next.
+**Status:** v1.5.0 in progress. All known issues resolved. Backlog items remain (low priority).
