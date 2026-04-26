@@ -575,6 +575,7 @@ pub fn build(b: *std.Build) !void {
     const compaction_mod = simpleMod(b, "src/agent/compaction.zig", target, optimize);
     const context_budget_mod = simpleMod(b, "src/agent/context_budget.zig", target, optimize);
     const context_optimizer_mod = simpleMod(b, "src/ai/context_optimizer.zig", target, optimize);
+    const context_limits_mod = simpleMod(b, "src/ai/context_limits.zig", target, optimize);
     const project_memory_mod = simpleMod(b, "src/agent/project_memory.zig", target, optimize);
     const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
     const semantic_compressor_mod = simpleMod(b, "src/agent/semantic_compressor.zig", target, optimize);
@@ -807,6 +808,7 @@ pub fn build(b: *std.Build) !void {
     addImports(tui_mod, &.{imp("myers", myers_mod), imp("session_tree", session_tree_mod), imp("team_coordinator", team_coordinator_mod), imp("semantic_compressor", semantic_compressor_mod), imp("doctor", doctor_mod), imp("review", review_mod), imp("commit", commit_mod), imp("recipe", recipe_mod), imp("loader", recipe_loader_mod), imp("runner", recipe_runner_mod)});
     addImports(tui_mod, &.{imp("safety_checkpoint", safety_checkpoint_mod)});
     addImports(tui_mod, &.{imp("hooks_registry", hooks_registry_mod), imp("hooks_config", hooks_config_mod)});
+    addImports(tui_mod, &.{imp("context_limits", context_limits_mod)});
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod),                         imp("agent_loop", agent_loop_mod),                   imp("json_output", json_output_mod), imp("permission_evaluate", permission_evaluate_mod), imp("permission_audit", permission_audit_mod), imp("shell_state", shell_state_mod),
         imp("permission_blocklist", permission_lists_mod), imp("permission_safelist", permission_lists_mod),
@@ -851,7 +853,7 @@ pub fn build(b: *std.Build) !void {
         widget_header_mod,        widget_input_mod,             widget_sidebar_mod,      widget_palette_mod,    widget_permission_mod,      widget_setup_mod,     widget_spinner_mod,        widget_gradient_mod, widget_toast_mod,
         widget_typewriter_mod,    multiline_input_mod,          migrate_mod,             update_mod,            custom_commands_mod,        project_mod,          permission_audit_mod,      shell_state_mod,     shell_history_mod,
         permission_lists_mod, permission_lists_mod,      run_mod,                 batch_mod,             file_tracker_mod,           structured_log_mod,   logs_mod,                  tool_exposition_mod, mcp_server_mod,
-        governance_mod,           permission_lists_mod,          context_optimizer_mod,   worker_mod,            router_mod,                 circuit_breaker_mod,       capability_mod,       knowledge_schema_mod,      knowledge_vault_mod, knowledge_ops_mod,
+        governance_mod,           permission_lists_mod,          context_optimizer_mod,   context_limits_mod,     worker_mod,            router_mod,                 circuit_breaker_mod,       capability_mod,       knowledge_schema_mod,      knowledge_vault_mod, knowledge_ops_mod,
         knowledge_ops_mod,      knowledge_knowledge_lint_mod, widget_code_view_mod,    widget_data_table_mod, widget_scroll_panel_mod,    widget_diff_preview_mod, worker_runner_mod,    skills_agents_parser_mod,  skills_resolver_mod, knowledge_persistence_mod,
         hooks_executor_mod,       coordinator_mod,              background_agent_mod,    skill_pipeline_mod,    layered_memory_mod,         adversarial_mod,              skill_sync_mod,            template_mod,        code_preview_mod,     file_type_mod,
         cognition_mod,             guardian_mod,              phase_runner_mod,             autopilot_mod,
@@ -964,6 +966,7 @@ pub fn build(b: *std.Build) !void {
         governance_mod,
         permission_lists_mod,
         context_optimizer_mod,
+        context_limits_mod,
         worker_mod,
         router_mod,
         circuit_breaker_mod,

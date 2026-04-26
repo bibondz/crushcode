@@ -10,6 +10,7 @@ const Model = chat_tui_app.Model;
 // Import dependencies
 const usage_pricing = @import("usage_pricing");
 const compaction_mod = @import("compaction");
+const context_limits = @import("context_limits");
 const helpers = @import("helpers.zig");
 
 pub fn estimatedCostUsd(self: *const Model) f64 {
@@ -33,6 +34,7 @@ pub fn estimateContextTokens(self: *const Model) u64 {
 
 pub fn contextPercent(self: *const Model) u8 {
     const total_tokens = self.total_input_tokens + self.total_output_tokens;
-    const percent = @min((total_tokens * 100) / 128_000, 100);
+    const max_tokens = context_limits.getContextWindow(self.provider_name, self.model_name);
+    const percent = @min((total_tokens * 100) / max_tokens, 100);
     return @intCast(percent);
 }

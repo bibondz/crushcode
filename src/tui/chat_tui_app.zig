@@ -37,6 +37,7 @@ const myers = @import("myers");
 const hybrid_bridge_mod = @import("hybrid_bridge");
 const array_list_compat = @import("array_list_compat");
 const compaction_mod = @import("compaction");
+const context_limits = @import("context_limits");
 const project_mod = @import("project");
 const lifecycle_mod = @import("lifecycle_hooks");
 const memory_mod = @import("memory");
@@ -441,7 +442,7 @@ pub const Model = struct {
             .codebase_context = null,
             .context_file_count = 0,
             .knowledge_graph = null,
-            .compactor = compaction_mod.ContextCompactor.init(allocator, 128000),
+            .compactor = compaction_mod.ContextCompactor.init(allocator, context_limits.getContextWindow(options.provider_name, options.model_name)),
             .context_tokens = 0,
             .last_compaction_summary = "",
             .cached_project_info = project_mod.detectProject(allocator),
@@ -3336,6 +3337,7 @@ pub const Model = struct {
             self.allocator.free(self.model_name);
             self.provider_name = try self.allocator.dupe(u8, provider);
             self.model_name = try self.allocator.dupe(u8, model);
+            self.compactor.max_tokens = context_limits.getContextWindow(provider, model);
             try self.initializeClient();
             const msg = try std.fmt.allocPrint(self.allocator, "Switched to {s}/{s}", .{ provider, model });
             defer self.allocator.free(msg);
@@ -4064,6 +4066,9 @@ pub const Model = struct {
     pub fn performCompactionAuto(self: *Model) !void {
         if (self.history.items.len <= self.compactor.recent_window) return;
 
+        const ratio = @as(f64, @floatFromInt(self.context_tokens)) /
+                      @as(f64, @floatFromInt(self.compactor.max_tokens));
+
         const compact_messages = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
         defer self.allocator.free(compact_messages);
         for (self.history.items, 0..) |msg, i| {
@@ -4074,22 +4079,63 @@ pub const Model = struct {
             };
         }
 
-        var result = try self.compactor.compactLight(compact_messages);
-        defer result.deinit();
+        if (ratio >= 0.95) {
+            // Full compaction: heuristic summary with decision extraction
+            var result = try self.compactor.compactWithSummary(compact_messages, self.last_compaction_summary);
+            defer result.deinit();
 
-        if (result.messages_summarized == 0) return;
+            if (result.messages_summarized == 0) return;
 
-        // Store summary
-        if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
-        self.last_compaction_summary = if (result.summary.len > 0) try self.allocator.dupe(u8, result.summary) else "";
+            if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
+            self.last_compaction_summary = if (result.summary.len > 0) try self.allocator.dupe(u8, result.summary) else "";
 
-        const remove_count = result.messages_summarized;
-        for (self.history.items[0..remove_count]) |msg| {
-            freeChatMessage(self.allocator, msg);
+            const remove_count = result.messages_summarized;
+            for (self.history.items[0..remove_count]) |msg| {
+                freeChatMessage(self.allocator, msg);
+            }
+            const remaining = self.history.items[remove_count..];
+            std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
+            self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
+        } else if (ratio >= 0.85) {
+            // Light compaction: truncate long messages in-place
+            var result = try self.compactor.compactLight(compact_messages);
+            defer result.deinit();
+
+            if (result.tokens_saved == 0) return;
+
+            // Update history with truncated content
+            for (result.messages, 0..) |comp_msg, i| {
+                if (i >= self.history.items.len) break;
+                const orig_len: usize = if (self.history.items[i].content) |c| c.len else 0;
+                if (comp_msg.content.len < orig_len) {
+                    if (self.history.items[i].content) |oc| self.allocator.free(oc);
+                    self.history.items[i].content = if (comp_msg.content.len > 0)
+                        try self.allocator.dupe(u8, comp_msg.content)
+                    else
+                        null;
+                }
+            }
+        } else {
+            // Micro compaction: prune stale tool outputs only
+            var result = try self.compactor.microCompact(compact_messages);
+            defer result.deinit();
+
+            if (result.tokens_saved == 0) return;
+
+            // Update stale tool content in history
+            for (result.messages, 0..) |comp_msg, i| {
+                if (i >= self.history.items.len) break;
+                if (!std.mem.eql(u8, self.history.items[i].role, "tool")) continue;
+                const orig_len: usize = if (self.history.items[i].content) |c| c.len else 0;
+                if (comp_msg.content.len < orig_len) {
+                    if (self.history.items[i].content) |oc| self.allocator.free(oc);
+                    self.history.items[i].content = if (comp_msg.content.len > 0)
+                        try self.allocator.dupe(u8, comp_msg.content)
+                    else
+                        null;
+                }
+            }
         }
-        const remaining = self.history.items[remove_count..];
-        std.mem.copyForwards(core.ChatMessage, self.history.items, remaining);
-        self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
 
         self.context_tokens = token_tracking_mod.estimateContextTokens(self);
     }

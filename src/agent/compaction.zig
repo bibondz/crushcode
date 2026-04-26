@@ -170,6 +170,81 @@ pub const ContextCompactor = struct {
         };
     }
 
+    /// Micro-compact: prune stale tool outputs older than the recent window.
+    /// Lightweight operation — no summarization, just removes stale data.
+    /// Does NOT touch user or assistant messages.
+    /// Returns how many tokens were saved via the CompactResult.tokens_saved field.
+    pub fn microCompact(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+    ) !CompactResult {
+        const boundary = if (messages.len > self.recent_window)
+            messages.len - self.recent_window
+        else
+            messages.len;
+
+        const result_messages = try self.allocator.alloc(CompactMessage, messages.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (result_messages[0..initialized]) |msg| {
+                self.allocator.free(msg.role);
+                if (msg.content.len > 0) self.allocator.free(msg.content);
+            }
+            self.allocator.free(result_messages);
+        }
+
+        var total_tokens_before: u64 = 0;
+        var total_tokens_after: u64 = 0;
+        var pruned_count: u32 = 0;
+
+        for (messages, 0..) |msg, i| {
+            total_tokens_before += estimateTokens(msg.content);
+
+            const is_stale_tool = i < boundary and std.mem.eql(u8, msg.role, "tool");
+
+            if (is_stale_tool and msg.content.len > 0) {
+                // Prune stale tool output — replace with compact placeholder
+                const placeholder = "[tool output pruned]";
+                result_messages[i] = .{
+                    .role = try self.allocator.dupe(u8, msg.role),
+                    .content = try self.allocator.dupe(u8, placeholder),
+                    .timestamp = msg.timestamp,
+                };
+                pruned_count += 1;
+            } else {
+                // Keep message intact — user, assistant, and recent tool outputs
+                result_messages[i] = .{
+                    .role = try self.allocator.dupe(u8, msg.role),
+                    .content = if (msg.content.len > 0) try self.allocator.dupe(u8, msg.content) else "",
+                    .timestamp = msg.timestamp,
+                };
+            }
+            initialized += 1;
+            total_tokens_after += estimateTokens(result_messages[i].content);
+        }
+
+        // Copy agent metadata for the result
+        var result_metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer result_metadata.deinit();
+
+        var meta_iter = self.agent_metadata.iterator();
+        while (meta_iter.next()) |entry| {
+            try result_metadata.put(
+                try self.allocator.dupe(u8, entry.key_ptr.*),
+                try self.allocator.dupe(u8, entry.value_ptr.*),
+            );
+        }
+
+        return CompactResult{
+            .messages = result_messages,
+            .tokens_saved = total_tokens_before -| total_tokens_after,
+            .messages_summarized = 0,
+            .summary = "",
+            .agent_metadata = result_metadata,
+            .allocator = self.allocator,
+        };
+    }
+
     pub fn buildSummarizationPrompt(
         self: *ContextCompactor,
         messages: []const CompactMessage,
@@ -186,9 +261,29 @@ pub const ContextCompactor = struct {
 
         const writer = prompt.writer();
         try writer.print(
-            "I asked you to help with an ongoing coding session. Update the durable context summary from my perspective. Use first-person phrasing like 'I asked you to...' and keep the summary concrete, technical, and compact. Preserve important decisions, constraints, discoveries, progress, blockers, and file references. Do not include pleasantries.\n\n",
-            .{},
-        );
+            \\## Context Recovery
+            \\
+            \\A context limit was reached during a working session. Generate a compact version of the conversation below that preserves ALL information needed to continue working.
+            \\
+            \\This summary will be read by YOU (the AI assistant) in a future exchange to continue the session. Include EVERYTHING important — technical details, file paths, code, decisions, errors, and fixes. It is OK to make this longer than a normal summary since only you will read it.
+            \\
+            \\### Include these sections:
+            \\1. **Goal** — What the user asked you to accomplish
+            \\2. **Constraints** — User constraints, preferences, specifications
+            \\3. **Discoveries** — Technical findings, decisions made, and why
+            \\4. **Accomplished** — Completed work and anything in progress
+            \\5. **Errors + Fixes** — Bugs found, resolutions, user-driven changes
+            \\6. **Files** — All viewed/edited files with key code and change justifications
+            \\7. **Pending** — Unresolved user requests
+            \\8. **Next Step** — Active work at time of compaction
+            \\
+            \\Rules:
+            \\- Preserve exact file paths, code snippets, error messages, and identifiers
+            \\- Keep technical details verbatim — do not paraphrase code
+            \\- Do not mention the compaction process itself
+            \\
+            \\
+        , .{});
 
         if (previous_summary.len > 0) {
             try writer.print("Previous context summary:\n{s}\n\n", .{previous_summary});
@@ -198,11 +293,6 @@ pub const ContextCompactor = struct {
         for (history_messages, 0..) |msg, i| {
             try writer.print("[{d}] {s}:\n{s}\n\n", .{ i + 1, msg.role, msg.content });
         }
-
-        try writer.print(
-            "Produce exactly these 5 sections with these headings:\nGoal\nInstructions\nDiscoveries\nAccomplished\nRelevant files\n\nUnder each heading, use short bullet points. In Goal, state what I asked you to accomplish. In Instructions, capture important directives and constraints I gave you. In Discoveries, capture notable findings, technical insights, and decisions. In Accomplished, capture completed work and anything still in progress. In Relevant files, list files created, modified, or referenced and why they matter.\n",
-            .{},
-        );
 
         return try prompt.toOwnedSlice();
     }
@@ -800,7 +890,7 @@ test "ContextCompactor - compactWithSummary uses rolling summary marker" {
     try testing.expectEqualStrings(result.summary, c.previous_summary);
 }
 
-test "ContextCompactor - buildSummarizationPrompt includes sections and previous summary" {
+test "ContextCompactor - buildSummarizationPrompt includes agent framing and previous summary" {
     var c = ContextCompactor.init(testing.allocator, 100000);
     defer c.deinit();
     c.setRecentWindow(1);
@@ -813,13 +903,25 @@ test "ContextCompactor - buildSummarizationPrompt includes sections and previous
     const prompt = try c.buildSummarizationPrompt(&messages, "Goal\n- I asked you to extend compaction.");
     defer testing.allocator.free(prompt);
 
+    // Agent framing
+    try testing.expect(std.mem.indexOf(u8, prompt, "Context Recovery") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "This summary will be read by YOU") != null);
+
+    // Previous summary injection
     try testing.expect(std.mem.indexOf(u8, prompt, "Previous context summary:") != null);
-    try testing.expect(std.mem.indexOf(u8, prompt, "I asked you") != null);
+
+    // Section headings
     try testing.expect(std.mem.indexOf(u8, prompt, "Goal") != null);
-    try testing.expect(std.mem.indexOf(u8, prompt, "Instructions") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Constraints") != null);
     try testing.expect(std.mem.indexOf(u8, prompt, "Discoveries") != null);
     try testing.expect(std.mem.indexOf(u8, prompt, "Accomplished") != null);
-    try testing.expect(std.mem.indexOf(u8, prompt, "Relevant files") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Errors + Fixes") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Files") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Pending") != null);
+    try testing.expect(std.mem.indexOf(u8, prompt, "Next Step") != null);
+
+    // Conversation history
+    try testing.expect(std.mem.indexOf(u8, prompt, "Conversation history to summarize:") != null);
 }
 
 test "CompactMessage - struct field access" {
@@ -1086,4 +1188,117 @@ test "compactWithLLM - truncates tool outputs when not preserving" {
 
     try testing.expect(result.summary.len > 0);
     try testing.expectEqual(@as(u32, 2), result.messages_summarized);
+}
+
+// ========== Tests for microCompact ==========
+
+test "microCompact - prunes stale tool outputs older than recent window" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(2);
+
+    const stale_tool_output = "x" ** 1000;
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = stale_tool_output, .timestamp = null },
+        .{ .role = "assistant", .content = "Got it.", .timestamp = null },
+        .{ .role = "tool", .content = "recent tool output", .timestamp = null },
+        .{ .role = "assistant", .content = "Done.", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 4), result.messages.len);
+    try testing.expect(result.tokens_saved > 0);
+    // First tool message should be pruned (stale)
+    try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "[tool output pruned]") != null);
+    // Recent tool message should be intact
+    try testing.expectEqualStrings("recent tool output", result.messages[2].content);
+    // User/assistant messages unchanged
+    try testing.expectEqualStrings("Got it.", result.messages[1].content);
+    try testing.expectEqualStrings("Done.", result.messages[3].content);
+}
+
+test "microCompact - does not touch user or assistant messages" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "long user message that should not be touched at all " ** 50, .timestamp = null },
+        .{ .role = "assistant", .content = "long assistant message that should not be touched " ** 50, .timestamp = null },
+        .{ .role = "user", .content = "recent user msg", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+    try testing.expectEqualStrings("user", result.messages[0].role);
+    try testing.expectEqualStrings("assistant", result.messages[1].role);
+}
+
+test "microCompact - no pruning when all messages within recent window" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(10);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "tool output 1", .timestamp = null },
+        .{ .role = "tool", .content = "tool output 2", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+    try testing.expectEqualStrings("tool output 1", result.messages[0].content);
+    try testing.expectEqualStrings("tool output 2", result.messages[1].content);
+}
+
+test "microCompact - empty tool outputs are not pruned" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "", .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+    try testing.expectEqualStrings("", result.messages[0].content);
+}
+
+test "microCompact - empty messages array" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{};
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expectEqual(@as(usize, 0), result.messages.len);
+    try testing.expectEqual(@as(u64, 0), result.tokens_saved);
+}
+
+test "microCompact - messages_summarized is zero (no messages removed)" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+    c.setRecentWindow(1);
+
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = "big stale tool output " ** 100, .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.microCompact(&messages);
+    defer result.deinit();
+
+    try testing.expect(result.tokens_saved > 0);
+    try testing.expectEqual(@as(u32, 0), result.messages_summarized);
+    try testing.expectEqual(@as(usize, 2), result.messages.len);
 }
