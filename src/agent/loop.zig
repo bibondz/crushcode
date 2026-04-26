@@ -4,6 +4,9 @@ const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
 const trace_span = @import("trace_span");
 const self_heal_mod = @import("self_heal");
+const metrics_mod = @import("metrics_collector");
+const tool_inspection = @import("tool_inspection");
+const tool_parallel = @import("tool_parallel");
 
 const Allocator = std.mem.Allocator;
 
@@ -278,6 +281,9 @@ pub const AgentLoop = struct {
     running: bool,
     recent_tool_names: array_list_compat.ArrayList([]const u8),
     recent_error_messages: array_list_compat.ArrayList([]const u8),
+    metrics_collector: ?*metrics_mod.MetricsCollector = null,
+    inspection_pipeline: ?*tool_inspection.ToolInspectionPipeline = null,
+    parallel_executor: ?*tool_parallel.ParallelExecutor = null,
 
     pub fn init(allocator: Allocator) AgentLoop {
         return AgentLoop{
@@ -311,6 +317,8 @@ pub const AgentLoop = struct {
 
     /// Execute a tool call with retry
     pub fn executeTool(self: *AgentLoop, call: *ToolCall) !?ToolResult {
+        const tool_start_ns = std.time.nanoTimestamp();
+
         // Check if tool is allowed in current agent mode
         if (!self.config.agent_mode.isToolAllowed(call.name)) {
             const err_msg = std.fmt.allocPrint(
@@ -325,6 +333,24 @@ pub const AgentLoop = struct {
             std.log.warn("Tool '{s}' not registered", .{call.name});
             return null;
         };
+
+        // Pre-inspection — check if tool execution should be denied
+        if (self.inspection_pipeline) |pipeline| blk: {
+            const danger = pipeline.classifyDanger(call.name);
+            if (danger == .dangerous) {
+                std.log.warn("Tool '{s}' classified as dangerous by inspection pipeline", .{call.name});
+            }
+            const pre_result = pipeline.inspectPre(call.name, call.arguments) catch {
+                // Inspection error — allow execution to proceed by default
+                break :blk;
+            };
+            if (pre_result.action == .deny) {
+                if (self.config.show_intermediate) {
+                    std.log.warn("Tool '{s}' denied by inspection pipeline", .{call.name});
+                }
+                return ToolResult.init(self.allocator, call.id, "Tool execution denied by inspection pipeline", false) catch null;
+            }
+        }
 
         // Create tool span if there's an active trace
         var tool_span: ?*trace_span.Span = null;
@@ -359,13 +385,40 @@ pub const AgentLoop = struct {
                     std.log.err("Tool '{s}' error: {}", .{ call.name, err });
                 }
                 if (attempt >= self.config.retry_config.max_retries) {
+                    // Emit tool metrics for failed execution
+                    if (self.metrics_collector) |mc| {
+                        mc.increment("crushcode_tool_calls_total", 1, &.{});
+                        const elapsed_ns = std.time.nanoTimestamp() - tool_start_ns;
+                        const elapsed_ms: f64 = @floatFromInt(@as(i64, @intCast(@divTrunc(elapsed_ns, 1_000_000))));
+                        mc.observe("crushcode_tool_duration_ms", elapsed_ms, &.{}) catch {};
+                    }
                     if (tool_span) |span| span.end(.@"error", "Tool execution failed after max retries");
                     return ToolResult.init(self.allocator, call.id, "Tool execution failed after max retries", false) catch null;
                 }
                 continue;
             };
+            // Post-inspection
+            if (self.inspection_pipeline) |pipeline| {
+                _ = pipeline.inspectPost(call.name, result.output) catch {
+                    // Post-inspection error — ignore, return original result
+                };
+                // TODO: If post-inspection denies (e.g., output contains secrets), mask the output
+            }
+
+            // Emit tool metrics
+            if (self.metrics_collector) |mc| {
+                mc.increment("crushcode_tool_calls_total", 1, &.{});
+                const elapsed_ns = std.time.nanoTimestamp() - tool_start_ns;
+                const elapsed_ms: f64 = @floatFromInt(@as(i64, @intCast(@divTrunc(elapsed_ns, 1_000_000))));
+                mc.observe("crushcode_tool_duration_ms", elapsed_ms, &.{}) catch {};
+            }
+
             if (tool_span) |span| span.end(.ok, result.output);
             return result;
+        }
+        // Emit tool metrics for exhausted retries
+        if (self.metrics_collector) |mc| {
+            mc.increment("crushcode_tool_calls_total", 1, &.{});
         }
         if (tool_span) |span| span.end(.@"error", "Exhausted retries");
         return null;
@@ -420,6 +473,10 @@ pub const AgentLoop = struct {
                 std.log.info("--- Agent Loop Iteration {d}/{d} ---", .{ self.iteration, self.config.max_iterations });
             }
 
+            // TODO: Integrate ContextCompactor.compactWithLLM() when context window fills up
+            // This would require passing a sendToLLM function pointer to the agent loop.
+            // Check if compaction is needed: if (compactor.needsCompaction(estimated_tokens)) { ... }
+
             // Send conversation history to AI
             const ai_response = ai_send(self.allocator, self.history.items) catch |err| {
                 if (self.config.show_intermediate) {
@@ -427,7 +484,12 @@ pub const AgentLoop = struct {
                 }
                 step.ai_response = try self.allocator.dupe(u8, "Error: AI request failed");
                 step.finish_reason = "error";
-                try result.steps.append(step);
+            // Emit request metrics
+            if (self.metrics_collector) |mc| {
+                mc.increment("crushcode_requests_total", 1, &.{});
+            }
+
+            try result.steps.append(step);
                 done = true;
                 break;
             };
@@ -449,49 +511,114 @@ pub const AgentLoop = struct {
             if (ai_response.tool_calls.len > 0) {
                 step.has_tool_calls = true;
 
-                // Add assistant message with tool calls to history
-                for (ai_response.tool_calls) |tc| {
-                    self.total_tool_calls += 1;
-                    const tool_call = try self.allocator.create(ToolCall);
-                    tool_call.* = try ToolCall.init(self.allocator, tc.id, tc.name, tc.arguments);
-                    try step.tool_calls.append(tool_call);
+                if (ai_response.tool_calls.len > 1 and self.parallel_executor != null) {
+                    // Parallel execution path — execute multiple tool calls concurrently
+                    var parallel_calls = try self.allocator.alloc(tool_parallel.ToolCall, ai_response.tool_calls.len);
+                    defer self.allocator.free(parallel_calls);
 
-                    if (self.config.show_intermediate) {
-                        std.log.info("Tool call: {s}({s})", .{ tc.name, tc.arguments });
+                    for (ai_response.tool_calls, 0..) |tc, i| {
+                        self.total_tool_calls += 1;
+                        const tool_call = try self.allocator.create(ToolCall);
+                        tool_call.* = try ToolCall.init(self.allocator, tc.id, tc.name, tc.arguments);
+                        try step.tool_calls.append(tool_call);
+
+                        if (self.config.show_intermediate) {
+                            std.log.info("Tool call (parallel): {s}({s})", .{ tc.name, tc.arguments });
+                        }
+
+                        parallel_calls[i] = .{
+                            .call_id = tc.id,
+                            .tool_name = tc.name,
+                            .args = tc.arguments,
+                        };
                     }
 
-                    // Execute tool
-                    const tool_result = self.executeTool(tool_call) catch null;
-                    if (tool_result) |tr| {
+                    const results = try self.parallel_executor.?.executeBatch(parallel_calls);
+                    var parallel_cleaned_up = false;
+
+                    for (results, 0..) |par_result, i| {
+                        const tc = ai_response.tool_calls[i];
+                        const output_str = if (par_result.output.len > 0) par_result.output else "Tool execution failed";
+
                         const result_ptr = try self.allocator.create(ToolResult);
-                        result_ptr.* = tr;
+                        result_ptr.* = try ToolResult.init(self.allocator, tc.id, output_str, par_result.success);
+                        result_ptr.duration_ms = par_result.duration_ms;
                         try step.tool_results.append(result_ptr);
 
                         // Add tool result to history
-                        try self.addToolResult(tr.call_id, tc.name, tr.output);
+                        try self.addToolResult(tc.id, tc.name, output_str);
 
                         if (self.config.show_intermediate) {
-                            const status = if (tr.success) "OK" else "FAILED";
-                            std.log.info("Tool result [{s}]: {s}", .{ status, tr.output });
+                            const status = if (par_result.success) "OK" else "FAILED";
+                            std.log.info("Tool result [{s}]: {s}", .{ status, result_ptr.output });
                         }
 
                         // Track failed tool calls for repetition detection
-                        if (!tr.success) {
+                        if (!par_result.success) {
                             self.recent_tool_names.append(try self.allocator.dupe(u8, tc.name)) catch {};
-                            self.recent_error_messages.append(try self.allocator.dupe(u8, tr.output)) catch {};
+                            self.recent_error_messages.append(try self.allocator.dupe(u8, result_ptr.output)) catch {};
                             if (self_heal_mod.detectRepetition(self.allocator, self.recent_tool_names.items, self.recent_error_messages.items, 3)) {
                                 if (self.config.show_intermediate) {
                                     std.log.warn("Repetition detected: tool '{s}' failing repeatedly. Breaking loop.", .{tc.name});
                                 }
                                 done = true;
+                                for (results) |*r| r.deinit();
+                                self.allocator.free(results);
+                                parallel_cleaned_up = true;
                                 break;
                             }
                         }
-                    } else {
-                        // Tool not found or failed — report error back to AI
-                        const err_msg = try std.fmt.allocPrint(self.allocator, "Tool '{s}' not found or execution failed", .{tc.name});
-                        try self.addToolResult(tc.id, tc.name, err_msg);
-                        self.allocator.free(err_msg);
+                    }
+
+                    if (!parallel_cleaned_up) {
+                        for (results) |*r| r.deinit();
+                        self.allocator.free(results);
+                    }
+                } else {
+                    // Sequential execution (existing code path)
+                    for (ai_response.tool_calls) |tc| {
+                        self.total_tool_calls += 1;
+                        const tool_call = try self.allocator.create(ToolCall);
+                        tool_call.* = try ToolCall.init(self.allocator, tc.id, tc.name, tc.arguments);
+                        try step.tool_calls.append(tool_call);
+
+                        if (self.config.show_intermediate) {
+                            std.log.info("Tool call: {s}({s})", .{ tc.name, tc.arguments });
+                        }
+
+                        // Execute tool
+                        const tool_result = self.executeTool(tool_call) catch null;
+                        if (tool_result) |tr| {
+                            const result_ptr = try self.allocator.create(ToolResult);
+                            result_ptr.* = tr;
+                            try step.tool_results.append(result_ptr);
+
+                            // Add tool result to history
+                            try self.addToolResult(tr.call_id, tc.name, tr.output);
+
+                            if (self.config.show_intermediate) {
+                                const status = if (tr.success) "OK" else "FAILED";
+                                std.log.info("Tool result [{s}]: {s}", .{ status, tr.output });
+                            }
+
+                            // Track failed tool calls for repetition detection
+                            if (!tr.success) {
+                                self.recent_tool_names.append(try self.allocator.dupe(u8, tc.name)) catch {};
+                                self.recent_error_messages.append(try self.allocator.dupe(u8, tr.output)) catch {};
+                                if (self_heal_mod.detectRepetition(self.allocator, self.recent_tool_names.items, self.recent_error_messages.items, 3)) {
+                                    if (self.config.show_intermediate) {
+                                        std.log.warn("Repetition detected: tool '{s}' failing repeatedly. Breaking loop.", .{tc.name});
+                                    }
+                                    done = true;
+                                    break;
+                                }
+                            }
+                        } else {
+                            // Tool not found or failed — report error back to AI
+                            const err_msg = try std.fmt.allocPrint(self.allocator, "Tool '{s}' not found or execution failed", .{tc.name});
+                            try self.addToolResult(tc.id, tc.name, err_msg);
+                            self.allocator.free(err_msg);
+                        }
                     }
                 }
             } else {

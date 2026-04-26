@@ -209,6 +209,9 @@ pub const ModelRouter = struct {
 
     /// Route a task category to the appropriate model.
     /// Returns the model name from matching rule, or default_model if no rule matches.
+    /// Note: This method does NOT check circuit breakers. Use routeWithStrategy() for
+    /// breaker-aware routing. Circuit breaker state is read-only here (WRITE happens
+    /// from client.zig after request completion).
     pub fn routeForTask(self: *const ModelRouter, category: TaskCategory) []const u8 {
         for (self.rules.items) |rule| {
             if (rule.category == category) return rule.model;
@@ -374,10 +377,35 @@ pub const ModelRouter = struct {
     }
 
     /// Route using the configured strategy.
+    /// Checks circuit breakers for default/cost_optimized/latency_aware strategies.
+    /// If the selected model's provider has an open breaker, falls back to default_model.
     pub fn routeWithStrategy(self: *ModelRouter, category: TaskCategory) []const u8 {
         switch (self.strategy) {
-            .default => return self.routeForTask(category),
-            .cost_optimized => return self.routeForTask(category),
+            .default => {
+                const model = self.routeForTask(category);
+                // Check circuit breaker — if open, try default_model as fallback
+                if (self.circuit_breakers.getPtr(model)) |breaker| {
+                    if (!breaker.allow()) {
+                        std.log.warn("circuit breaker open for model '{s}', falling back to default", .{model});
+                        if (!std.mem.eql(u8, model, self.default_model)) {
+                            return self.default_model;
+                        }
+                    }
+                }
+                return model;
+            },
+            .cost_optimized => {
+                const model = self.routeForTask(category);
+                if (self.circuit_breakers.getPtr(model)) |breaker| {
+                    if (!breaker.allow()) {
+                        std.log.warn("circuit breaker open for model '{s}', falling back to default", .{model});
+                        if (!std.mem.eql(u8, model, self.default_model)) {
+                            return self.default_model;
+                        }
+                    }
+                }
+                return model;
+            },
             .latency_aware => {
                 const model = self.routeForTask(category);
                 // Check if this provider has high P95 latency

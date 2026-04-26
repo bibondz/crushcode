@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 
 pub const GuardrailAction = enum { allow, deny, redact, ask };
 
@@ -78,14 +79,14 @@ pub const Guardrail = struct {
 
 pub const GuardrailPipeline = struct {
     allocator: std.mem.Allocator,
-    guardrails: std.ArrayList(Guardrail),
+    guardrails: array_list_compat.ArrayList(Guardrail),
     config: GuardrailConfig,
 
     /// Initialize a new guardrail pipeline with the given allocator and config.
     pub fn init(allocator: std.mem.Allocator, config: GuardrailConfig) GuardrailPipeline {
         return GuardrailPipeline{
             .allocator = allocator,
-            .guardrails = std.ArrayList(Guardrail).init(allocator),
+            .guardrails = array_list_compat.ArrayList(Guardrail).init(allocator),
             .config = config,
         };
     }
@@ -124,7 +125,7 @@ pub const GuardrailPipeline = struct {
         var had_deny = false;
         var deny_result: ?GuardrailResult = null;
         var max_confidence: f64 = 0.0;
-        var all_detections = std.ArrayList(Detection).init(self.allocator);
+        var all_detections = array_list_compat.ArrayList(Detection).init(self.allocator);
         errdefer {
             for (all_detections.items) |det| {
                 self.allocator.free(det.entity_type);
@@ -135,9 +136,8 @@ pub const GuardrailPipeline = struct {
 
         // Step 2: Run each guardrail sorted by priority
         for (self.guardrails.items) |guardrail| {
-            const result = guardrail.check(self.allocator, current_input, &self.config) catch |err| {
+            const result = guardrail.check(self.allocator, current_input, &self.config) catch {
                 // On scanner error, skip this scanner and continue
-                _ = err;
                 continue;
             };
 

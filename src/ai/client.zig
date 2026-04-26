@@ -8,6 +8,8 @@ const error_handler_mod = @import("error_handler.zig");
 const streaming_parsers = @import("ai_streaming_parsers");
 const trace_span = @import("trace_span");
 const retry_policy = @import("retry_policy");
+const guardrail = @import("guardrail_pipeline");
+const metrics = @import("metrics_collector");
 
 pub const ChatMessage = ai_types.ChatMessage;
 pub const ToolCallInfo = ai_types.ToolCallInfo;
@@ -84,6 +86,10 @@ pub const AIClient = struct {
     max_tokens: u32 = 4096,
     /// Sampling temperature 0.0–2.0 (default: 0.7)
     temperature: f32 = 0.7,
+    /// Optional guardrail pipeline for input validation before requests
+    guardrail_pipeline: ?*guardrail.GuardrailPipeline = null,
+    /// Optional metrics collector for request observability
+    metrics_collector: ?*metrics.MetricsCollector = null,
 
     pub fn init(allocator: std.mem.Allocator, provider: registry_mod.Provider, model: []const u8, api_key: []const u8) !AIClient {
         return AIClient{
@@ -235,6 +241,23 @@ pub const AIClient = struct {
             return error.AuthenticationError;
         }
 
+        // Guardrail pre-check: validate last user message before sending
+        if (self.guardrail_pipeline) |pipeline| {
+            const last_msg = messages[messages.len - 1];
+            const input_text = last_msg.content orelse "";
+            var gr_result = try pipeline.check(input_text);
+            defer gr_result.deinit();
+            if (gr_result.action == .deny) {
+                std.log.warn("guardrail blocked request: {s} ({s})", .{ gr_result.scanner_name, gr_result.reason orelse "no reason" });
+                return error.GuardrailBlocked;
+            }
+            // TODO: If gr_result.action == .redact, use gr_result.redacted_content
+            // for the request instead of the original message content.
+        }
+
+        // Record start time for metrics
+        const start_ns = std.time.nanoTimestamp();
+
         // Create trace span for observability
         var llm_span: ?*trace_span.Span = null;
         if (trace_span.context.currentTrace()) |trace| {
@@ -253,6 +276,12 @@ pub const AIClient = struct {
         defer allocator.free(endpoint);
 
         const uri = try std.Uri.parse(endpoint);
+        // TODO: Cache-aware messages integration point.
+        // For Anthropic/Bedrock/VertexAI providers, call buildCacheAwareMessages()
+        // here to inject cache_control breakpoints into the message array before
+        // building the request body. This requires adapting the streaming body builder
+        // to accept CacheMarkedMessage[] instead of ChatMessage[] for those providers.
+        // const cache_messages = buildCacheAwareMessages(allocator, system_prompt, messages, provider.name);
         const json_body = try self.buildStreamingBodyFromMessages(messages);
         defer allocator.free(json_body);
 
@@ -356,6 +385,21 @@ pub const AIClient = struct {
             }
             span.end(.ok, null);
         }
+
+        // Emit metrics (fire-and-forget)
+        if (self.metrics_collector) |mc| {
+            const elapsed_ns = std.time.nanoTimestamp() - start_ns;
+            const duration_ms: f64 = @floatFromInt(@divTrunc(elapsed_ns, 1_000_000));
+            mc.increment("crushcode_requests_total", 1, &.{});
+            mc.observe("crushcode_request_duration_ms", duration_ms, &.{}) catch {};
+        }
+
+        // TODO: Circuit breaker integration point.
+        // After request succeeds, the caller (loop.zig) should call:
+        //   router.getCircuitBreaker(provider_name).recordSuccess()
+        // After request fails, the caller should call:
+        //   router.getCircuitBreaker(provider_name).recordFailure()
+        // This is done externally so the router remains read-only during routing.
 
         return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage, streaming_tool_calls.items);
     }
