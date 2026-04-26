@@ -339,6 +339,15 @@ pub const Model = struct {
     session_tree: session_tree_mod.SessionTreeWidget,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
+        // Pre-flight: check if /dev/tty is accessible.
+        // vaxis.Tty.init() will dump a stack trace on failure, which is noisy.
+        // Detect early and return a clean error instead.
+        {
+            const fd = std.c.open("/dev/tty", .{ .ACCMODE = .RDWR });
+            if (fd < 0) return error.NoTTyAvailable;
+            _ = std.c.close(fd);
+        }
+
         const model = try allocator.create(Model);
         errdefer allocator.destroy(model);
 
