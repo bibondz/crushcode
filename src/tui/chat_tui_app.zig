@@ -1777,6 +1777,23 @@ pub const Model = struct {
                     return;
                 }
             },
+            .mouse => |mouse| {
+                // Left click in message area: scan recent messages for file paths
+                if (mouse.button == .left and mouse.type == .press) {
+                    // Skip when overlays are active
+                    if (self.show_palette or self.diff_preview_active or
+                        self.show_session_list or self.pending_permission != null or
+                        self.show_help or self.setup_phase != 0)
+                    {
+                        return;
+                    }
+
+                    if (self.previewMostRecentFilePath()) {
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                }
+            },
             else => {},
         }
 
@@ -4075,6 +4092,74 @@ pub const Model = struct {
         self.history.shrinkRetainingCapacity(self.history.items.len - remove_count);
 
         self.context_tokens = token_tracking_mod.estimateContextTokens(self);
+    }
+
+    /// Scan recent chat messages for file paths and open the first match in
+    /// the right-pane preview. Returns true if a file was opened.
+    fn previewMostRecentFilePath(self: *Model) bool {
+        const items = self.history.items;
+        if (items.len == 0) return false;
+
+        // Scan last 20 messages (most recent first)
+        const start_idx = if (items.len > 20) items.len - 20 else 0;
+        var idx: usize = items.len;
+        while (idx > start_idx) {
+            idx -= 1;
+            const content = items[idx].content orelse continue;
+            if (self.extractAndPreviewFilePath(content)) return true;
+        }
+        return false;
+    }
+
+    /// Known source-code extensions used to recognise file paths in text.
+    const file_extensions = [_][]const u8{
+        ".zig",   ".ts",   ".tsx",  ".js",  ".jsx", ".py",  ".rs",  ".go",
+        ".toml",  ".yaml", ".yml",  ".json", ".md",  ".txt", ".sh",  ".bash",
+        ".c",     ".h",    ".cpp",  ".hpp", ".java", ".kt",  ".swift",
+        ".lua",   ".rb",   ".pl",   ".r",   ".sql",  ".html", ".css",
+        ".vue",   ".svelte",
+    };
+
+    /// Look for a token that looks like a file path inside `text` and open it
+    /// in the preview pane. Returns true on success.
+    fn extractAndPreviewFilePath(self: *Model, text: []const u8) bool {
+        var iter = std.mem.splitAny(u8, text, " \t\n\r`'\"<>()[]{}:,;");
+        while (iter.next()) |token| {
+            if (token.len < 5) continue;
+            if (std.mem.indexOfScalar(u8, token, '/') == null) continue;
+
+            for (file_extensions) |ext| {
+                if (std.mem.endsWith(u8, token, ext)) {
+                    const file_path = std.mem.trim(u8, token, "()");
+                    if (self.openFilePathPreview(file_path)) return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    /// Read `file_path` from disk and display it in the right preview pane.
+    /// Returns true if the file was successfully opened.
+    fn openFilePathPreview(self: *Model, file_path: []const u8) bool {
+        const content = std.fs.cwd().readFileAlloc(self.allocator, file_path, 10 * 1024 * 1024) catch return false;
+        errdefer self.allocator.free(content);
+
+        // Free previous preview state
+        if (self.right_pane_content) |c| self.allocator.free(c);
+        if (self.right_pane_title) |t| self.allocator.free(t);
+
+        self.right_pane_content = content;
+        self.right_pane_title = self.allocator.dupe(u8, file_path) catch {
+            self.allocator.free(content);
+            return false;
+        };
+        self.right_pane_visible = true;
+
+        // Toast notification
+        const msg = std.fmt.allocPrint(self.allocator, "Previewing {s}", .{file_path}) catch return true;
+        self.toast_stack.push(msg, .info) catch {};
+
+        return true;
     }
 
 
