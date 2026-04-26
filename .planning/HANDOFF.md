@@ -1,8 +1,8 @@
 # Crushcode — Session Handoff
 
 **Updated:** 2026-04-26
-**Status:** v1.4.x Compaction Phase A+B COMPLETE ✅ — Phase 23 next
-**Branch:** `master` | **Last commit:** `629da2e` | **Build:** ✅ clean | **Tests:** ✅ pass
+**Status:** v1.4.x Phases 22-24 COMPLETE ✅ — Phase 25 next
+**Branch:** `master` | **Last commit:** `104a01e` | **Build:** ✅ clean | **Tests:** ✅ pass
 
 ---
 
@@ -47,15 +47,19 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 
 ## Recent Work (v1.2.0–v1.4.0)
 
-### v1.4.x — Compaction Improvements Phase A+B (2 commits, +1177 lines)
+### v1.4.x — Prompt + Compaction (4 commits, +1466 lines)
 
 - **Micro-Compact**: Prune stale tool outputs older than recent window — 0 quality loss, 20-40% token savings
 - **Multi-Tier Thresholds**: micro@<85%, light@85-95%, summary@95%+ — graduated response vs one-size-fits-all
-- **Dynamic Context Limits**: context_limits.zig maps 15+ provider families (Claude 200K, Gemini 1M, GPT-4o 128K, etc.) — no more hardcoded 128K
-- **Agent Framing**: 8-section structured prompt (Goal/Constraints/Discoveries/Accomplished/Errors+Fixes/Files/Pending/NextStep) for AI-to-AI context recovery
-- **Template Enforcement**: enforceSummaryTemplate() validates LLM output has all 8 required sections, injects missing ones
-- **Tool Importance Pruning**: Protected (skill/write/edit/decision) > Normal (bash/grep/read) > Aggressive (web_fetch/web_search) — never prune decisions
-- **Wire compactWithLLM**: sendToLLMWrapper threadlocal pattern, auto-compact at 95%+ tries LLM first with heuristic fallback
+- **Dynamic Context Limits**: context_limits.zig maps 15+ provider families (Claude 200K, Gemini 1M, GPT-4o 128K, etc.)
+- **Agent Framing**: 8-section structured prompt for AI-to-AI context recovery
+- **Template Enforcement**: enforceSummaryTemplate() validates LLM output has all 8 required sections
+- **Tool Importance Pruning**: Protected/Normal/Aggressive tool categories
+- **Wire compactWithLLM**: sendToLLMWrapper threadlocal pattern with heuristic fallback
+- **Multi-format Context Files**: loadContextFiles() discovers 12+ formats (AGENTS/CLAUDE/GEMINI/.cursorrules/.cursor/rules/.github/copilot)
+- **XML Injection**: Structured `<memory><file path="...">` pattern for context files
+- **Enhanced Prompt**: 17 guidelines across Core/Editing/Communication/Safety
+- **Dynamic Tool Tips**: Per-language tool usage tips (Zig/Rust/Go/JS/Python/C++)
 
 ### v1.4.0 — Harness Engineering (7 commits, +6192 lines)
 
@@ -180,7 +184,8 @@ eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
 |-------|-------------|--------|
 | Phase 22 | Smart Context + Auto-Compact | ✅ Done (Phase A+B) |
 | Phase 23 | Myers Diff + Edit Preview | ✅ Already done (1898 lines) |
-| Phase 24 | System Prompt Engineering + Project Config | **Next** |
+| Phase 24 | System Prompt Engineering + Project Config | ✅ Done (104a01e) |
+| Phase 25 | Lifecycle Hooks + Code Quality | **Next** |
 | Phase 25 | Batch Operations + Undo/Redo | Not started |
 
 ## How To Continue

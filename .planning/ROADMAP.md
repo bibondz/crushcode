@@ -328,20 +328,22 @@ Plans:
 - [x] 23-01-PLAN.md — Myers diff algorithm + hunk generation ✅
 - [x] 23-02-PLAN.md — Edit preview flow (diff display + confirm/reject) + hash validation ✅
 
-### Phase 24: System Prompt Engineering + Project Config
+### Phase 24: System Prompt Engineering + Project Config ✅ DONE
 **Goal:** Rich system prompt with project-specific instructions, AGENTS.md support, and .crushcode/ project config
-**ปัญหา**: System prompt is just "You are a helpful AI coding assistant" + raw compressed context. No project-specific instructions, no coding guidelines, no AGENTS.md support.
+**ปัญญา**: System prompt is just "You are a helpful AI coding assistant" + raw compressed context. No project-specific instructions, no coding guidelines, no AGENTS.md support.
 **ทำ**:
-- Load `AGENTS.md` from project root → inject into system prompt
-- Support `.crushcode/instructions.md` for custom project instructions
-- Enhance base system prompt with coding best practices (tool usage guidelines, edit safety, etc.)
-- Project detection: auto-detect language, framework, build system
-- Dynamic tool descriptions based on project type (Zig projects get `zig build` tips, etc.)
-- ไฟล์: modify `chat_tui_app.zig` (prompt building), new `src/config/project.zig` (project detection)
+- Load `AGENTS.md` from project root → inject into system prompt ✅
+- Support `.crushcode/instructions.md` for custom project instructions ✅
+- Enhance base system prompt with coding best practices (tool usage guidelines, edit safety, etc.) ✅ (17 guidelines)
+- Project detection: auto-detect language, framework, build system ✅ (6 languages)
+- Dynamic tool descriptions based on project type ✅ (Zig/Rust/Go/JS/Python/C++)
+- Multi-format context files (CLAUDE.md, GEMINI.md, .cursorrules, .github/copilot-instructions.md) ✅ (12+ formats)
+- Structured XML injection of context files ✅
+- ไฟล์: modify `chat_tui_app.zig` (prompt building), `src/config/project.zig` (context file loading)
 
 **Plans:** 1 plan
 Plans:
-- [ ] 24-01-PLAN.md — Rich system prompt + AGENTS.md + project config
+- [x] 24-01-PLAN.md — Rich system prompt + AGENTS.md + project config ✅
 
 ### Phase 25: Lifecycle Hooks + Code Quality
 **Goal:** Wire lifecycle hooks into agent loop and clean up code quality issues

@@ -22,9 +22,9 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v1.4.x Compaction Improvements — Phase A+B COMPLETE |
-| Phase | Phase 22 (Smart Context + Auto-Compact) — Phase B shipped |
-| Commit | 629da2e |
+| Milestone | v1.4.x Prompt + Compaction — Phase 22-24 COMPLETE |
+| Phase | Phase 24 (System Prompt Engineering) — shipped |
+| Commit | 104a01e |
 | Last Tag | v1.4.0 |
 | Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 |
 
@@ -53,6 +53,10 @@
 | Phase B: Template Enforcement | enforceSummaryTemplate() validates LLM output has 8 required sections | 629da2e |
 | Phase B: Tool Importance Pruning | Protected/normal/aggressive tool categories, prune by importance | 629da2e |
 | Phase B: Wire compactWithLLM | sendToLLMWrapper threadlocal pattern, LLM compaction with heuristic fallback | 629da2e |
+| Phase 24: Multi-format Context | loadContextFiles() discovers 12+ formats (AGENTS/CLAUDE/GEMINI/.cursorrules/.github/copilot) | 104a01e |
+| Phase 24: XML Injection | Structured <memory><file path="..."> injection of context files | 104a01e |
+| Phase 24: Enhanced Prompt | 17 guidelines across Core/Editing/Communication/Safety (was 6 flat) | 104a01e |
+| Phase 24: Dynamic Tool Tips | Per-language tool usage tips (Zig/Rust/Go/JS/Python/C++) | 104a01e |
 
 ---
 
@@ -151,13 +155,13 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 |-------|-------------|--------|
 | Phase 22 | Smart Context + Auto-Compact | ✅ Phase A+B Done |
 | Phase 23 | Myers Diff + Edit Preview | ✅ Already implemented (1898 lines) |
-| Phase 24 | System Prompt Engineering + Project Config | **Next** |
-| Phase 25 | Batch Operations + Undo/Redo | Not started |
+| Phase 24 | System Prompt Engineering + Project Config | ✅ Done |
+| Phase 25 | Lifecycle Hooks + Code Quality | **Next** |
 
 ---
 
 ## Session Continuity
 
 **Last Updated:** 2026-04-26
-**Current Work:** Phase 22 A+B shipped. Phase 23 already implemented. Phase 24 (System Prompt + Project Config) next.
-**Next Step:** Phase 24 — AGENTS.md loading, .crushcode/instructions.md, project detection, rich system prompt.
+**Current Work:** Phase 22-24 shipped. Phase 25 (Lifecycle Hooks + Code Quality) next.
+**Next Step:** Phase 25 — wire lifecycle hooks, rename ast_grep, code cleanup.

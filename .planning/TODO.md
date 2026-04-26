@@ -1,7 +1,7 @@
 # Crushcode — TODO & Known Issues
 
 **Updated:** 2026-04-26
-**Version:** v1.4.x (Phase A+B compaction improvements shipped)
+**Version:** v1.4.x (Phase 22-24 shipped)
 
 ---
 
@@ -130,6 +130,14 @@
 - [x] Tool importance-based pruning (protected/normal/aggressive categories)
 - [x] Wire compactWithLLM via sendToLLMWrapper threadlocal pattern
 - [x] 14 new inline tests
+
+## Done (v1.4.x Phase 24 — 2026-04-26)
+
+- [x] Multi-format context file loading (12+ formats: AGENTS/CLAUDE/GEMINI/.cursorrules/.cursor/rules/.github/copilot)
+- [x] Structured XML injection (<memory><file path="...">pattern)
+- [x] Enhanced base prompt (17 guidelines across Core/Editing/Communication/Safety)
+- [x] Dynamic tool tips per project language (Zig/Rust/Go/JS/Python/C++)
+- [x] 3 new inline tests
 
 ## Done (v1.4.0 session — 2026-04-26)
 
