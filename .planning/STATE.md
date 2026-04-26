@@ -163,5 +163,5 @@ src/tui/model/token_tracking.zig — Cost estimation, context percent
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Current Work:** Research phase complete. 41 ref repos analyzed. AST replaced by 3-tier (Regex + LSP + sg spawn).
-**Next Step:** Wire remaining infrastructure (items 1-8 from research), build performance features, implement hashline edit.
+**Current Work:** Research sprint complete. Phase 25 (Lifecycle Hooks) next.
+**Next Step:** Phase 25 — wire lifecycle hooks, remove tree_sitter.zig stub, code cleanup.

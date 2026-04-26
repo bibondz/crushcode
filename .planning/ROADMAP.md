@@ -347,17 +347,28 @@ Plans:
 
 ### Phase 25: Lifecycle Hooks + Code Quality
 **Goal:** Wire lifecycle hooks into agent loop and clean up code quality issues
-**ปัญหา**: Lifecycle hooks framework exists (196 lines, 10 phases, 3 tiers) but ZERO hooks registered and ZERO call sites in production code. Also: ast_grep.zig branded as "AST" but just substring search.
+**ปัญหา**: Lifecycle hooks framework exists (196 lines, 10 phases, 3 tiers) but ZERO hooks registered and ZERO call sites in production code. Also: tree_sitter.zig stub (438 lines of @panic).
 **ทำ**:
 - Wire `LifecycleHooks` into TUI agent loop: pre_request, post_request, pre_tool, post_tool, on_error
 - Implement core hooks: token tracking, error logging, tool timing
-- Remove or repurpose `tree_sitter.zig` stub (438 lines of @panic) — AST replaced by: Regex (✅ 20 langs) + LSP (✅ goto/refs/hover/diagnostics) + spawn `sg` binary (future)
+- Remove `tree_sitter.zig` stub — AST replaced by: Regex (✅ 20 langs) + LSP (✅ goto/refs/hover/diagnostics) + spawn `sg` binary (future)
 - Clean up dead code and unused edge types in graph/types.zig
 - ไฟล์: modify `chat_tui_app.zig` (hook call sites), `hooks/lifecycle.zig` (register core hooks), remove `tree_sitter.zig`
 
 **Plans:** 1 plan
 Plans:
-- [ ] 25-01-PLAN.md — Wire lifecycle hooks + honest rename + code cleanup
+- [ ] 25-01-PLAN.md — Wire lifecycle hooks + remove tree_sitter + code cleanup
+
+### Research Sprint (completed 2026-04-27)
+**Done (shipped in e6b825f, f54aa5a):**
+- 41 reference repos deep-dived across 5 domains (agent orchestration, edit/safety, TUI, MCP/skills, AI providers)
+- CheckpointManager wired to delete_file + move_file
+- /undo command in TUI (calls rewindLast)
+- Write-before-read guard on write_file + edit
+- Token estimation LRU cache (src/cache/token_cache.zig, xxHash64 keys)
+- HTTP connection reuse (shared std.http.Client threadlocal)
+- Hashline Edit (src/edit/hashline_edit.zig, ~530 lines, LINE#ID from OhMyOpenAgent)
+- AST marked REPLACED: 3-tier (Regex + LSP + sg binary)
 
 ---
 
