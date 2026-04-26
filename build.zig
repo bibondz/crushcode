@@ -677,11 +677,12 @@ pub fn build(b: *std.Build) !void {
         imp("self_heal", retry_self_heal_mod),
     });
 
-    // Wire metrics, tool inspection, and parallel execution into agent loop
+    // Wire metrics, tool inspection, parallel execution, and compaction into agent loop
     addImports(agent_loop_mod, &.{
         imp("metrics_collector", metrics_collector_mod),
         imp("tool_inspection", tool_inspection_mod),
         imp("tool_parallel", tool_parallel_mod),
+        imp("compaction", compaction_mod),
     });
 
     // Wire trace, retry, guardrail, metrics into AI client

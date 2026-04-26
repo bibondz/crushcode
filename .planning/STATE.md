@@ -38,7 +38,7 @@
 | Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
 | Cache-aware Anthropic | ✅ Done | buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
 | Post-inspection masking | ✅ Done | Secrets in tool output masked instead of blocked |
-| Context compaction w/ LLM | 🔲 Deferred | compactWithLLM() exists, needs loop integration |
+| Context compaction w/ LLM | ✅ Done | compactLight wired into AgentLoop |
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -57,7 +57,7 @@
 | Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
 | Cache-aware Anthropic | ✅ Done | buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
 | Post-inspection masking | ✅ Done | Secrets in tool output masked instead of blocked |
-| Context compaction w/ LLM | 🔲 Deferred | compactWithLLM() exists, needs loop integration |
+| Context compaction w/ LLM | ✅ Done | compactLight wired into AgentLoop |
 
 ---
 

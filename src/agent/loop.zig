@@ -7,6 +7,7 @@ const self_heal_mod = @import("self_heal");
 const metrics_mod = @import("metrics_collector");
 const tool_inspection = @import("tool_inspection");
 const tool_parallel = @import("tool_parallel");
+const compaction_mod = @import("compaction");
 
 const Allocator = std.mem.Allocator;
 
@@ -249,6 +250,7 @@ pub const LoopConfig = struct {
     show_intermediate: bool,
     tool_timeout_ms: u64,
     agent_mode: AgentMode,
+    compaction_config: compaction_mod.CompactionConfig,
 
     pub fn init() LoopConfig {
         return LoopConfig{
@@ -257,6 +259,7 @@ pub const LoopConfig = struct {
             .show_intermediate = true,
             .tool_timeout_ms = 30000,
             .agent_mode = .execute,
+            .compaction_config = compaction_mod.CompactionConfig{},
         };
     }
 };
@@ -284,6 +287,9 @@ pub const AgentLoop = struct {
     metrics_collector: ?*metrics_mod.MetricsCollector = null,
     inspection_pipeline: ?*tool_inspection.ToolInspectionPipeline = null,
     parallel_executor: ?*tool_parallel.ParallelExecutor = null,
+    compactor: ?compaction_mod.ContextCompactor = null,
+    /// Tracks whether history has been compacted (replaced with summary + recent messages)
+    compacted_history: ?array_list_compat.ArrayList(compaction_mod.CompactMessage) = null,
 
     pub fn init(allocator: Allocator) AgentLoop {
         return AgentLoop{
@@ -303,6 +309,17 @@ pub const AgentLoop = struct {
     /// Configure the loop
     pub fn setConfig(self: *AgentLoop, config: LoopConfig) void {
         self.config = config;
+    }
+
+    /// Enable context compaction with the given max token budget
+    pub fn enableCompaction(self: *AgentLoop, max_tokens: u64) void {
+        self.compactor = compaction_mod.ContextCompactor.init(self.allocator, max_tokens);
+        if (self.config.compaction_config.compact_threshold > 0) {
+            self.compactor.?.setThreshold(self.config.compaction_config.compact_threshold);
+        }
+        if (self.config.compaction_config.recent_window > 0) {
+            self.compactor.?.recent_window = self.config.compaction_config.recent_window;
+        }
     }
 
     /// Register a tool executor
@@ -487,9 +504,46 @@ pub const AgentLoop = struct {
                 std.log.info("--- Agent Loop Iteration {d}/{d} ---", .{ self.iteration, self.config.max_iterations });
             }
 
-            // TODO: Integrate ContextCompactor.compactWithLLM() when context window fills up
-            // This would require passing a sendToLLM function pointer to the agent loop.
-            // Check if compaction is needed: if (compactor.needsCompaction(estimated_tokens)) { ... }
+            // Context compaction: check if history exceeds token budget
+            if (self.compactor) |*compactor| {
+                var estimated_tokens: u64 = 0;
+                for (self.history.items) |msg| {
+                    estimated_tokens += compaction_mod.ContextCompactor.estimateTokens(msg.content);
+                }
+                if (compactor.needsCompaction(estimated_tokens)) {
+                    if (self.config.show_intermediate) {
+                        std.log.info("Context compaction triggered: {d} tokens exceed threshold", .{estimated_tokens});
+                    }
+                    // Convert LoopMessage[] to CompactMessage[]
+                    const compact_msgs = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
+                    for (self.history.items, 0..) |msg, i| {
+                        compact_msgs[i] = .{
+                            .role = msg.role,
+                            .content = msg.content,
+                            .timestamp = null,
+                        };
+                    }
+                    // Use compactLight (no LLM call) — avoids recursive ai_send dependency.
+                    // compactWithLLM requires a separate sendToLLM fn that this loop doesn't have.
+                    const compact_result = try compactor.compactLight(compact_msgs);
+                    defer {
+                        if (compact_result.allocator) |_| {
+                            // compact_result owns the messages — CompactResult.deinit handles it
+                        }
+                    }
+                    if (compact_result.messages_summarized > 0) {
+                        if (self.config.show_intermediate) {
+                            std.log.info("Compacted {d} messages, saved ~{d} tokens", .{ compact_result.messages_summarized, compact_result.tokens_saved });
+                        }
+                        // Replace history with compacted messages
+                        self.history.clearRetainingCapacity();
+                        for (compact_result.messages) |cmsg| {
+                            try self.addMessage(cmsg.role, cmsg.content);
+                        }
+                    }
+                    self.allocator.free(compact_msgs);
+                }
+            }
 
             // Send conversation history to AI
             const ai_response = ai_send(self.allocator, self.history.items) catch |err| {

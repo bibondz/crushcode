@@ -168,4 +168,4 @@ Created: 2026-04-14 · Updated: 2026-04-27
 | Guardrail redaction | ✅ DONE | Wire redacted_content into AI request flow (PII masking) |
 | Cache-aware Anthropic | ✅ DONE | Wire buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
 | Post-inspection masking | ✅ DONE | Mask tool output containing secrets instead of blocking |
-| Context compaction w/ LLM | 🔲 | compactWithLLM() for long sessions — deferred (needs compactor field wiring) |
+| Context compaction w/ LLM | ✅ DONE | ContextCompactor wired into AgentLoop, compactLight on token threshold |
