@@ -390,18 +390,14 @@ v0.7.0 Phase 21 → Phase 22 → Phase 23 → Phase 24 → Phase 25
 
 **แรงบันดาลใจจากงานวิจัย**: Hermes Agent (learning loop, skill gen, user model), Claude Code (plan mode, context scoring), SWE-Pruner (relevance scoring), Codex (plan items)
 
-### Phase 26: Context Relevance Scoring
+### Phase 26: Context Relevance Scoring ✅
 **ปัญหา**: ตอนนี้ graph.zig ทิ้งไฟล์ทั้งหมดให้ AI — เปลือง token และ noise สูง
-**ทำ**:
-- Implement relevance scoring ใน `src/graph/graph.zig`: ให้คะแนนไฟล์ตามความเกี่ยวข้องกับ query
-- Use keyword matching + file type weighting + recency bias
-- Replace "dump all files" → "top-N most relevant files" ใน context builder
-- Show relevance scores in header: `ctx: 8/14 files (scored)`
-- ไฟล์: modify `src/graph/graph.zig`, `src/agent/context_builder.zig`, `src/tui/chat_tui_app.zig`
+**ทำ**: (ALL ALREADY IMPLEMENTED)
+- ✅ Relevance scoring in graph.zig: PageRank + keyword matching + file type weighting + recency bias + community bonus
+- ✅ Smart context builder via `buildSmartContext()` with scored file selection
+- ✅ Header shows `ctx:{d}% | {d}/{d} scored`
 
-**Plans:**
-- [ ] 26-01-PLAN.md — Implement file relevance scoring in graph.zig
-- [ ] 26-02-PLAN.md — Wire scored context into TUI context builder
+**Plans:** None needed — all already implemented.
 
 ### Phase 27: User Model (USER.md)
 **ปัญหา**: Agent ไม่จำความชอบของ user ข้าม session — ต้องสั่งซ้ำทุกครั้ง
