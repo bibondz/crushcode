@@ -17,35 +17,39 @@ requirements:
 
 must_haves:
   truths:
-    - "KnowledgePipeline.init() returns a heap-allocated pointer, not a stack value"
-    - "Ingester and Querier internal vault pointers remain valid after init() returns"
-    - "TUI initializes KnowledgePipeline without crashing (current workaround removed)"
-    - "All existing call sites compile without changes to field access syntax"
-    - "deinit() properly frees heap memory (no leak, no double-free)"
+    - "KnowledgePipeline.init() returns a heap-allocated pointer — internal vault pointers never dangle"
+    - "TUI starts without assertion/segfault when pipeline is enabled"
+    - "All call sites pass *KnowledgePipeline to AutopilotEngine.init() correctly (no double-pointer)"
+    - "deinit() frees heap memory — no leak, no double-free"
+    - "Model.pipeline stores ?*KnowledgePipeline (pointer), not value copy"
   artifacts:
     - path: "src/agent/context_builder.zig"
       provides: "heap-allocated KnowledgePipeline with valid internal pointers"
       contains: "fn init(allocator: Allocator, project_dir: ?[]const u8) !*KnowledgePipeline"
     - path: "src/tui/chat_tui_app.zig"
       provides: "re-enabled pipeline initialization in TUI Model.init()"
-      contains: "pipeline = cognition_mod.KnowledgePipeline.init"
+      contains: "pipeline: ?*cognition_mod.KnowledgePipeline"
   key_links:
     - from: "KnowledgePipeline.init()"
       to: "KnowledgeIngester/Querier internal *KnowledgeVault"
-      via: "&self.vault (stable — heap-allocated struct)"
-      pattern: "KnowledgeIngester\.init\(.*&self\.vault\)"
-    - from: "All call sites (chat.zig, autopilot.zig, agent_loop_handler.zig, tests)"
-      to: "new *KnowledgePipeline return type"
-      via: "Zig pointer auto-deref (.field access unchanged)"
-      pattern: "var pipeline = try KnowledgePipeline\.init\(|pipeline\.deinit\(\)"
+      via: "&pipeline.vault on heap-allocated struct (stable address)"
+      pattern: "KnowledgeIngester\.init\(.*&.*\.vault\)"
+    - from: "agent_loop_handler.zig / autopilot.zig call sites"
+      to: "AutopilotEngine.init(allocator, pipeline, ...)"
+      via: "pipeline is now *KnowledgePipeline — pass directly, NOT &pipeline"
+      pattern: "AutopilotEngine\.init\(.*pipeline"
+    - from: "TUI Model struct"
+      to: "pipeline field"
+      via: "?*KnowledgePipeline — all if-pipeline captures use |p| not |*p|"
+      pattern: "if \(self\.pipeline\) \|p\|"
 ---
 
 <objective>
 Fix KnowledgePipeline dangling pointer crash that blocks v1.2.0 release.
 
-Purpose: When `KnowledgePipeline.init()` returns a struct by value, internal pointers (`ingester.vault_ptr`, `querier.vault_ptr`) dangle — they point to the stack frame, not the moved struct. This causes assertion failure / segfault when the querier iterates the vault's HashMap.
+Purpose: When `KnowledgePipeline.init()` returns a struct by value, internal pointers (`ingester` and `querier` hold `*KnowledgeVault` → `&self.vault`) dangle — they reference the stack frame of `init()`, not the returned struct. When the querier later iterates the vault's HashMap, it hits invalid memory → assertion failure / segfault.
 
-Output: Stable heap-allocated KnowledgePipeline with valid internal pointers. TUI re-enabled. All existing call sites compatible.
+Output: Stable heap-allocated KnowledgePipeline with valid internal pointers. TUI re-enabled. All existing call sites updated.
 </objective>
 
 <execution_context>
@@ -57,22 +61,22 @@ Output: Stable heap-allocated KnowledgePipeline with valid internal pointers. TU
 @.planning/PROJECT.md
 @.planning/ROADMAP.md
 @.planning/STATE.md
-@src/agent/context_builder.zig (KnowledgePipeline struct: lines 123-213)
-@src/tui/chat_tui_app.zig (disabled code: lines 460-469)
-@src/commands/chat.zig (call site: lines 680-707)
-@src/execution/autopilot.zig (6 call sites)
-@src/commands/handlers/agent_loop_handler.zig (5 call sites)
+@src/agent/context_builder.zig
+@src/tui/chat_tui_app.zig
+@src/commands/chat.zig
+@src/execution/autopilot.zig
+@src/commands/handlers/agent_loop_handler.zig
 
 <interfaces>
-<!-- Current KnowledgePipeline struct (context_builder.zig:123-133) -->
+<!-- KnowledgePipeline struct (context_builder.zig:123-134) -->
 ```zig
 pub const KnowledgePipeline = struct {
     allocator: Allocator,
     detector: FileDetector,
     kg: KnowledgeGraph,
     vault: KnowledgeVault,
-    ingester: KnowledgeIngester,   // contains *KnowledgeVault → &self.vault
-    querier: KnowledgeQuerier,     // contains *KnowledgeVault → &self.vault
+    ingester: KnowledgeIngester,   // holds *KnowledgeVault → must point to &self.vault
+    querier: KnowledgeQuerier,     // holds *KnowledgeVault → must point to &self.vault
     pipeline_stats: PipelineStats,
     initialized: bool,
     memory: ?*LayeredMemory,
@@ -80,180 +84,261 @@ pub const KnowledgePipeline = struct {
 };
 ```
 
-<!-- Current init() signature (context_builder.zig:138) -->
+<!-- AutopilotEngine.init expects *KnowledgePipeline (already pointer!) -->
 ```zig
-pub fn init(allocator: Allocator, project_dir: ?[]const u8) !KnowledgePipeline
+// autopilot.zig:65-70
+pub fn init(
+    allocator: Allocator,
+    pipeline: *KnowledgePipeline,  // <-- already takes pointer
+    guardian: ?*Guardian,
+    project_dir: []const u8,
+    results_dir: []const u8,
+) !AutopilotEngine
 ```
 
-<!-- Current deinit() signature (context_builder.zig:201) -->
+<!-- Current call site patterns (MUST change after fix): -->
+<!-- BEFORE: var pipeline = try KnowledgePipeline.init(allocator, null); -->
+<!-- BEFORE: var engine = try AutopilotEngine.init(allocator, &pipeline, ...); // &pipeline = **KnowledgePipeline WRONG after fix -->
+
+<!-- AFTER:  var pipeline = try KnowledgePipeline.init(allocator, null); -->
+<!-- AFTER:  var engine = try AutopilotEngine.init(allocator, pipeline, ...);  // pipeline already *KnowledgePipeline -->
+
+<!-- Model struct field (chat_tui_app.zig:328): -->
 ```zig
-pub fn deinit(self: *KnowledgePipeline) void
+pipeline: ?cognition_mod.KnowledgePipeline = null,  // BEFORE — value storage
+// AFTER: pipeline: ?*cognition_mod.KnowledgePipeline = null,  // pointer storage
 ```
 
-<!-- All call sites use this pattern — var pipeline = try ..., pipeline.deinit() -->
-<!-- chat.zig: var pipeline: cognition_mod.KnowledgePipeline = undefined; -->
-<!-- autopilot.zig: var pipeline = try KnowledgePipeline.init(...); defer pipeline.deinit(); -->
-<!-- agent_loop_handler.zig: var pipeline = try KnowledgePipeline.init(...); defer pipeline.deinit(); -->
+<!-- All TUI pipeline access patterns (BEFORE → AFTER): -->
+<!-- if (self.pipeline) |*p| p.scanProject(...) → if (self.pipeline) |p| p.scanProject(...) -->
+<!-- if (self.pipeline) |*p| p.deinit()         → if (self.pipeline) |p| p.deinit() -->
 </interfaces>
 </context>
 
 <tasks>
 
-<task type="auto" tdd="true">
-  <name>Task 1: Change KnowledgePipeline.init() to return !*KnowledgePipeline (heap allocation)</name>
+<task type="auto">
+  <name>Task 1: Change init() to return !*KnowledgePipeline + update deinit() to free heap</name>
   <files>src/agent/context_builder.zig</files>
-  <behavior>
-    - Test 1: `init(allocator, null)` returns `*KnowledgePipeline`, `ingester.vault_ptr == &pipeline.vault` (pointers match, no dangle)
-    - Test 2: `init(allocator, ".")` with project_dir returns `*KnowledgePipeline`, memory is created
-    - Test 3: `deinit()` called → no leak (valgrind clean), struct freed, all sub-components cleaned up
-    - Test 4: Both code paths (memory and no_memory branches) heap-allocate and return pointer
-  </behavior>
   <action>
-    Modify `pub fn init(allocator: Allocator, project_dir: ?[]const u8) !KnowledgePipeline` to return `!*KnowledgePipeline`.
+    **Change init() signature (line 138):**
+    `pub fn init(allocator: Allocator, project_dir: ?[]const u8) !KnowledgePipeline`
+    → `pub fn init(allocator: Allocator, project_dir: ?[]const u8) !*KnowledgePipeline`
 
-    Two code paths to fix:
-
-    **Path 1 — no_memory branch (lines 153-171):**
-    - Replace local `pipeline_no_mem = KnowledgePipeline{...}` with `try allocator.create(KnowledgePipeline)` then assign fields
-    - Use `errdefer allocator.destroy(pipeline_no_mem)` for rollback
-    - `pipeline_no_mem.ingester = KnowledgeIngester.init(allocator, &pipeline_no_mem.vault)` — `&pipeline_no_mem.vault` is now stable (heap pointer)
-    - Return `pipeline_no_mem` (which is now `*KnowledgePipeline`)
+    **Path 1 — no_memory branch (lines 153-170):**
+    Replace the local struct literal with heap allocation:
+    ```zig
+    const pipeline_no_mem = try allocator.create(KnowledgePipeline);
+    errdefer allocator.destroy(pipeline_no_mem);
+    pipeline_no_mem.* = KnowledgePipeline{
+        .allocator = allocator,
+        .detector = detector,
+        .kg = KnowledgeGraph.init(allocator),
+        .vault = KnowledgeVault.init(allocator, ".knowledge/raw") catch {
+            allocator.destroy(pipeline_no_mem);
+            detector.deinit();
+            return error.PipelineInitFailed;
+        },
+        .ingester = undefined,
+        .querier = undefined,
+        .pipeline_stats = PipelineStats{},
+        .initialized = true,
+        .memory = null,
+        .source_tracker = SourceTracker.init(allocator),
+    };
+    pipeline_no_mem.ingester = KnowledgeIngester.init(allocator, &pipeline_no_mem.vault);
+    pipeline_no_mem.querier = KnowledgeQuerier.init(allocator, &pipeline_no_mem.vault);
+    return pipeline_no_mem;
+    ```
+    Key: `&pipeline_no_mem.vault` is now a stable heap address.
 
     **Path 2 — memory branch (lines 175-197):**
-    - Replace local `pipeline = KnowledgePipeline{...}` with `try allocator.create(KnowledgePipeline)` then assign fields
-    - Use `errdefer allocator.destroy(pipeline)` for rollback
-    - Same pointer fix for ingester/querier initialization
-    - Return `pipeline` (now `*KnowledgePipeline`)
+    Same pattern — `try allocator.create(KnowledgePipeline)`, `errdefer allocator.destroy(pipeline)`, assign fields to `pipeline.*`, then:
+    ```zig
+    pipeline.ingester = KnowledgeIngester.init(allocator, &pipeline.vault);
+    pipeline.querier = KnowledgeQuerier.init(allocator, &pipeline.vault);
+    return pipeline;
+    ```
 
-    Key: `&self.vault` in heap-allocated struct is a stable pointer. Zig `.field` access on `*T` auto-derefs — all existing call sites that do `pipeline.scanProject(...)` or `pipeline.deinit()` continue to work without changes.
+    **Update deinit() (lines 201-213):**
+    After existing cleanup (detector, kg, vault, source_tracker), add:
+    ```zig
+    self.initialized = false;
+    self.allocator.destroy(self);  // free heap allocation
+    ```
+    The `initialized` guard must come BEFORE cleanup, and `self.allocator.destroy(self)` must be LAST since it frees `self` (making all `self.X` access invalid after).
 
     **Do NOT:**
-    - Return by value (the entire point of the fix)
     - Change field types on KnowledgePipeline struct
-    - Change ingester/querier init patterns (just the pointer source is now stable)
+    - Change ingester/querier init patterns (only the allocator source changes)
+    - Forget errdefer cleanup on the errdefer chain
   </action>
   <verify>
-    <automated>zig build test --cache-dir /tmp/zigcache 2>&1 | grep -E "(PASS|FAIL|error)" | head -40</automated>
+    <automated>zig build --cache-dir /tmp/zigcache 2>&1 | tail -3</automated>
   </verify>
   <done>
-    - `init()` signature changes: returns `!*KnowledgePipeline` instead of `!KnowledgePipeline`
-    - Both code paths use `allocator.create(KnowledgePipeline)` 
-    - Internal pointers stable: `ingester` and `querier` hold valid `&self.vault` references
-    - All 24+ existing tests in context_builder.zig pass
-  </done>
-</task>
-
-<task type="auto" tdd="true">
-  <name>Task 2: Update deinit() to free heap memory + update all call sites</name>
-  <files>src/agent/context_builder.zig, src/commands/chat.zig, src/execution/autopilot.zig, src/commands/handlers/agent_loop_handler.zig</files>
-  <behavior>
-    - Test 1: `deinit()` calls `allocator.destroy(self)` after cleanup → struct freed
-    - Test 2: Double deinit (accidental) → safe (initialized flag prevents double-destroy)
-    - Test 3: All call sites compile with new `*KnowledgePipeline` type
-  </behavior>
-  <action>
-    **Part A — context_builder.zig deinit() (lines 201-213):**
-    - After existing cleanup (detector, kg, vault, source_tracker), add `self.allocator.destroy(self)` 
-    - Keep `self.initialized = false` guard to prevent double-destroy
-    - Order: cleanup sub-components first, then destroy self
-
-    **Part B — chat.zig (lines 680-700):**
-    - Change `var pipeline: cognition_mod.KnowledgePipeline = undefined` → `var pipeline: *cognition_mod.KnowledgePipeline = undefined`
-    - The init() call pattern stays: `pipeline = try KnowledgePipeline.init(allocator, ".")` (now returns `*KnowledgePipeline`)
-    - `pipeline.scanProject(...)` — unchanged (Zig auto-deref)
-    - `pipeline.deinit()` — unchanged (takes `*KnowledgePipeline`, frees heap)
-
-    **Part C — autopilot.zig (6 call sites, lines 387-510):**
-    - Change `var pipeline = try KnowledgePipeline.init(allocator, null)` → stays same syntax
-    - `pipeline` type changes from `KnowledgePipeline` to `*KnowledgePipeline` (inferred)
-    - `defer pipeline.deinit()` — unchanged
-    - All `.field` access — unchanged (auto-deref)
-
-    **Part D — agent_loop_handler.zig (5 call sites, lines 79-189):**
-    - Same as autopilot — only the inferred type changes
-    - `defer pipeline.deinit()` — unchanged
-
-    **Do NOT:**
-    - Change `.field` access to `.*.field` (Zig auto-deref handles this)
-    - Change function call patterns
-    - Touch the test call sites in context_builder.zig (they use the same pattern and auto-update)
-  </action>
-  <verify>
-    <automated>zig build test --cache-dir /tmp/zigcache 2>&1 | grep -E "(PASS|FAIL|error)" | head -40</automated>
-  </verify>
-  <done>
-    - `deinit()` frees heap memory via `allocator.destroy(self)` after sub-component cleanup
-    - chat.zig: pipeline type changed to `*KnowledgePipeline`, field access unchanged
-    - autopilot.zig: 6 call sites compile, defer deinit works
-    - agent_loop_handler.zig: 5 call sites compile, defer deinit works
-    - Zero syntax changes needed at call sites beyond type declarations
+    - `init()` returns `!*KnowledgePipeline` — heap-allocated via `allocator.create()`
+    - Both code paths (memory/no-memory) use same heap pattern
+    - `&pipeline.vault` is a stable heap address — no dangling pointers
+    - `deinit()` calls `allocator.destroy(self)` as last step after sub-component cleanup
+    - File compiles (call site errors expected — fixed in Task 2)
   </done>
 </task>
 
 <task type="auto">
-  <name>Task 3: Re-enable KnowledgePipeline in TUI + verify full build</name>
+  <name>Task 2: Update all call sites — remove & where pipeline is already a pointer</name>
+  <files>src/execution/autopilot.zig, src/commands/handlers/agent_loop_handler.zig, src/commands/chat.zig</files>
+  <action>
+    **autopilot.zig — 6 test call sites (lines 387-509):**
+    `init()` now returns `*KnowledgePipeline`. The tests currently do:
+    ```zig
+    var pipeline = try KnowledgePipeline.init(allocator, null);
+    defer pipeline.deinit();
+    var engine = try AutopilotEngine.init(allocator, &pipeline, ...);
+    ```
+    Since `pipeline` is now `*KnowledgePipeline` (pointer), `&pipeline` gives `**KnowledgePipeline` — wrong type.
+    Fix: Remove `&` from all 6 AutopilotEngine.init() calls:
+    ```zig
+    var pipeline = try KnowledgePipeline.init(allocator, null);
+    defer pipeline.deinit();
+    var engine = try AutopilotEngine.init(allocator, pipeline, ...);
+    ```
+    Lines to change: 390, 406, 428, 443, 464, 511.
+
+    **agent_loop_handler.zig — 5 call sites (lines 79-194):**
+    Same pattern — remove `&` from all `AutopilotEngine.init(allocator, &pipeline, ...)`.
+    Lines to change: 81, 114, 163, 178, 194.
+    ```zig
+    // BEFORE (line 81):
+    var engine = autopilot_mod.AutopilotEngine.init(allocator, &pipeline, null, ".", ".crushcode/autopilot/") catch return;
+    // AFTER:
+    var engine = autopilot_mod.AutopilotEngine.init(allocator, pipeline, null, ".", ".crushcode/autopilot/") catch return;
+    ```
+
+    Also on lines 79, 102, 161, 176, 188: the `catch return` / `catch { ... }` pattern is fine — `init()` now returns `!*KnowledgePipeline`, catch gives `null` on failure.
+
+    **chat.zig — 1 call site (lines 680-700):**
+    Change type declaration:
+    ```zig
+    // BEFORE:
+    var pipeline: cognition_mod.KnowledgePipeline = undefined;
+    // AFTER:
+    var pipeline: *cognition_mod.KnowledgePipeline = undefined;
+    ```
+    The catch block (lines 684-696) — both branches call `init()` which now returns `*KnowledgePipeline`:
+    ```zig
+    pipeline = cognition_mod.KnowledgePipeline.init(allocator, ".") catch blk: {
+        const p = cognition_mod.KnowledgePipeline.init(allocator, null) catch {
+            // ...fallback...
+            return;
+        };
+        break :blk p;
+    };
+    ```
+    This still works — `p` is `*KnowledgePipeline`, `break :blk p` assigns to `pipeline`.
+
+    All `.field` access (pipeline.scanProject, pipeline.deinit, pipeline.indexGraphToVault, etc.) — unchanged, Zig auto-derefs.
+
+    **Do NOT:**
+    - Add `&` anywhere — pipeline IS the pointer now
+    - Change method calls like .scanProject, .deinit, .indexGraphToVault
+    - Touch the catch/return patterns
+  </action>
+  <verify>
+    <automated>zig build --cache-dir /tmp/zigcache 2>&1 | tail -5</automated>
+  </verify>
+  <done>
+    - autopilot.zig: 6 `&pipeline` → `pipeline` changes, all tests compile
+    - agent_loop_handler.zig: 5 `&pipeline` → `pipeline` changes, all code paths compile
+    - chat.zig: type declaration updated, catch block still valid
+    - `zig build` passes clean (excluding TUI which still has disabled code)
+  </done>
+</task>
+
+<task type="auto">
+  <name>Task 3: Re-enable KnowledgePipeline in TUI + update Model struct</name>
   <files>src/tui/chat_tui_app.zig</files>
   <action>
-    In `chat_tui_app.zig` Model.init() (lines 460-474):
-
-    **Remove the disabled block and replace with working code:**
+    **Step A — Change Model struct field (line 328):**
     ```zig
-    // Re-enabled: KnowledgePipeline now heap-allocated, no dangling pointers
+    // BEFORE:
+    pipeline: ?cognition_mod.KnowledgePipeline = null,
+    // AFTER:
+    pipeline: ?*cognition_mod.KnowledgePipeline = null,
+    ```
+
+    **Step B — Re-enable init block (lines 460-469):**
+    Replace the commented-out block with:
+    ```zig
+    // KnowledgePipeline now heap-allocated — internal vault pointers are stable
     {
-        var pipeline = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
-        if (pipeline) |p| {
+        const pl = cognition_mod.KnowledgePipeline.init(model.allocator, model.session_dir) catch null;
+        if (pl) |p| {
             model.pipeline = p;
             model.pipeline_initialized = true;
         }
     }
     ```
 
-    **Notes on the stored type:**
-    - `model.pipeline` should be typed as `?*cognition_mod.KnowledgePipeline` (pointer, not value)
-    - If Model struct has `pipeline: ?KnowledgePipeline` (value), change to `pipeline: ?*KnowledgePipeline` (pointer)
-    - All existing `if (self.pipeline) |*p|` patterns — change to `if (self.pipeline) |p|` (it's already a pointer)
-    - Check `model.pipeline_initialized` field and deinit logic for compatibility
+    **Step C — Update ALL pipeline capture patterns in Model:**
+    Every `if (self.pipeline) |*p|` must become `if (self.pipeline) |p|` because `pipeline` is now `?*T` — capturing `|*p|` would give `**T` (pointer-to-pointer).
+
+    Lines to change (search `self.pipeline) |*p|`):
+    - Line 628: `if (self.pipeline) |*p| p.deinit();` → `if (self.pipeline) |p| p.deinit();`
+    - Line 968: `if (self.pipeline) |*p| {` → `if (self.pipeline) |p| {`
+    - Line 1031: `if (self.pipeline) |*p| {` → `if (self.pipeline) |p| {`
+    - Lines 2332, 2448, 2486, 2512, 2527: same pattern `|*p|` → `|p|`
+
+    Inside each block, `p.scanProject(...)`, `p.pipeline_stats.files_indexed`, etc. — unchanged (auto-deref from `*KnowledgePipeline`).
+
+    **Step D — Verify destroy() cleanup (line 628):**
+    `p.deinit()` now calls `allocator.destroy(self)` internally — this frees the heap allocation. No extra free needed. The Model doesn't need to call `self.allocator.destroy(p)` separately because deinit handles it.
 
     **Do NOT:**
-    - Leave the disabled code as a comment block
-    - Store the pipeline by value (would re-create the dangling pointer problem)
-    - Skip deinit on Model cleanup
+    - Store the pipeline by value (would re-create dangling pointer)
+    - Leave disabled code as comments
+    - Forget to update capture patterns (will compile but access wrong memory)
   </action>
   <verify>
     <automated>zig build --cache-dir /tmp/zigcache 2>&1 | tail -5</automated>
   </verify>
   <done>
-    - KnowledgePipeline enabled in TUI Model.init()
-    - Pipeline stored as `?*KnowledgePipeline` (pointer, not value)
-    - Build passes clean with `zig build`
-    - All existing features continue to work (streaming, context, chat)
+    - Model.pipeline typed as `?*cognition_mod.KnowledgePipeline`
+    - Pipeline initialized in Model.init() — no longer disabled
+    - All `|*p|` captures changed to `|p|`
+    - destroy() calls `p.deinit()` which frees heap memory
+    - `zig build` passes clean
   </done>
 </task>
 
 </tasks>
 
 <verification>
-**Full build + test:**
-```
+**Full build:**
+```bash
 zig build --cache-dir /tmp/zigcache
+```
+
+**Tests:**
+```bash
 zig build test --cache-dir /tmp/zigcache
 ```
 
-**Runtime verification (manual):**
-1. Start TUI: `./zig-out/bin/crushcode tui`
-2. Check header shows context files indexed (pipeline is working)
-3. Send a chat message — verify no crash, no assertion failure
-4. Exit cleanly — no memory leak errors
+**Runtime smoke test (manual):**
+1. `./zig-out/bin/crushcode tui`
+2. Header shows "ctx: N files indexed" (pipeline working)
+3. Send a chat message — no crash, no assertion failure
+4. Exit cleanly — no segfault on destroy
 </verification>
 
 <success_criteria>
 - [ ] `KnowledgePipeline.init()` returns `!*KnowledgePipeline` (heap-allocated)
-- [ ] Internal vault pointers (`ingester`, `querier`) are valid — no dangling
-- [ ] `deinit()` frees heap memory via `allocator.destroy(self)`
-- [ ] TUI starts with pipeline enabled — no crash, files indexed
-- [ ] All 4 call site files (chat.zig, autopilot.zig, agent_loop_handler.zig, context_builder.zig) compile and tests pass
+- [ ] Internal vault pointers (`ingester`, `querier`) point to stable heap addresses
+- [ ] `deinit()` frees heap memory via `allocator.destroy(self)` after sub-component cleanup
+- [ ] All `&pipeline` removed from AutopilotEngine.init() calls (6 in autopilot.zig, 5 in agent_loop_handler.zig)
+- [ ] Model.pipeline is `?*cognition_mod.KnowledgePipeline` — all captures use `|p|` not `|*p|`
+- [ ] TUI starts with pipeline enabled — no crash
 - [ ] `zig build` passes clean
-- [ ] No memory leaks (valgrind clean on deinit path)
 </success_criteria>
 
 <output>
