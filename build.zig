@@ -401,6 +401,14 @@ pub fn build(b: *std.Build) !void {
         imp("usage_tracker", usage_tracker_mod),         imp("usage_budget", usage_budget_mod),
     });
 
+    // TUI test harness — must be after widget_typewriter_mod, theme_mod, usage_budget_mod, usage_pricing_mod
+    const tui_test_harness_mod = createMod(b, "src/tui/test_harness.zig", target, optimize, &.{
+        imp("widget_typewriter", widget_typewriter_mod),
+        imp("theme", theme_mod),
+        imp("usage_budget", usage_budget_mod),
+        imp("usage_pricing", usage_pricing_mod),
+    });
+
     const hashline_mod = simpleMod(b, "src/edit/hashline.zig", target, optimize);
     const pattern_search_mod = simpleMod(b, "src/edit/pattern_search.zig", target, optimize);
     const hash_index_mod = createMod(b, "src/edit/hash_index.zig", target, optimize, &.{imp("hashline", hashline_mod)});
@@ -954,6 +962,7 @@ pub fn build(b: *std.Build) !void {
         recipe_mod,
         recipe_loader_mod,
         recipe_runner_mod,
+        tui_test_harness_mod,
         registry_mod,
         fileops_mod,
     };
