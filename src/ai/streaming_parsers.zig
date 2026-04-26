@@ -578,6 +578,67 @@ pub fn buildStreamingBodyFromMessages(
     return allocator.dupe(u8, json_body.items);
 }
 
+/// Build a streaming request body with Anthropic cache_control breakpoints.
+/// cache_marks is a parallel array to messages where true = add ephemeral cache marker.
+pub fn buildCacheAwareStreamingBody(
+    allocator: std.mem.Allocator,
+    api_model_name: []const u8,
+    system_prompt: ?[]const u8,
+    messages: []const ChatMessage,
+    tools_json: []const u8,
+    max_tokens: u32,
+    temperature: f32,
+    cache_marks: []const bool,
+) ![]const u8 {
+    var json_body = array_list_compat.ArrayList(u8).init(allocator);
+    defer json_body.deinit();
+
+    try json_body.appendSlice("{\"model\":\"");
+    try json_body.appendSlice(api_model_name);
+    try json_body.appendSlice("\",\"messages\":[");
+
+    var needs_comma = false;
+
+    // System prompt — mark as cacheable if first cache_mark is true
+    if (system_prompt) |sys_prompt| {
+        if (sys_prompt.len > 0) {
+            try json_body.appendSlice("{\"role\":\"system\",\"content\":\"");
+            try appendEscapedJsonString(&json_body, sys_prompt);
+            try json_body.appendSlice("\"");
+            if (cache_marks.len > 0 and cache_marks[0]) {
+                try json_body.appendSlice(",\"cache_control\":{\"type\":\"ephemeral\"}");
+            }
+            try json_body.appendSlice("}");
+            needs_comma = true;
+        }
+    }
+
+    for (messages, 0..) |msg, i| {
+        if (needs_comma) {
+            try json_body.appendSlice(",");
+        }
+        try appendChatMessageJson(&json_body, msg);
+        // Inject cache_control before the closing brace
+        const mark_idx = i + 1; // offset by 1 for system prompt
+        if (mark_idx < cache_marks.len and cache_marks[mark_idx]) {
+            // Remove trailing '}' and add cache_control before it
+            if (json_body.items.len > 0 and json_body.items[json_body.items.len - 1] == '}') {
+                _ = json_body.pop();
+            }
+            try json_body.appendSlice(",\"cache_control\":{\"type\":\"ephemeral\"}}");
+        }
+        needs_comma = true;
+    }
+
+    try json_body.writer().print("],\"max_tokens\":{d},\"temperature\":{d:.2}", .{ max_tokens, temperature });
+    if (tools_json.len > 0) {
+        try json_body.appendSlice(tools_json);
+    }
+    try json_body.appendSlice(",\"stream\":true}");
+
+    return allocator.dupe(u8, json_body.items);
+}
+
 pub fn buildStreamingResponse(
     allocator: std.mem.Allocator,
     model: []const u8,

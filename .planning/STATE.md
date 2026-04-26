@@ -31,7 +31,14 @@
 
 ---
 
-## v1.5.0 Progress
+## v1.6.0 Progress — Security + Cost Optimization
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
+| Cache-aware Anthropic | ✅ Done | buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
+| Post-inspection masking | ✅ Done | Secrets in tool output masked instead of blocked |
+| Context compaction w/ LLM | 🔲 Deferred | compactWithLLM() exists, needs loop integration |
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -40,8 +47,17 @@
 | /export CLI | ✅ Done (cd81742) | Real markdown export, custom path support |
 | /doctor, /review, /commit | ✅ Verified real | 512L, 168L, 411L — fully implemented |
 | TUI /export handler | ✅ Done | Wire into chat_tui_app.zig, full message history |
-| Cache-aware Anthropic body | Low | CacheControl structs exist, not wired |
-| Guardrail redaction | Low | deny works, redact not fully wired |
+
+---
+
+## v1.6.0 Progress — Security + Cost Optimization
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
+| Cache-aware Anthropic | ✅ Done | buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
+| Post-inspection masking | ✅ Done | Secrets in tool output masked instead of blocked |
+| Context compaction w/ LLM | 🔲 Deferred | compactWithLLM() exists, needs loop integration |
 
 ---
 

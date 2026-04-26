@@ -397,12 +397,15 @@ pub const AgentLoop = struct {
                 }
                 continue;
             };
-            // Post-inspection
+            // Post-inspection: check tool output for sensitive content
+            var result_output = result.output;
             if (self.inspection_pipeline) |pipeline| {
-                _ = pipeline.inspectPost(call.name, result.output) catch {
-                    // Post-inspection error — ignore, return original result
-                };
-                // TODO: If post-inspection denies (e.g., output contains secrets), mask the output
+                const insp_result = pipeline.inspectPost(call.name, result.output) catch
+                    tool_inspection.InspectionResult{ .action = .allow, .inspector_name = "fallback" };
+                if (insp_result.action == .deny) {
+                    std.log.warn("post-inspection denied tool output from {s}: {s}", .{ call.name, insp_result.reason orelse "sensitive content detected" });
+                    result_output = std.fmt.allocPrint(self.allocator, "[Output redacted by {s}: {s}]", .{ insp_result.inspector_name, insp_result.reason orelse "sensitive content" }) catch "[Output redacted]";
+                }
             }
 
             // Emit tool metrics
@@ -413,7 +416,18 @@ pub const AgentLoop = struct {
                 mc.observe("crushcode_tool_duration_ms", elapsed_ms, &.{}) catch {};
             }
 
-            if (tool_span) |span| span.end(.ok, result.output);
+            if (tool_span) |span| span.end(.ok, result_output);
+            if (result_output.ptr != result.output.ptr) {
+                // Output was redacted — create new result with masked output
+                const masked_result = ToolResult{
+                    .call_id = result.call_id,
+                    .output = result_output,
+                    .success = result.success,
+                    .duration_ms = result.duration_ms,
+                    .allocator = result.allocator,
+                };
+                return masked_result;
+            }
             return result;
         }
         // Emit tool metrics for exhausted retries

@@ -264,6 +264,8 @@ pub const AIClient = struct {
         }
 
         // Guardrail pre-check: validate last user message before sending
+        // Guardrail check on the last user message
+        var guardrail_redacted: ?[]const u8 = null;
         if (self.guardrail_pipeline) |pipeline| {
             const last_msg = messages[messages.len - 1];
             const input_text = last_msg.content orelse "";
@@ -273,8 +275,11 @@ pub const AIClient = struct {
                 std.log.warn("guardrail blocked request: {s} ({s})", .{ gr_result.scanner_name, gr_result.reason orelse "no reason" });
                 return error.GuardrailBlocked;
             }
-            // TODO: If gr_result.action == .redact, use gr_result.redacted_content
-            // for the request instead of the original message content.
+            if (gr_result.action == .redact and gr_result.redacted_content != null) {
+                std.log.info("guardrail redacted content: {s}", .{gr_result.scanner_name});
+                guardrail_redacted = gr_result.redacted_content.?;
+                gr_result.redacted_content = null; // prevent deinit from freeing
+            }
         }
 
         // Record start time for metrics
@@ -298,13 +303,54 @@ pub const AIClient = struct {
         defer allocator.free(endpoint);
 
         const uri = try std.Uri.parse(endpoint);
-        // TODO: Cache-aware messages integration point.
-        // For Anthropic/Bedrock/VertexAI providers, call buildCacheAwareMessages()
-        // here to inject cache_control breakpoints into the message array before
-        // building the request body. This requires adapting the streaming body builder
-        // to accept CacheMarkedMessage[] instead of ChatMessage[] for those providers.
-        // const cache_messages = buildCacheAwareMessages(allocator, system_prompt, messages, provider.name);
-        const json_body = try self.buildStreamingBodyFromMessages(messages);
+
+        // Build effective messages — if guardrail redacted the last message,
+        // create a copy with the redacted content replacing the original.
+        var redacted_messages: ?[]ChatMessage = null;
+        defer {
+            if (redacted_messages) |rm| allocator.free(rm);
+            if (guardrail_redacted) |r| allocator.free(r);
+        }
+        const effective_messages: []const ChatMessage = blk: {
+            if (guardrail_redacted) |redacted| {
+                var copy = try allocator.alloc(ChatMessage, messages.len);
+                @memcpy(copy, messages);
+                copy[messages.len - 1].content = redacted;
+                redacted_messages = copy;
+                break :blk copy;
+            }
+            break :blk messages;
+        };
+
+        // Build request body — use cache-aware builder for Anthropic providers
+        const is_anthropic = std.mem.eql(u8, self.provider.name, "anthropic") or
+            std.mem.eql(u8, self.provider.name, "bedrock") or
+            std.mem.eql(u8, self.provider.name, "vertexai");
+
+        const json_body = if (is_anthropic) blk_2: {
+            // Build cache marks: system prompt + last 2 tool results
+            var marks = try allocator.alloc(bool, effective_messages.len + 1);
+            @memset(marks, false);
+            // Mark system prompt as cacheable
+            marks[0] = true;
+            // Find last 2 tool-result messages
+            var found: usize = 0;
+            var idx: isize = @as(isize, @intCast(effective_messages.len)) - 1;
+            while (idx >= 0 and found < 2) : (idx -= 1) {
+                const i: usize = @intCast(idx);
+                if (std.mem.eql(u8, effective_messages[i].role, "tool")) {
+                    marks[i + 1] = true; // +1 for system prompt offset
+                    found += 1;
+                }
+            }
+            defer allocator.free(marks);
+            const tools_json = try self.buildToolsJson(allocator);
+            defer allocator.free(tools_json);
+            break :blk_2 try streaming_parsers.buildCacheAwareStreamingBody(
+                allocator, self.getApiModelName(), self.system_prompt,
+                effective_messages, tools_json, self.max_tokens, self.temperature, marks,
+            );
+        } else try self.buildStreamingBodyFromMessages(effective_messages);
         defer allocator.free(json_body);
 
         // Store input payload on span (truncated)

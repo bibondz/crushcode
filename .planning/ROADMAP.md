@@ -156,3 +156,16 @@ Created: 2026-04-14 · Updated: 2026-04-27
 - Multi-platform gateway (Telegram/Discord/Slack)
 - sg binary spawn for AST-aware search
 - Vault→persistence merge (circular dep risk)
+
+---
+
+## v1.6.0 — Security + Cost Optimization (IN PROGRESS)
+
+**วัตถุประสงค์**: Wire existing 80%+ done infrastructure, close security gaps, reduce API costs
+
+| Item | Status | Description | LOC est. |
+|------|--------|-------------|----------|
+| Guardrail redaction | ✅ DONE | Wire redacted_content into AI request flow (PII masking) |
+| Cache-aware Anthropic | ✅ DONE | Wire buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
+| Post-inspection masking | ✅ DONE | Mask tool output containing secrets instead of blocking |
+| Context compaction w/ LLM | 🔲 | compactWithLLM() for long sessions — deferred (needs compactor field wiring) |
