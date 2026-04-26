@@ -345,19 +345,16 @@ Plans:
 Plans:
 - [x] 24-01-PLAN.md — Rich system prompt + AGENTS.md + project config ✅
 
-### Phase 25: Lifecycle Hooks + Code Quality
+### Phase 25: Lifecycle Hooks + Code Quality ✅
 **Goal:** Wire lifecycle hooks into agent loop and clean up code quality issues
 **ปัญหา**: Lifecycle hooks framework exists (196 lines, 10 phases, 3 tiers) but ZERO hooks registered and ZERO call sites in production code. Also: tree_sitter.zig stub (438 lines of @panic).
 **ทำ**:
-- Wire `LifecycleHooks` into TUI agent loop: pre_request, post_request, pre_tool, post_tool, on_error
-- Implement core hooks: token tracking, error logging, tool timing
-- Remove `tree_sitter.zig` stub — AST replaced by: Regex (✅ 20 langs) + LSP (✅ goto/refs/hover/diagnostics) + spawn `sg` binary (future)
-- Clean up dead code and unused edge types in graph/types.zig
-- ไฟล์: modify `chat_tui_app.zig` (hook call sites), `hooks/lifecycle.zig` (register core hooks), remove `tree_sitter.zig`
+- ~~Wire `LifecycleHooks` into TUI agent loop~~ — ALREADY DONE (7 call sites in streaming.zig + chat_tui_app.zig)
+- ~~Implement core hooks~~ — ALREADY DONE (token_tracker, error_logger, tool_timer registered)
+- ✅ Remove `tree_sitter.zig` stub — AST replaced by 3-tier (Regex + LSP + sg binary)
+- ~~Clean up dead code in graph/types.zig~~ — clean, reserved enums intentional for Phase 26
 
-**Plans:** 1 plan
-Plans:
-- [ ] 25-01-PLAN.md — Wire lifecycle hooks + remove tree_sitter + code cleanup
+**Plans:** None needed — most was already done, only tree_sitter.zig removal required.
 
 ### Research Sprint (completed 2026-04-27)
 **Done (shipped in e6b825f, f54aa5a):**
