@@ -1,16 +1,16 @@
 # Crushcode — Session Handoff
 
-**Updated:** 2026-04-19
-**Status:** v0.32.0 complete ✅
+**Updated:** 2026-04-26
+**Status:** v1.3.0 TUI Polish COMPLETE ✅
+**Branch:** `master` | **Last commit:** `b7cbb43` | **Build:** ✅ clean | **Tests:** ✅ pass
 
 ---
 
 ## What Is This Project
 
-Zig-based AI coding CLI/TUI. Single binary, zero deps. ~250 `.zig` files, ~105K lines.
-Build: `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zig-build-cache`
-Test: `cd /mnt/d/crushcode && zig build test --cache-dir /tmp/zig-build-cache`
-Branch: `002-v0.2.2` | Last commit: `8faf8b2` | Build: ✅ clean | Tests: ✅ pass
+Zig-based AI coding CLI/TUI. Single binary, zero deps. ~265 `.zig` files, ~105K lines.
+Build: `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zigcache`
+Test: `cd /mnt/d/crushcode && zig build test --cache-dir /tmp/zigcache`
 Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 
 ## Constraints
@@ -19,15 +19,20 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 - `export CI=true GIT_TERMINAL_PROMPT=0 GIT_EDITOR=: GIT_PAGER=cat` always
 - Thai+English mixed — respond understandably
 - "passing compiler ≠ program works" — test runtime too
-- Read files thoroughly before editing (`ลองอ่านไฟล์ project ให้รอบคอบก่อนแก้ไขครับ`)
-- Keep STATE.md updated (`ทำไมไม่ค่อยจด state เลยครับ`)
-- Don't just delete — think about merging/improving (`อย่าคิดแต่ว่าจะลบอย่างเดียวครับ`)
+- Read files thoroughly before editing
+- Keep STATE.md updated
+- Don't just delete — think about merging/improving
+- **MAX 2 CONCURRENT BACKGROUND TASKS**
+- Build: `cd /mnt/d/crushcode && zig build --cache-dir /tmp/zigcache`
+- Drop aarch64-linux, keep aarch64-macos
+- Don't compress GSD planning docs
 
 ## Zig API Notes
 
 - `std.json.Stringify.valueAlloc(allocator, value, options)` for JSON serialization
 - `std.json.parseFromSlice` / `parseFromSliceLeaky` for deserialization
 - `array_list_compat.ArrayList(T)` not `std.ArrayList(T)` — project convention
+- `array_list_compat.ArrayList.deinit()` takes no allocator param (stores internally)
 - `file_compat.wrap()` for file handles
 - `std.heap.ArenaAllocator` for thread-local allocations (page_allocator is thread-safe but ArenaAllocator is NOT)
 - `std.http.Client` — create fresh per-thread, don't share across threads
@@ -40,58 +45,76 @@ Remote: `git@github.com:bibondz/crushcode.git` (SSH, ed25519 key)
 4. `src/mcp/client.zig` — client_info version
 5. `src/mcp/server.zig` — server_info version + test assertion
 
-## Recent Work (v0.31.0–v0.32.0)
+## Recent Work (v1.2.0–v1.3.0 — TUI Overhaul)
 
-### v0.31.0 — Codebase Reorganization
-- Split `experimental_handlers.zig` (3208 lines) → 5 domain files + 35-line re-export shim
-- Relocated: orchestration→agent, cognition→agent, guardian→permission
-- Consolidated: permission lists→lists.zig, knowledge ops→ops.zig
-- Build.zig: 5 new handler modules, consolidated module declarations
+### v1.3.0 — TUI Polish (5 commits)
 
-### v0.32.0 — Runtime Bug Fixes
-- **memory.zig**: Replaced naive `{s}` JSON formatting with `std.json.Stringify.valueAlloc` — was breaking on messages with quotes/backslashes/newlines
-- **parallel.zig**: Thread-local `ArenaAllocator` per worker, dupe response content before arena cleanup, `base_url` field on `ParallelTask`
-- **runtime.zig**: `getPlugin()` returns pointer (not value copy) — prevents double-kill on process deinit
-- **runtime.zig**: Validate executable exists before spawning plugin process
-- **hybrid_bridge.zig**: Removed `mut_plugin` copy shim
-- **ai.zig**: Updated `submit()` callers for new `base_url` parameter
+- **6 Themes**: Catppuccin Mocha, Nord, Dracula added (truecolor RGB, 75 slots each)
+- **Session Sparkline**: ▁▂▃▄▅▆▇█ per-turn token usage chart in sidebar
+- **Syntax Preview**: File preview pane with language-aware highlighting (20 langs)
+- **Dialog Backdrop**: Dimmed backdrop behind all 6 overlay types
+- **Click-to-Preview**: Mouse click scans messages for file paths, opens in preview
+
+### v1.2.0 — TUI Foundation (1 large commit)
+
+- **Virtual Scroll**: ScrollView builder — only visible widgets created (~80% fewer allocations)
+- **Status Bar**: provider/model prefix + [CRUSH]/[DELEGATE]/[SCROLL] mode tags
+- **Contextual Spinner**: "Thinking..."/"Writing..."/"Running {tool}..."
+- **Tool Markers**: 🔧 pending, ✅ success (N lines), ❌ failed
+- **Palette Overhaul**: PaletteItem categories (⚡/🤖/📄/💾), fuzzy search, model switcher, 120-char popup
+- **Split Pane**: Right pane with Ctrl+\ toggle
+- **File Tree Sidebar**: CWD listing, Ctrl+R refresh
 
 ## Architecture Quick Map
 
 ```
-build.zig (~863 lines) — module imports + build config
+build.zig (~900 lines) — module imports + build config
 src/main.zig → cli/args.zig → commands/handlers.zig
-src/tui/chat_tui_app.zig — main TUI app (Model/Msg/Update, ~3924 lines)
-src/ai/client.zig — AI HTTP client (22 providers, streaming)
+src/tui/chat_tui_app.zig — main TUI app (Model, draw(), handleEvent(), ~4634 lines)
+src/tui/theme.zig — 6 themes × 75 color slots
+src/tui/markdown.zig — syntax highlighting (20 langs), public tokenizer
+src/tui/widgets/ — palette, sidebar, messages, spinner, input, multiline_input, diff_preview, etc.
+src/tui/model/ — streaming, token_tracking, palette, session_mgmt, history, helpers
+src/ai/client.zig — AI HTTP client (23 providers, streaming)
 src/ai/registry.zig — provider registry
 src/agent/ — agent loop, compaction, memory, parallel, orchestrator, context_builder, checkpoint
 src/commands/handlers/ — ai.zig, system.zig, tools.zig, experimental.zig (shim → 5 domain handlers)
-src/chat/tool_executors.zig — shared tool implementations (6 builtin tools)
+src/chat/tool_executors.zig — shared tool implementations (30 builtin tools)
 src/mcp/ — client, bridge, discovery, server, transport, oauth
 src/hybrid_bridge.zig — unified tool dispatch (builtin → MCP → runtime plugins)
-src/skills/import.zig — skill import via HTTP (clawhub, skills.sh, GitHub, URL)
-src/plugin/ — mod.zig barrel (types, registry, manager, runtime, protocol)
-src/permission/ — evaluate, audit, governance, guardian, lists
-src/knowledge/ — schema, vault, persistence, ops, lint
-src/graph/ — types, parser, algorithms, graph
-src/tui/widgets/ — types, helpers, messages, header, input, sidebar, palette, permission, setup, spinner, gradient, toast, typewriter, code_view, data_table, scroll_panel
+src/db/ — SQLite wrapper, session CRUD, JSON migration
 ```
 
-## Tool Dispatch Chain (HybridBridge)
+## TUI Key Bindings
 
 ```
-1. Builtin tools (tool_executors.executeBuiltinTool) → 6 tools: read_file, shell, write_file, glob, grep, edit
-2. MCP bridge (mcp_bridge.Bridge.executeTool) → remote MCP servers
-3. Runtime plugins (plugin/runtime.ExternalPluginManager) → external plugin processes via JSON-RPC
+Ctrl+P      Command palette (search commands, switch models, open files)
+Ctrl+B      Toggle sidebar
+Ctrl+\      Toggle right pane (file preview)
+Ctrl+R      Refresh sidebar project files
+Ctrl+H / ?  Help overlay
+Ctrl+X,E    Open external editor ($EDITOR)
+Shift+Enter New line in input
+Enter       Send message
+j/k         Scroll messages (in scroll mode)
+g/G         Scroll top/bottom
 ```
 
-## TUI Slash Commands (21)
+## TUI Overlay System (6 types)
 
-```
-/clear /sessions /ls /exit /model /thinking /compact
-/theme /workers /kill /memory /plugins
-/guardian /cognition /autopilot /team /spawn /phase-run /help
-```
+All overlays get dimmed backdrop (header_bg + dim=true):
+1. Palette (`show_palette`)
+2. Permission dialog (`pending_permission`)
+3. Diff preview (`diff_preview_active`)
+4. Session list (`show_session_list`)
+5. Resume prompt (`resume_prompt_session`)
+6. Help (`show_help`)
+
+## Mouse Support
+
+- Left click in message area → scans last 20 messages for file paths → opens in preview
+- Wheel scroll handled by vaxis ScrollView (wheel_scroll=3)
+- Mouse shape changes not yet implemented
 
 ## Git Operations
 
@@ -101,18 +124,19 @@ export CI=true DEBIAN_FRONTEND=noninteractive GIT_TERMINAL_PROMPT=0 GCM_INTERACT
 
 # Push requires SSH agent
 eval "$(ssh-agent -s)" && ssh-add ~/.ssh/id_ed25519
-
-# Fast-forward master
-git checkout master && git merge --ff-only 002-v0.2.2 && git push origin master && git checkout 002-v0.2.2
 ```
 
 ## Known Remaining Items
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Build.zig cleanup (863→~500 lines) | Medium | Create `createStdModule()` helper to eliminate compat injection loop |
-| Vault→persistence merge | Medium | Circular dep risk — vault.zig imports knowledge_persistence |
-| Fresh roadmap for daily driver | Low | All roadmap v0.3.1–v0.7.0 done. Need new goals. |
+| KnowledgePipeline fix (KP-1) | Medium | Dangling pointer, currently disabled |
+| Build.zig cleanup (900→~500 lines) | Medium | Create `createStdModule()` helper |
+| Vault→persistence merge | Medium | Circular dep risk |
+| v1.3.0 version bump + tag | Low | 5 files to update |
+| Responsive layout | Low | FlexRow/FlexColumn available |
+| Resizable panes | Low | SplitView available |
+| Input history search | Low | Need new binding (Ctrl+R taken) |
 
 ## How To Continue
 
@@ -120,3 +144,4 @@ git checkout master && git merge --ff-only 002-v0.2.2 && git push origin master 
 2. Check git log for recent changes
 3. Pick from known remaining items above, or plan new features
 4. Build-test after every change, commit with descriptive messages
+5. Max 2 concurrent background tasks
