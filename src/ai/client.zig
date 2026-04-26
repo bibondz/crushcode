@@ -10,6 +10,7 @@ const trace_span = @import("trace_span");
 const retry_policy = @import("retry_policy");
 const guardrail = @import("guardrail_pipeline");
 const metrics = @import("metrics_collector");
+const circuit_breaker = @import("circuit_breaker");
 
 pub const ChatMessage = ai_types.ChatMessage;
 pub const ToolCallInfo = ai_types.ToolCallInfo;
@@ -90,6 +91,8 @@ pub const AIClient = struct {
     guardrail_pipeline: ?*guardrail.GuardrailPipeline = null,
     /// Optional metrics collector for request observability
     metrics_collector: ?*metrics.MetricsCollector = null,
+    /// Optional circuit breaker map for provider failure tracking
+    circuit_breakers: ?*circuit_breaker.CircuitBreakerMap = null,
 
     pub fn init(allocator: std.mem.Allocator, provider: registry_mod.Provider, model: []const u8, api_key: []const u8) !AIClient {
         return AIClient{
@@ -110,6 +113,24 @@ pub const AIClient = struct {
     /// Set available tools for function calling
     pub fn setTools(self: *AIClient, tools: []const ToolSchema) void {
         self.tools = tools;
+    }
+
+    /// Record circuit breaker success for this provider
+    fn recordCircuitSuccess(self: *AIClient) void {
+        if (self.circuit_breakers) |breakers| {
+            if (breakers.getPtr(self.provider.name)) |breaker| {
+                breaker.recordSuccess();
+            }
+        }
+    }
+
+    /// Record circuit breaker failure for this provider
+    fn recordCircuitFailure(self: *AIClient) void {
+        if (self.circuit_breakers) |breakers| {
+            if (breakers.getPtr(self.provider.name)) |breaker| {
+                breaker.recordFailure();
+            }
+        }
     }
 
     /// Build the tools array JSON for API requests
@@ -394,12 +415,12 @@ pub const AIClient = struct {
             mc.observe("crushcode_request_duration_ms", duration_ms, &.{}) catch {};
         }
 
-        // TODO: Circuit breaker integration point.
-        // After request succeeds, the caller (loop.zig) should call:
-        //   router.getCircuitBreaker(provider_name).recordSuccess()
-        // After request fails, the caller should call:
-        //   router.getCircuitBreaker(provider_name).recordFailure()
-        // This is done externally so the router remains read-only during routing.
+        // Record circuit breaker success
+        if (self.circuit_breakers) |breakers| {
+            if (breakers.getPtr(self.provider.name)) |breaker| {
+                breaker.recordSuccess();
+            }
+        }
 
         return self.buildStreamingResponse(full_content.items, finish_reason orelse "stop", usage, streaming_tool_calls.items);
     }
@@ -552,11 +573,13 @@ pub const AIClient = struct {
                 // Keep backward compat: also check legacy isRetryableError
                 if (!can_retry and !error_handler_mod.isRetryableError(err.error_type)) {
                     if (llm_span) |span| span.end(.@"error", err.message);
+                    self.recordCircuitFailure();
                     return error.RetryExhausted;
                 }
                 if (!can_retry) {
                     // New policy says stop but legacy says retryable — respect new policy
                     if (llm_span) |span| span.end(.@"error", err.message);
+                    self.recordCircuitFailure();
                     return error.RetryExhausted;
                 }
                 continue;
@@ -565,6 +588,7 @@ pub const AIClient = struct {
             if (result.response) |response| {
                 if (debug) std.log.debug("Request succeeded", .{});
                 retry_state.recordSuccess();
+                self.recordCircuitSuccess();
 
                 // Populate trace span with usage data
                 if (llm_span) |span| {
@@ -581,6 +605,7 @@ pub const AIClient = struct {
         }
 
         if (llm_span) |span| span.end(.@"error", "max attempts reached");
+        self.recordCircuitFailure();
         return error.RetryExhausted;
     }
 

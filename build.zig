@@ -692,6 +692,7 @@ pub fn build(b: *std.Build) !void {
     addImports(client_mod, &.{
         imp("guardrail_pipeline", guardrail_pipeline_mod),
         imp("metrics_collector", metrics_collector_mod),
+        imp("circuit_breaker", circuit_breaker_mod),
     });
 
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
