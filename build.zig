@@ -644,6 +644,20 @@ pub fn build(b: *std.Build) !void {
     });
     const crush_mode_mod = simpleMod(b, "src/execution/crush_mode.zig", target, optimize);
     const router_mod = simpleMod(b, "src/agent/router.zig", target, optimize);
+
+    // Harness Engineering: Trace + Retry modules (P0)
+    const trace_span_mod = createMod(b, "src/trace/span.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+    });
+    const trace_context_mod = createMod(b, "src/trace/context.zig", target, optimize, &.{
+        imp("span", trace_span_mod),
+    });
+    const trace_writer_mod = createMod(b, "src/trace/writer.zig", target, optimize, &.{
+        imp("span", trace_span_mod),
+    });
+    const retry_policy_mod = simpleMod(b, "src/retry/policy.zig", target, optimize);
+    const retry_self_heal_mod = simpleMod(b, "src/retry/self_heal.zig", target, optimize);
+
     const capability_mod = simpleMod(b, "src/agent/capability.zig", target, optimize);
     const orchestration_mod = createMod(b, "src/agent/orchestrator.zig", target, optimize, &.{
         imp("worker", worker_mod),
@@ -838,6 +852,12 @@ pub fn build(b: *std.Build) !void {
         recipe_mod,
         recipe_loader_mod,
         recipe_runner_mod,
+        // Harness Engineering modules
+        trace_span_mod,
+        trace_context_mod,
+        trace_writer_mod,
+        retry_policy_mod,
+        retry_self_heal_mod,
     }) |module| {
         module.addImport("array_list_compat", compat_array_list_mod);
         module.addImport("file_compat", compat_file_mod);
@@ -962,6 +982,12 @@ pub fn build(b: *std.Build) !void {
         recipe_mod,
         recipe_loader_mod,
         recipe_runner_mod,
+        // Harness Engineering modules
+        trace_span_mod,
+        trace_context_mod,
+        trace_writer_mod,
+        retry_policy_mod,
+        retry_self_heal_mod,
         tui_test_harness_mod,
         registry_mod,
         fileops_mod,
