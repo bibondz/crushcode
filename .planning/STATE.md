@@ -1,8 +1,8 @@
-# State: Crushcode v1.8.0+
+# State: Crushcode v2.0.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-27
-**Stats:** ~280 `.zig` files, ~112K lines
+**Stats:** ~280 `.zig` files, ~113K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 **Branch:** `master`
 
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | Post-v1.8.0 — Agent Improvements |
-| Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0, v1.8.0 |
-| Next | Agent gaps: desktop notifications, agent mode refinement |
-| Latest commit | `ccdb5a9` — feat(tui): input history search + responsive layout |
+| Milestone | v2.0.0 — Daily Driver Readiness |
+| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0 |
+| Next | Streaming diff preview, multi-platform gateway |
+| Latest commit | `67c8793` — Post-v1.9.0 backlog (SplitView, OverlayManager, WIN-1, SQ-1) |
 
 ---
 
@@ -32,6 +32,8 @@
 | v1.6.0 | Security + Cost | Guardrail redaction, cache-aware Anthropic, post-inspection masking, context compaction |
 | v1.7.0 | AST-Aware Search | sg binary spawn, 3-tier grep cascade (sg→rg→grep), language auto-detect |
 | v1.8.0 | TUI UX | Input history (Up/Down + Ctrl+R reverse-i-search), responsive sidebar layout |
+| v1.9.0 | Agent Improvements | Loop detection, desktop notifications, per-mode agent config, MoA wiring |
+| v2.0.0 | Daily Driver Readiness | Remote skill discovery, SplitView mouse-drag, OverlayManager, WIN-1 getenv, SQ-1 SQLite tests |
 
 ---
 
@@ -40,8 +42,22 @@
 | Item | Status | Notes |
 |------|--------|-------|
 | SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests passing |
-| Desktop notifications | ⬜ Not started | Platform-specific (OS notify), lower priority |
-| Agent mode refinement | ⬜ Not started | OpenCode subagent/primary/all pattern |
+| Desktop notifications | ✅ Done | `src/feedback/notifier.zig`, platform notify-send/osascript |
+| Agent mode refinement | ✅ Done | Per-mode config in `src/agent/mode_config.zig` |
+| MoA wiring to TUI | ✅ Done | `src/agent/moa.zig` (438L) wired into agent loop |
+
+## v2.0.0 Progress — Daily Driver Readiness
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Remote skill discovery | ✅ Done | `src/skills/remote.zig` — fetch index.json, download skills, cache locally |
+| Skill-sync pull CLI | ✅ Done | `crushcode skill-sync pull <url>` + `crushcode skill-sync cached` |
+| Config skill_urls | ✅ Done | `skill_urls = url1, url2` in config.toml, parsed as comma list |
+| SplitView mouse-drag | ✅ Done | Resizable sidebar + right-pane dividers, drag state in chat_tui_app |
+| OverlayManager | ✅ Done | `src/tui/overlay.zig` — unified overlay type system |
+| WIN-1 getenv compat | ✅ Done | 15 files migrated to `file_compat.getEnv()` |
+| SQ-1 SQLite tests | ✅ Done | `test-sqlite` build step with separate module instance |
+| Skill hub integration | ✅ Done | Remote discovery + local cache + sync manager wiring |
 
 ### SHA-256 Loop Detection — Details
 - **File:** `src/agent/loop_detector.zig` (~210 lines)
@@ -104,6 +120,7 @@
 | Auto-Compact | **multi-tier** ✅ | ✅ single-tier | ❌ | ❌ | ❌ |
 | AST Search | **sg binary** ✅ | ❌ | ❌ | ❌ | ❌ |
 | Loop Detection | **SHA-256** ✅ | ❌ | ❌ | ❌ | ✅ (Go) |
+| Remote Skill Hub | **✅** | ❌ | ✅ | ❌ | ❌ |
 
 ---
 
@@ -111,16 +128,13 @@
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Desktop notifications | Medium | Platform-specific OS notify |
-| Agent mode refinement | Low | OpenCode subagent/primary/all pattern |
-| MoA wiring to TUI | Low | moa.zig (438L) exists, unwired |
-| Streaming diff preview | Low | diffpane/tuicr integration |
-| Skill hub integration | Low | External skill marketplace |
+| Streaming diff preview | Medium | diffpane/tuicr integration |
 | Multi-platform gateway | Low | Telegram/Discord/Slack |
+| Windows cross-compile | Low | 1 remaining error (Zig stdlib open() bug — upstream) |
 
 ---
 
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** v1.8.0 shipped. Post-v1.8.0 agent improvements in progress. SHA-256 loop detection complete.
+**Status:** v2.0.0 shipped. Remote skill discovery, SplitView, OverlayManager, WIN-1 compat, SQ-1 SQLite tests complete.

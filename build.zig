@@ -172,7 +172,12 @@ pub fn build(b: *std.Build) !void {
     const collections_mod = simpleMod(b, "src/core/collections.zig", target, optimize);
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
     addImports(skill_pipeline_mod, &.{imp("collections", collections_mod)});
-    const skill_sync_mod = simpleMod(b, "src/skills/sync.zig", target, optimize);
+    const skill_remote_mod = createMod(b, "src/skills/remote.zig", target, optimize, &.{
+        imp("http_client", http_client_mod),
+    });
+    const skill_sync_mod = createMod(b, "src/skills/sync.zig", target, optimize, &.{
+        imp("skill_remote", skill_remote_mod),
+    });
     const tools_mod = simpleMod(b, "src/tools/registry.zig", target, optimize);
     const json_helpers_mod = simpleMod(b, "src/core/json_helpers.zig", target, optimize);
     const string_utils_mod = simpleMod(b, "src/core/string_utils.zig", target, optimize);
@@ -904,7 +909,7 @@ pub fn build(b: *std.Build) !void {
         widget_code_view_mod, widget_data_table_mod, widget_scroll_panel_mod, widget_diff_preview_mod,
         worker_runner_mod, skills_agents_parser_mod, skills_resolver_mod, knowledge_persistence_mod,
         hooks_executor_mod, coordinator_mod, background_agent_mod, skill_pipeline_mod,
-        layered_memory_mod, adversarial_mod, skill_sync_mod, template_mod, code_preview_mod,
+        layered_memory_mod, adversarial_mod, skill_sync_mod, skill_remote_mod, template_mod, code_preview_mod,
         file_type_mod, cognition_mod, guardian_mod, phase_runner_mod, autopilot_mod, crush_mode_mod,
         orchestration_mod, hybrid_bridge_mod, user_model_mod, auto_gen_mod, feedback_mod,
         plan_handler_mod, delegate_mod, moa_mod, team_coordinator_mod, sqlite_mod, session_db_mod,
@@ -956,7 +961,7 @@ pub fn build(b: *std.Build) !void {
         knowledge_knowledge_lint_mod, widget_data_table_mod, widget_scroll_panel_mod,
         widget_code_view_mod, worker_runner_mod, skills_agents_parser_mod, skills_resolver_mod,
         knowledge_persistence_mod, hooks_executor_mod, coordinator_mod, background_agent_mod,
-        skill_pipeline_mod, layered_memory_mod, adversarial_mod, skill_sync_mod, template_mod,
+        skill_pipeline_mod, layered_memory_mod, adversarial_mod, skill_sync_mod, skill_remote_mod, template_mod,
         code_preview_mod, file_type_mod, cognition_mod, guardian_mod, phase_runner_mod,
         autopilot_mod, crush_mode_mod, orchestration_mod, hybrid_bridge_mod,
         chat_tool_executors_mod, auto_gen_mod, plan_handler_mod, delegate_mod, moa_mod,

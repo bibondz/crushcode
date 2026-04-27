@@ -56,6 +56,8 @@ pub const Config = struct {
     skills_dir: ?[]const u8 = null,
     /// Commands directory — defaults to ~/.config/crushcode/commands/
     commands_dir: ?[]const u8 = null,
+    /// Remote skill URLs — fetch index.json and cache skills from these endpoints
+    skill_urls: [][]const u8 = &.{},
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -100,6 +102,8 @@ pub const Config = struct {
         }
         if (self.skills_dir) |d| self.allocator.free(d);
         if (self.commands_dir) |d| self.allocator.free(d);
+        for (self.skill_urls) |u| self.allocator.free(u);
+        self.allocator.free(self.skill_urls);
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -314,9 +318,30 @@ pub const Config = struct {
             self.default_model = try self.allocator.dupe(u8, value);
         } else if (std.mem.eql(u8, key, "system_prompt")) {
             self.system_prompt = try self.allocator.dupe(u8, value);
+        } else if (std.mem.eql(u8, key, "skill_urls")) {
+            // Comma-separated list of URLs for remote skill discovery
+            for (self.skill_urls) |u| self.allocator.free(u);
+            self.allocator.free(self.skill_urls);
+            self.skill_urls = try self.parseCommaList(value);
         } else {
             try self.setApiKey(key, value);
         }
+    }
+
+    /// Parse comma-separated string into owned slice of strings.
+    fn parseCommaList(self: *Config, value: []const u8) ![][]const u8 {
+        var items = array_list_compat.ArrayList([]const u8).init(self.allocator);
+        errdefer {
+            for (items.items) |item| self.allocator.free(item);
+            items.deinit();
+        }
+        var iter = std.mem.splitScalar(u8, value, ',');
+        while (iter.next()) |item| {
+            const trimmed = std.mem.trim(u8, item, " \t\"'[]");
+            if (trimmed.len == 0) continue;
+            try items.append(try self.allocator.dupe(u8, trimmed));
+        }
+        return items.toOwnedSlice();
     }
 
     pub fn getSystemPrompt(self: *Config) ?[]const u8 {

@@ -131,7 +131,9 @@ pub const SkillSyncManager = struct {
     project_skills_dir: []const u8,
     user_skills_dir: []const u8,
     builtin_skills_dir: []const u8,
+    cache_skills_dir: []const u8,
     skill_file_name: []const u8,
+    remote_urls: [][]const u8,
 
     pub fn init(allocator: std.mem.Allocator) !*SkillSyncManager {
         const mgr = try allocator.create(SkillSyncManager);
@@ -140,6 +142,7 @@ pub const SkillSyncManager = struct {
         const home = std.process.getEnvVarOwned(allocator, "HOME") catch "/tmp";
 
         const user_dir = try std.fmt.allocPrint(allocator, "{s}/.crushcode/skills", .{home});
+        const cache_dir = try std.fmt.allocPrint(allocator, "{s}/.crushcode/cache/skills", .{home});
 
         mgr.* = .{
             .allocator = allocator,
@@ -148,7 +151,9 @@ pub const SkillSyncManager = struct {
             .project_skills_dir = try allocator.dupe(u8, ".crushcode/skills"),
             .user_skills_dir = user_dir,
             .builtin_skills_dir = try allocator.dupe(u8, "skills"),
+            .cache_skills_dir = cache_dir,
             .skill_file_name = try allocator.dupe(u8, "SKILL.md"),
+            .remote_urls = &[_][]const u8{},
         };
         return mgr;
     }
@@ -168,7 +173,10 @@ pub const SkillSyncManager = struct {
         alloc.free(self.project_skills_dir);
         alloc.free(self.user_skills_dir);
         alloc.free(self.builtin_skills_dir);
+        alloc.free(self.cache_skills_dir);
         alloc.free(self.skill_file_name);
+        for (self.remote_urls) |u| alloc.free(u);
+        alloc.free(self.remote_urls);
         alloc.destroy(self);
     }
 
@@ -179,8 +187,22 @@ pub const SkillSyncManager = struct {
         _ = self.discoverFromDir(self.builtin_skills_dir, .builtin);
         _ = self.discoverFromDir(self.project_skills_dir, .project);
         _ = self.discoverFromDir(self.user_skills_dir, .user);
+        _ = self.discoverFromDir(self.cache_skills_dir, .external);
 
         return self.entries.items.len - before;
+    }
+
+    /// Set remote URLs to pull from. Called before discoverAll if config has skill URLs.
+    pub fn setRemoteUrls(self: *SkillSyncManager, urls: [][]const u8) void {
+        // Free previous
+        for (self.remote_urls) |u| self.allocator.free(u);
+        self.allocator.free(self.remote_urls);
+
+        var owned = ArrayList([]const u8).init(self.allocator);
+        for (urls) |url| {
+            owned.append(self.allocator.dupe(u8, url) catch continue) catch continue;
+        }
+        self.remote_urls = owned.toOwnedSlice() catch &[_][]const u8{};
     }
 
     /// Scan a specific directory for SKILL.md files.
@@ -371,6 +393,7 @@ pub const SkillSyncManager = struct {
         try writer.print("  builtin:  {s} ({d} skills)\n", .{ self.builtin_skills_dir, countBySource(self, .builtin) });
         try writer.print("  project:  {s} ({d} skills)\n", .{ self.project_skills_dir, countBySource(self, .project) });
         try writer.print("  user:     {s} ({d} skills)\n", .{ self.user_skills_dir, countBySource(self, .user) });
+        try writer.print("  remote:   {s} ({d} skills)\n", .{ self.cache_skills_dir, countBySource(self, .external) });
         try writer.print("\nTotal skills: {d}\n", .{self.entries.items.len});
 
         const conflicts = self.detectConflicts();
@@ -534,7 +557,7 @@ pub fn handleSkillSync(remaining: [][]const u8) void {
     const stdout = file_compat.File.stdout().writer();
 
     if (remaining.len == 0) {
-        stdout.print("Usage: crushcode skill-sync <subcommand> [args]\n\nSubcommands: status, import, export, list, validate, conflicts\n", .{}) catch {};
+        stdout.print("Usage: crushcode skill-sync <subcommand> [args]\n\nSubcommands: status, import, export, list, validate, conflicts, pull, cached\n", .{}) catch {};
         return;
     }
 
@@ -646,8 +669,70 @@ pub fn handleSkillSync(remaining: [][]const u8) void {
                 }) catch {};
             }
         }
+    } else if (std.mem.eql(u8, subcommand, "pull")) {
+        if (remaining.len < 2) {
+            stdout.print("Usage: crushcode skill-sync pull <url>\n\nFetches index.json from a remote skill hub and downloads all skills to cache.\n", .{}) catch {};
+            return;
+        }
+        const url = remaining[1];
+        stdout.print("Pulling skills from {s}...\n", .{url}) catch {};
+
+        const remote = @import("skill_remote");
+        var discovery = remote.RemoteSkillDiscovery.init(allocator) catch {
+            stdout.print("Error: failed to initialize remote discovery\n", .{}) catch {};
+            return;
+        };
+        defer discovery.deinit();
+
+        const result = discovery.pull(url) catch {
+            stdout.print("Error: failed to pull skills from {s}\n", .{url}) catch {};
+            return;
+        };
+        defer result.deinit();
+
+        if (result.dirs.len > 0) {
+            stdout.print("Downloaded {d} skill(s):\n", .{result.dirs.len}) catch {};
+            for (result.dirs) |dir| {
+                const name = basename(dir);
+                stdout.print("  - {s} ({s})\n", .{ name, dir }) catch {};
+            }
+        } else {
+            stdout.print("No skills found at {s}\n", .{url}) catch {};
+        }
+
+        if (result.errors.len > 0) {
+            stdout.print("{d} error(s):\n", .{result.errors.len}) catch {};
+            for (result.errors) |err_item| {
+                stdout.print("  - {s}: {s}\n", .{ err_item.skill_name, err_item.message }) catch {};
+            }
+        }
+    } else if (std.mem.eql(u8, subcommand, "cached")) {
+        const remote = @import("skill_remote");
+        var discovery = remote.RemoteSkillDiscovery.init(allocator) catch {
+            stdout.print("Error: failed to initialize remote discovery\n", .{}) catch {};
+            return;
+        };
+        defer discovery.deinit();
+
+        const cached = discovery.getCachedSkills() catch {
+            stdout.print("No cached remote skills found.\n", .{}) catch {};
+            return;
+        };
+        defer {
+            for (cached) |c| allocator.free(c);
+            allocator.free(cached);
+        }
+
+        if (cached.len == 0) {
+            stdout.print("No cached remote skills.\n", .{}) catch {};
+        } else {
+            stdout.print("Cached remote skills ({d}):\n", .{cached.len}) catch {};
+            for (cached) |name| {
+                stdout.print("  - {s}\n", .{name}) catch {};
+            }
+        }
     } else {
-        stdout.print("Unknown subcommand: {s}\n\nSubcommands: status, import, export, list, validate, conflicts\n", .{subcommand}) catch {};
+        stdout.print("Unknown subcommand: {s}\n\nSubcommands: status, import, export, list, validate, conflicts, pull, cached\n", .{subcommand}) catch {};
     }
 }
 
