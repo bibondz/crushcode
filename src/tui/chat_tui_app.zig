@@ -370,6 +370,14 @@ pub const Model = struct {
     show_help: bool = false,
     auto_scroll: bool = true,
     selected_message_index: ?usize = null,
+    /// Input history for Up/Down arrow navigation and Ctrl+S reverse-i-search
+    input_history: std.ArrayList([]const u8),
+    input_history_index: usize = 0, // 0 = not navigating, 1..N = browsing history
+    input_history_draft: []const u8 = "", // saved current input when entering history
+    /// Reverse-i-search state
+    isearch_active: bool = false,
+    isearch_query: array_list_compat.ArrayList(u8),
+    isearch_match_index: ?usize = null,
     workers: std.ArrayList(WorkerItem),
     next_worker_id: u32 = 0,
     spinner: ?widget_spinner.AnimatedSpinner = null,
@@ -512,6 +520,11 @@ pub const Model = struct {
             .sidebar_visible = false,
             .right_pane_visible = false,
             .right_pane_content = null,
+            .input_history = std.ArrayList([]const u8).empty,
+            .input_history_index = 0,
+            .input_history_draft = "",
+            .isearch_active = false,
+            .isearch_query = array_list_compat.ArrayList(u8).init(allocator),
             .right_pane_title = null,
             .right_pane_width = 60,
             .workers = std.ArrayList(WorkerItem).empty,
@@ -745,6 +758,11 @@ pub const Model = struct {
         }
         self.history.deinit(self.allocator);
         self.turn_token_history.deinit();
+        // Clean up input history
+        for (self.input_history.items) |item| self.allocator.free(item);
+        self.input_history.deinit(self.allocator);
+        if (self.input_history_draft.len > 0) self.allocator.free(self.input_history_draft);
+        self.isearch_query.deinit();
         self.registry.deinit();
         self.toast_stack.deinit();
         self.pricing_table.deinit();
@@ -1662,7 +1680,16 @@ pub const Model = struct {
                 }
 
                 if (key.matches('r', .{ .ctrl = true })) {
-                    self.refreshCwdListing();
+                    // Ctrl+R: reverse-i-search through input history
+                    if (self.isearch_active) {
+                        // Already searching — find next match
+                        isearchNext(self);
+                    } else if (self.setup_phase == 0 and !self.show_palette and !self.scroll_mode) {
+                        startISearch(self);
+                    } else {
+                        // In scroll mode or palette — fall back to refresh
+                        self.refreshCwdListing();
+                    }
                     ctx.consumeEvent();
                     ctx.redraw = true;
                     return;
@@ -1689,8 +1716,75 @@ pub const Model = struct {
                     return;
                 }
 
-                // Escape exits scroll mode or help overlay (when not in palette/session list)
+                // Input history: Up/Down arrows when NOT in scroll mode
+                if (!self.scroll_mode and self.setup_phase == 0 and !self.show_palette and !self.isearch_active) {
+                    if (key.matches(vaxis.Key.up, .{})) {
+                        inputHistoryUp(self);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (key.matches(vaxis.Key.down, .{})) {
+                        inputHistoryDown(self);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                }
+
+                // Reverse-i-search: handle printable characters, backspace, escape, enter
+                if (self.isearch_active) {
+                    if (key.matches(vaxis.Key.escape, .{})) {
+                        // Cancel isearch, restore draft
+                        stopISearch(self);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (key.matches(vaxis.Key.enter, .{})) {
+                        // Accept match and submit (or just accept)
+                        self.isearch_active = false;
+                        self.isearch_query.clearRetainingCapacity();
+                        self.isearch_match_index = null;
+                        // Stop isearch — user can press Enter again to submit
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    if (key.matches(vaxis.Key.backspace, .{})) {
+                        if (self.isearch_query.items.len > 0) {
+                            _ = self.isearch_query.pop();
+                            updateISearch(self);
+                        } else {
+                            stopISearch(self);
+                        }
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
+                    // Printable character: append to search query
+                    if (key.text) |text| {
+                        if (text.len > 0) {
+                            self.isearch_query.appendSlice(text) catch {};
+                            updateISearch(self);
+                            ctx.consumeEvent();
+                            ctx.redraw = true;
+                            return;
+                        }
+                    }
+                    // Any other key in isearch mode: consume and ignore
+                    ctx.consumeEvent();
+                    return;
+                }
+
+                // Escape exits scroll mode, isearch, or help overlay (when not in palette/session list)
                 if (key.matches(vaxis.Key.escape, .{})) {
+                    if (self.isearch_active) {
+                        stopISearch(self);
+                        ctx.consumeEvent();
+                        ctx.redraw = true;
+                        return;
+                    }
                     if (self.show_help) {
                         self.show_help = false;
                         ctx.consumeEvent();
@@ -1910,9 +2004,15 @@ pub const Model = struct {
         }
 
         const max = ctx.max.size();
-        const sidebar_width: u16 = 30;
+        // Responsive sidebar: cap at 25% of terminal width, minimum 20 chars
+        // Auto-hide when terminal is too narrow (< 80 chars)
+        const sidebar_visible_effective = self.sidebar_visible and max.width >= 80;
+        const sidebar_width: u16 = if (sidebar_visible_effective)
+            @min(@as(u16, 30), @max(@as(u16, 20), @as(u16, @intCast(max.width / 4))))
+        else
+            0;
         const right_pane_w: u16 = if (self.right_pane_visible and self.right_pane_content != null) self.right_pane_width else 0;
-        const main_width: u16 = max.width -| if (self.sidebar_visible) sidebar_width else 0 -| right_pane_w;
+        const main_width: u16 = max.width -| if (sidebar_visible_effective) sidebar_width else 0 -| right_pane_w;
         const header_height: u16 = 1;
         const status_height: u16 = 1;
         // Dynamic input height: compute based on content and available width
@@ -2033,7 +2133,7 @@ pub const Model = struct {
         };
         // Provider/model prefix for the status bar
         const provider_prefix = try std.fmt.allocPrint(ctx.arena, "{s}/{s} │ ", .{ self.provider_name, self.model_name });
-        const status_text = if (self.setup_phase != 0)
+        const status_text_inner = if (self.setup_phase != 0)
             try std.fmt.allocPrint(ctx.arena, "Setup {d}/4 | {s}", .{
                 @min(self.setup_phase, @as(u8, 4)),
                 if (self.setup_phase == 1) "Choose a provider" else if (self.setup_phase == 2) "Enter your API key" else if (self.setup_phase == 3) "Choose a default model" else "Press Enter to continue",
@@ -2063,11 +2163,21 @@ pub const Model = struct {
                 scroll_indicator,
                 mode_tag,
             });
+        // Override status bar with isearch prompt when active
+        const status_text = if (self.isearch_active) blk: {
+            const query = self.isearch_query.items;
+            const match_label: []const u8 = if (self.isearch_match_index != null) "" else " (no match)";
+            const prompt = try std.fmt.allocPrint(ctx.arena, "reverse-i-search{s}: {s}_", .{ match_label, query });
+            break :blk prompt;
+        } else if (status_text_inner.len > main_width) blk: {
+            const trunc_len = if (main_width > 1) main_width - 1 else 0;
+            const truncated = try std.fmt.allocPrint(ctx.arena, "{s}…", .{if (status_text_inner.len > trunc_len) status_text_inner[0..trunc_len] else status_text_inner});
+            break :blk truncated;
+        } else status_text_inner;
         const status_widget = vxfw.Text{
             .text = if (status_text.len > main_width) blk: {
                 const trunc_len = if (main_width > 1) main_width - 1 else 0;
-                const truncated = try std.fmt.allocPrint(ctx.arena, "{s}…", .{if (status_text.len > trunc_len) status_text[0..trunc_len] else status_text});
-                break :blk truncated;
+                break :blk try std.fmt.allocPrint(ctx.arena, "{s}…", .{if (status_text.len > trunc_len) status_text[0..trunc_len] else status_text});
             } else status_text,
             .style = .{ .fg = self.current_theme.status_fg, .bg = self.current_theme.status_bg },
             .softwrap = false,
@@ -2093,7 +2203,7 @@ pub const Model = struct {
         // Status bar at the very bottom
         try child_list.append(ctx.arena, .{ .origin = .{ .row = @intCast(header_height + safe_body_height + input_height), .col = 0 }, .surface = status_surface });
 
-        if (self.sidebar_visible) {
+        if (sidebar_visible_effective) {
             // Refresh LSP diagnostics before displaying (non-blocking drain)
             self.lsp_manager.refreshDiagnostics();
             const mcp_status = mcp_status_mod.getMCPServerStatus(self, ctx.arena);
@@ -2389,7 +2499,7 @@ pub const Model = struct {
                 "Ctrl+P    Command palette",
                 "Ctrl+B    Toggle sidebar",
                 "Ctrl+\\    Toggle file preview",
-"Ctrl+R    Refresh sidebar project files",
+"Ctrl+R    Reverse-i-search input history",
                 "Ctrl+H    This help",
                 "Ctrl+C    Quit",
                 "",
@@ -2492,6 +2602,8 @@ pub const Model = struct {
 
         try history_mod.addMessageUnlocked(self, "user", trimmed);
         try history_mod.appendHistoryMessageUnlocked(self, "user", trimmed);
+        // Save to input history for Up/Down navigation and reverse-i-search
+        saveInputHistory(self, trimmed);
         // Persist to cross-session memory
         self.memory.addMessage("user", trimmed) catch {};
         self.memory.save() catch {};
@@ -4887,6 +4999,142 @@ fn stripFileUriPrefix(uri: []const u8) []const u8 {
         return uri["file://".len..];
     }
     return uri;
+}
+
+// ---------------------------------------------------------------------------
+// Input History
+// ---------------------------------------------------------------------------
+
+/// Maximum number of input history entries to keep
+const max_input_history = 1000;
+
+/// Save a user input to history (deduplicated, most recent first)
+fn saveInputHistory(self: *Model, input: []const u8) void {
+    if (input.len == 0) return;
+
+    // Don't duplicate if same as last entry
+    if (self.input_history.items.len > 0) {
+        if (std.mem.eql(u8, self.input_history.items[self.input_history.items.len - 1], input)) {
+            return;
+        }
+    }
+
+    const dupe = self.allocator.dupe(u8, input) catch return;
+    self.input_history.append(self.allocator, dupe) catch {
+        self.allocator.free(dupe);
+        return;
+    };
+
+    // Evict oldest entries if over limit
+    while (self.input_history.items.len > max_input_history) {
+        const old = self.input_history.orderedRemove(0);
+        self.allocator.free(old);
+    }
+
+    // Reset navigation index
+    self.input_history_index = 0;
+}
+
+/// Navigate up in input history (older entries)
+fn inputHistoryUp(self: *Model) void {
+    if (self.input_history.items.len == 0) return;
+
+    // Save current input as draft when first entering history
+    if (self.input_history_index == 0) {
+        const draft = self.input.buf.dupe() catch return;
+        if (self.input_history_draft.len > 0) self.allocator.free(self.input_history_draft);
+        self.input_history_draft = draft;
+    }
+
+    // Move to older entry (index increases toward end of list)
+    if (self.input_history_index < self.input_history.items.len) {
+        self.input_history_index += 1;
+        const entry = self.input_history.items[self.input_history.items.len - self.input_history_index];
+        self.input.buf.clearAndFree();
+        self.input.buf.insertSliceAtCursor(entry) catch {};
+    }
+}
+
+/// Navigate down in input history (newer entries, back to draft)
+fn inputHistoryDown(self: *Model) void {
+    if (self.input_history_index == 0) return;
+
+    self.input_history_index -= 1;
+
+    if (self.input_history_index == 0) {
+        // Restore draft
+        self.input.buf.clearAndFree();
+        if (self.input_history_draft.len > 0) {
+            self.input.buf.insertSliceAtCursor(self.input_history_draft) catch {};
+        }
+    } else {
+        const entry = self.input_history.items[self.input_history.items.len - self.input_history_index];
+        self.input.buf.clearAndFree();
+        self.input.buf.insertSliceAtCursor(entry) catch {};
+    }
+}
+
+/// Start reverse-i-search
+fn startISearch(self: *Model) void {
+    self.isearch_active = true;
+    self.isearch_query.clearRetainingCapacity();
+    self.isearch_match_index = null;
+}
+
+/// Stop reverse-i-search and restore input
+fn stopISearch(self: *Model) void {
+    self.isearch_active = false;
+    self.isearch_query.clearRetainingCapacity();
+    self.isearch_match_index = null;
+}
+
+/// Update reverse-i-search with a new character or query change
+fn updateISearch(self: *Model) void {
+    if (!self.isearch_active) return;
+    if (self.isearch_query.items.len == 0) {
+        self.isearch_match_index = null;
+        return;
+    }
+
+    const query = self.isearch_query.items;
+
+    // Search from most recent to oldest
+    var i: usize = 0;
+    while (i < self.input_history.items.len) : (i += 1) {
+        const idx = self.input_history.items.len - 1 - i;
+        if (std.mem.indexOf(u8, self.input_history.items[idx], query) != null) {
+            self.isearch_match_index = idx;
+            // Load match into input
+            self.input.buf.clearAndFree();
+            self.input.buf.insertSliceAtCursor(self.input_history.items[idx]) catch {};
+            return;
+        }
+    }
+    self.isearch_match_index = null;
+}
+
+/// Find next match in reverse-i-search (Ctrl+S again to cycle)
+fn isearchNext(self: *Model) void {
+    if (!self.isearch_active or self.input_history.items.len == 0) return;
+    const query = self.isearch_query.items;
+    if (query.len == 0) return;
+
+    // Start searching from one after current match
+    const start: usize = if (self.isearch_match_index) |current|
+        if (current > 0) current - 1 else self.input_history.items.len - 1
+    else
+        self.input_history.items.len - 1;
+
+    var i: usize = start;
+    while (true) : (i = if (i > 0) i - 1 else self.input_history.items.len - 1) {
+        if (std.mem.indexOf(u8, self.input_history.items[i], query) != null) {
+            self.isearch_match_index = i;
+            self.input.buf.clearAndFree();
+            self.input.buf.insertSliceAtCursor(self.input_history.items[i]) catch {};
+            return;
+        }
+        if (i == start) break; // wrapped around
+    }
 }
 
 pub fn runWithOptions(allocator: std.mem.Allocator, options: Options) !void {
