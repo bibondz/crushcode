@@ -1,70 +1,17 @@
 # Crushcode — TODO & Known Issues
 
 **Updated:** 2026-04-27
-**Version:** v1.8.0+ (Post-v1.8.0 agent improvements)
+**Version:** v2.1.0
 
 ---
 
 ## HIGH Priority
 
-### [KP-1] KnowledgePipeline Dangling Pointer
-
-**Status:** Disabled (commit `bfdcb01`), pending fix
-**File:** `src/agent/context_builder.zig:175-197`
-**Plan:** `.planning/phases/kp-fix-PLAN.md`
-
-**Problem:** `KnowledgePipeline.init()` returns the struct by value. Internal `KnowledgeIngester` and `KnowledgeQuerier` store `*KnowledgeVault` pointers to the `vault` field of the returned struct. When the struct is moved (returned by value), these pointers dangle. The HashMap iterator assertion fires during `query()` on the corrupt pointer.
-
-**Impact:** TUI has no auto-indexing, no knowledge graph context in AI prompts.
-
-**Fix:** Heap-allocate `KnowledgePipeline` via `allocator.create()`. Return `*KnowledgePipeline` instead of `KnowledgePipeline`. Update all call sites.
-
----
-
-### [KP-2] Permission toJson Use-After-Free Pattern
-
-**Status:** Fixed in commit `1ed5908` (4 methods)
-**File:** `src/permission/types.zig`
-
-**Problem Pattern:** Methods using `defer` for arena cleanup but returning json objects allocated on that arena. Fixed to `errdefer`. **Watch for this pattern** in other modules.
+_No HIGH priority items currently._
 
 ---
 
 ## MEDIUM Priority
-
-### [HARNESS-1] Cache-Aware Anthropic HTTP Body
-
-**Status:** ✅ Done (v1.6.0)
-**Files:** `src/ai/client.zig` — buildCacheAwareStreamingBody wired for Anthropic/Bedrock/VertexAI
-
----
-
-### [HARNESS-2] Guardrail Redaction Pass
-
-**Status:** ✅ Done (v1.6.0)
-**Files:** `src/guardrail/pipeline.zig`
-
-**Shipped:** PII/secrets replaced with `[REDACTED]` before sending to provider.
-
----
-
-### [HARNESS-3] LLM Compaction Full Wiring
-
-**Status:** ✅ Done (commit `629da2e`)
-**Files:** `src/agent/compaction.zig`, `src/tui/chat_tui_app.zig`
-
-**Shipped:** sendToLLMWrapper threadlocal pattern, auto-compact at 95%+ tier tries compactWithLLM first with heuristic fallback, manual `/compact` also tries LLM first. Template enforcement + tool importance pruning included.
-
----
-
-### [TW-1] Typewriter Animation Thread Safety
-
-**Status:** Fixed (commit `83d11cb`)
-**File:** `src/tui/widgets/typewriter.zig`
-
-**Current State:** Re-enabled with thread-safe lock ordering. Worker thread sets text, main thread animates via tick timer.
-
----
 
 ### [WIN-1] Windows Cross-Compile
 
@@ -78,10 +25,15 @@
 
 ---
 
-### [BZ-1] Build.zig Cleanup
+### Future TUI Improvements
 
-**Status:** ✅ Done (v1.5.0, commit cd81742)
-**File:** `build.zig` — 1123→1037 lines (-86). Consolidated compat loop, test array, addImports.
+| Item | Effort | Status | Notes |
+|------|--------|--------|-------|
+| ~~Responsive layout~~ | ~~Medium~~ | ✅ v1.8.0 | min(30, max(20, w/4)), auto-hide <80 |
+| ~~Input history search~~ | ~~Low~~ | ✅ v1.8.0 | Ctrl+R reverse-i-search, Up/Down history |
+| ~~Mouse-resizable panes (SplitView)~~ | ~~Medium~~ | ✅ v2.0.0 | Drag resize on sidebar + right-pane |
+| ~~Proper dialog overlay abstraction~~ | ~~Medium~~ | ✅ v2.0.0 | OverlayManager in src/tui/overlay.zig |
+| ~~Diff preview for all edits~~ | ~~Low~~ | ✅ v2.1.0 | Single + multi hunk apply/reject review |
 
 ---
 
@@ -96,28 +48,46 @@
 
 ### [SQ-1] SQLite Test Runner
 
-**Status:** Known issue
-**Problem:** `zig build test` fails on sqlite module because `@cImport` needs libc. Individual module tests pass.
+**Status:** ✅ Done (v2.0.0)
+**File:** `test-sqlite` build step with separate module instance
 
 ---
 
-### Future TUI Improvements
+### Multi-Platform Gateway
 
-| Item | Effort | Status | Notes |
-|------|--------|--------|-------|
-| ~~Responsive layout~~ | ~~Medium~~ | ✅ v1.8.0 | min(30, max(20, w/4)), auto-hide <80 |
-| ~~Input history search~~ | ~~Low~~ | ✅ v1.8.0 | Ctrl+R reverse-i-search, Up/Down history |
-| Mouse-resizable panes (SplitView) | Medium | ⬜ | vaxis SplitView available |
-| Proper dialog overlay abstraction | Medium | ⬜ | Currently 6 ad-hoc overlays |
+**Status:** Not started
+**Scope:** Telegram/Discord/Slack bot gateway for remote access
 
-### Agent Improvements (Post-v1.8.0)
+---
 
-| Item | Status | Notes |
-|------|--------|-------|
-| SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests |
-| Desktop notifications | ⬜ TODO | OS notify when agent finishes/needs permission |
-| Agent mode refinement | ⬜ TODO | OpenCode subagent/primary/all pattern |
-| MoA wiring to TUI | ⬜ TODO | moa.zig (438L) exists, unwired |
+## Done (v2.1.0 — 2026-04-27)
+
+- [x] Single-hunk diff preview activation (`streaming.zig`: >= 2 → >= 1)
+- [x] "Review before applying" label for single-hunk edits
+- [x] Streaming-complete status indicator in diff preview widget
+
+## Done (v2.0.0 — 2026-04-27)
+
+- [x] Remote skill discovery (`src/skills/remote.zig`, 540L)
+- [x] Skill-sync pull/cached CLI commands
+- [x] Config skill_urls comma-separated parsing
+- [x] SplitView mouse-drag resize
+- [x] OverlayManager unified overlay system
+- [x] WIN-1 getenv compat (15 files)
+- [x] SQ-1 SQLite test runner
+
+## Done (v1.9.0 — 2026-04-27)
+
+- [x] SHA-256 loop detection (ring buffer, 8/8 tests)
+- [x] Desktop notifications (notify-send/osascript)
+- [x] Agent mode refinement (per-mode config)
+- [x] MoA wiring to TUI (438L module)
+
+## Done (v1.8.0 — 2026-04-27)
+
+- [x] Input history (Up/Down) — 1000 entry cap, saves draft
+- [x] Ctrl+R reverse-i-search — incremental search, cycle matches
+- [x] Responsive sidebar — min(30, max(20, width/4)), auto-hide <80
 
 ---
 

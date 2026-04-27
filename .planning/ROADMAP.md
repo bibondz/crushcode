@@ -173,10 +173,8 @@ Created: 2026-04-14 · Updated: 2026-04-27
 | 3-tier grep cascade | ✅ DONE | sg (AST) → rg (regex) → grep (POSIX) fallback chain |
 | Language auto-detect | ✅ DONE | Maps include patterns to ast-grep language names for `-l` flag |
 
-### Backlog (researched but deferred)
-- Streaming diff preview (diffpane, tuicr)
+### Backlog (remaining)
 - Mixture-of-Agents reasoning (Hermes MoA)
-- Skill hub integration
 - Sandboxed execution (gVisor/LXC)
 - Multi-platform gateway (Telegram/Discord/Slack)
 - Vault→persistence merge (circular dep risk)
@@ -195,13 +193,41 @@ Created: 2026-04-14 · Updated: 2026-04-27
 
 ---
 
-## Post-v1.8.0 — Agent Improvements (IN PROGRESS)
+## v2.1.0 — Diff Preview for All Edits ✅ DONE
+
+**วัตถุประสงค์**: Every file edit (single or multi hunk) shows interactive diff preview before applying
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Single-hunk diff preview | ✅ DONE | `streaming.zig`: `>= 2` → `>= 1` — all edits with hunks activate interactive review |
+| "Review before applying" label | ✅ DONE | Single-hunk shows descriptive label instead of "Hunk 1/1" |
+| Streaming-complete indicator | ✅ DONE | "● Response complete — review changes below" status in diff widget |
+
+---
+
+## v2.0.0 — Daily Driver Readiness ✅ DONE
+
+**วัตถุประสงค์**: Remote skill discovery + TUI polish + cross-platform compat
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Remote skill discovery | ✅ DONE | `src/skills/remote.zig` — fetch index.json, download skills, cache locally |
+| Skill-sync CLI | ✅ DONE | `crushcode skill-sync pull <url>` + `crushcode skill-sync cached` |
+| Config skill_urls | ✅ DONE | Comma-separated list in config.toml |
+| SplitView mouse-drag | ✅ DONE | Resizable sidebar + right-pane dividers |
+| OverlayManager | ✅ DONE | Unified overlay type system |
+| WIN-1 getenv compat | ✅ DONE | 15 files migrated to file_compat.getEnv() |
+| SQ-1 SQLite tests | ✅ DONE | Separate test-sqlite build step |
+
+---
+
+## Post-v1.8.0 — Agent Improvements ✅ DONE
 
 **วัตถุประสงค์**: Close gaps vs reference repos (Crush, OpenCode) in agent infrastructure
 
 | Item | Status | Description |
 |------|--------|-------------|
-| SHA-256 loop detection | ✅ DONE | `src/agent/loop_detector.zig` — ring buffer, SHA-256 sigs, window=10, maxRepeats=5, 8/8 tests |
-| Desktop notifications | ⬜ TODO | OS notify when agent finishes/needs permission |
-| Agent mode refinement | ⬜ TODO | OpenCode subagent/primary/all pattern |
-| MoA wiring to TUI | ⬜ TODO | moa.zig (438L) exists but unwired to TUI |
+| SHA-256 loop detection | ✅ DONE | Ring buffer, SHA-256 sigs, window=10, maxRepeats=5, 8/8 tests |
+| Desktop notifications | ✅ DONE | OS notify when agent finishes/needs permission |
+| Agent mode refinement | ✅ DONE | OpenCode subagent/primary/all pattern |
+| MoA wiring to TUI | ✅ DONE | moa.zig (438L) wired into agent loop |

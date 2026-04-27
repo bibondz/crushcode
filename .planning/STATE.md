@@ -1,4 +1,4 @@
-# State: Crushcode v2.0.0
+# State: Crushcode v2.1.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-27
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v2.0.0 — Daily Driver Readiness |
-| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0 |
-| Next | Streaming diff preview, multi-platform gateway |
-| Latest commit | `67c8793` — Post-v1.9.0 backlog (SplitView, OverlayManager, WIN-1, SQ-1) |
+| Milestone | v2.1.0 — Diff Preview for All Edits |
+| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0, v2.1.0 |
+| Next | Multi-platform gateway, Windows cross-compile |
+| Latest commit | `cf77040` — Diff preview for all edits with streaming-complete indicator |
 
 ---
 
@@ -34,19 +34,23 @@
 | v1.8.0 | TUI UX | Input history (Up/Down + Ctrl+R reverse-i-search), responsive sidebar layout |
 | v1.9.0 | Agent Improvements | Loop detection, desktop notifications, per-mode agent config, MoA wiring |
 | v2.0.0 | Daily Driver Readiness | Remote skill discovery, SplitView mouse-drag, OverlayManager, WIN-1 getenv, SQ-1 SQLite tests |
+| v2.1.0 | Diff Preview All Edits | Single-hunk diff preview, streaming-complete indicator, apply/reject for every edit |
 
 ---
 
-## Post-v1.8.0 Progress — Agent Improvements
+## v2.1.0 Progress — Diff Preview for All Edits
 
 | Item | Status | Notes |
 |------|--------|-------|
-| SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests passing |
-| Desktop notifications | ✅ Done | `src/feedback/notifier.zig`, platform notify-send/osascript |
-| Agent mode refinement | ✅ Done | Per-mode config in `src/agent/mode_config.zig` |
-| MoA wiring to TUI | ✅ Done | `src/agent/moa.zig` (438L) wired into agent loop |
+| Single-hunk diff preview | ✅ Done | `streaming.zig`: `>= 2` → `>= 1` — all edits with hunks get interactive review |
+| "Review before applying" label | ✅ Done | `diff_preview.zig`: single-hunk shows "Review before applying" instead of "Hunk 1/1" |
+| Streaming-complete indicator | ✅ Done | `diff_preview.zig`: "● Response complete — review changes below" status bar |
 
-## v2.0.0 Progress — Daily Driver Readiness
+---
+
+## Previously Completed
+
+### v2.0.0 — Daily Driver Readiness
 
 | Item | Status | Notes |
 |------|--------|-------|
@@ -57,20 +61,15 @@
 | OverlayManager | ✅ Done | `src/tui/overlay.zig` — unified overlay type system |
 | WIN-1 getenv compat | ✅ Done | 15 files migrated to `file_compat.getEnv()` |
 | SQ-1 SQLite tests | ✅ Done | `test-sqlite` build step with separate module instance |
-| Skill hub integration | ✅ Done | Remote discovery + local cache + sync manager wiring |
 
-### SHA-256 Loop Detection — Details
-- **File:** `src/agent/loop_detector.zig` (~210 lines)
-- **Pattern:** Ring buffer of SHA-256 signatures (stack-allocated, no allocator)
-- **Config:** window=10, maxRepeats=5, max window=32
-- **Integration:** Wired into both sequential + parallel tool execution paths in `loop.zig`
-- **Build:** `simpleMod` in build.zig (zero deps — pure `std`)
-- **Old detection preserved:** `self_heal.detectRepetition` still catches failing-tool patterns separately
-- **Reference:** Crush `loop_detection.go` (92L)
+### v1.9.0 — Agent Improvements
 
----
-
-## Previously Completed
+| Item | Status | Notes |
+|------|--------|-------|
+| SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests passing |
+| Desktop notifications | ✅ Done | `src/feedback/notifier.zig`, platform notify-send/osascript |
+| Agent mode refinement | ✅ Done | Per-mode config in `src/agent/mode_config.zig` |
+| MoA wiring to TUI | ✅ Done | `src/agent/moa.zig` (438L) wired into agent loop |
 
 ### v1.8.0 — TUI UX
 | Item | Status | Notes |
@@ -121,6 +120,7 @@
 | AST Search | **sg binary** ✅ | ❌ | ❌ | ❌ | ❌ |
 | Loop Detection | **SHA-256** ✅ | ❌ | ❌ | ❌ | ✅ (Go) |
 | Remote Skill Hub | **✅** | ❌ | ✅ | ❌ | ❌ |
+| Diff Preview (all edits) | **✅** | ✅ | ❌ | ❌ | ❌ |
 
 ---
 
@@ -128,7 +128,6 @@
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Streaming diff preview | Medium | diffpane/tuicr integration |
 | Multi-platform gateway | Low | Telegram/Discord/Slack |
 | Windows cross-compile | Low | 1 remaining error (Zig stdlib open() bug — upstream) |
 
@@ -137,4 +136,4 @@
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** v2.0.0 shipped. Remote skill discovery, SplitView, OverlayManager, WIN-1 compat, SQ-1 SQLite tests complete.
+**Status:** v2.1.0 shipped. Diff preview now activates for ALL edits (single + multi hunk), with streaming-complete status indicator.
