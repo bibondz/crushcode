@@ -423,7 +423,8 @@ pub const Model = struct {
         // Pre-flight: check if /dev/tty is accessible.
         // vaxis.Tty.init() will dump a stack trace on failure, which is noisy.
         // Detect early and return a clean error instead.
-        {
+        // Windows doesn't have /dev/tty — skip check; vaxis handles ConPTY internally.
+        if (@import("builtin").os.tag != .windows) {
             const fd = std.c.open("/dev/tty", .{ .ACCMODE = .RDWR });
             if (fd < 0) return error.NoTTyAvailable;
             _ = std.c.close(fd);
@@ -910,14 +911,16 @@ pub const Model = struct {
         const app = self.app;
         const tty = &app.tty;
         const vx = &app.vx;
-        var ws: vaxis.Winsize = vaxis.Tty.getWinsize(app.tty.fd) catch
-            .{ .rows = 24, .cols = 80, .x_pixel = 640, .y_pixel = 384 };
-        // Clamp to sane minimums — some terminals report 0 for some fields
-        if (ws.cols == 0) ws.cols = 80;
-        if (ws.rows == 0) ws.rows = 24;
-        if (ws.x_pixel == 0) ws.x_pixel = ws.cols * 8;
-        if (ws.y_pixel == 0) ws.y_pixel = ws.rows * 16;
-        try vx.resize(self.allocator, tty.writer(), ws);
+        // getWinsize is POSIX-only; on Windows vaxis uses ConPTY which handles sizing via events
+        if (@import("builtin").os.tag != .windows) {
+            var ws: vaxis.Winsize = vaxis.Tty.getWinsize(app.tty.fd) catch
+                .{ .rows = 24, .cols = 80, .x_pixel = 640, .y_pixel = 384 };
+            if (ws.cols == 0) ws.cols = 80;
+            if (ws.rows == 0) ws.rows = 24;
+            if (ws.x_pixel == 0) ws.x_pixel = ws.cols * 8;
+            if (ws.y_pixel == 0) ws.y_pixel = ws.rows * 16;
+            try vx.resize(self.allocator, tty.writer(), ws);
+        }
 
         try self.app.run(self.widget(), .{ .framerate = 30 });
     }

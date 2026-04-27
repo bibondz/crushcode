@@ -247,7 +247,9 @@ pub const PTYPlugin = struct {
             return PTYResponse{ .success = false, .err = "Windows PTY kill not implemented" };
         }
 
-        posix.kill(@intCast(removed.value.pid), posix.SIG.KILL) catch {};
+        if (@import("builtin").os.tag != .windows) {
+            posix.kill(@intCast(removed.value.pid), posix.SIG.KILL) catch {};
+        }
         posix.close(removed.value.master_fd);
 
         return PTYResponse{

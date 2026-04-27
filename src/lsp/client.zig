@@ -367,6 +367,12 @@ pub const LSPClient = struct {
     }
 
     fn stdoutReady(self: *LSPClient, timeout_ms: i32) !bool {
+        if (@import("builtin").os.tag == .windows) {
+            // Winsock WSAPoll requires SOCKET handles; child stdout is a regular HANDLE.
+            // Use a simple sleep + return ready as fallback.
+            std.Thread.sleep(@as(u64, @intCast(timeout_ms)) * std.time.ns_per_ms);
+            return true;
+        }
         const process = self.process orelse return false;
         const stdout = process.stdout orelse return false;
         var poll_fds = [_]std.posix.pollfd{.{

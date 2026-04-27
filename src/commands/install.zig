@@ -118,7 +118,7 @@ pub const Installer = struct {
         const data = response.body;
         try dest_file.writeAll(data);
 
-        if (!std.mem.eql(u8, detectOS(), "windows")) {
+        if (@import("builtin").os.tag != .windows) {
             dest_file.chmod(0o755) catch {};
         }
 

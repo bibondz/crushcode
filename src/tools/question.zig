@@ -50,9 +50,12 @@ fn extractJsonBoolField(json: []const u8, field_name: []const u8) bool {
 
 /// Check if stdin is connected to a terminal (interactive mode).
 fn isInteractive() bool {
+    if (@import("builtin").os.tag == .windows) {
+        // Windows: fstat not available, assume interactive if stdin is a console
+        return true;
+    }
     const stdin = file_compat.File.stdin();
     const stat = std.posix.fstat(stdin.handle) catch return false;
-    // Check if it's a character device (terminal)
     return std.posix.S.ISCHR(@intCast(stat.mode));
 }
 

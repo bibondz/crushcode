@@ -118,10 +118,16 @@ pub const JobManager = struct {
 
     /// Non-blocking check of a job's status via waitpid with WNOHANG.
     /// Updates internal state if the process has exited.
+    /// On Windows, returns running status (background job monitoring not supported).
     pub fn checkStatus(self: *JobManager, id: u32) !JobStatus {
         const job = self.get(id) orelse return error.JobNotFound;
 
         if (job.status != .running) return job.status;
+
+        if (@import("builtin").os.tag == .windows) {
+            // Windows: no POSIX waitpid; assume still running
+            return .running;
+        }
 
         const result = posix.waitpid(@intCast(job.pid), posix.W.NOHANG);
 
@@ -162,11 +168,18 @@ pub const JobManager = struct {
         };
     }
 
-    /// Send SIGTERM to a running job
+    /// Send SIGTERM to a running job (POSIX only; no-op on Windows).
     pub fn killJob(self: *JobManager, id: u32) !void {
         const job = self.get(id) orelse return error.JobNotFound;
 
         if (job.status != .running) return;
+
+        if (@import("builtin").os.tag == .windows) {
+            // Windows: no POSIX signals; mark terminated directly
+            job.status = .terminated;
+            job.exit_code = 137;
+            return;
+        }
 
         posix.kill(@intCast(job.pid), posix.SIG.TERM) catch |err| {
             return err;

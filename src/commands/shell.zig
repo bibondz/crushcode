@@ -234,7 +234,9 @@ fn waitWithTimeout(child: *std.process.Child, timeout_seconds: u32) !ShellResult
             } else {
                 state.lock.unlock();
                 // Use raw POSIX kill to send SIGTERM - don't call child's kill() which internally waits
-                posix.kill(child.id, posix.SIG.TERM) catch {};
+                if (@import("builtin").os.tag != .windows) {
+                    posix.kill(child.id, posix.SIG.TERM) catch {};
+                }
                 thread.join();
                 return ShellResult{
                     .exit_code = 124,

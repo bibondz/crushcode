@@ -25,7 +25,9 @@ inline fn out(comptime fmt: []const u8, args: anytype) void {
 }
 
 /// Detect whether stdin is a pipe (not a terminal).
+/// On Windows, always returns false (piped detection not available via POSIX).
 fn isStdinPiped() bool {
+    if (@import("builtin").os.tag == .windows) return false;
     return std.posix.isatty(std.posix.STDIN_FILENO) == false;
 }
 
