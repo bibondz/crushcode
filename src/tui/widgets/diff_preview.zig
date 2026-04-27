@@ -70,7 +70,10 @@ pub const DiffPreviewWidget = struct {
 
         // ─── Header: file path + hunk counter ───
         const title_text = try std.fmt.allocPrint(ctx.arena, "Edit Preview: {s}", .{cx.file_path});
-        const hunk_counter = try std.fmt.allocPrint(ctx.arena, "Hunk {d}/{d}", .{ hunk_idx + 1, total_hunks });
+        const hunk_counter = if (total_hunks > 1)
+            try std.fmt.allocPrint(ctx.arena, "Hunk {d}/{d}", .{ hunk_idx + 1, total_hunks })
+        else
+            try std.fmt.allocPrint(ctx.arena, "Review before applying", .{});
 
         const header_segments = &[_]vaxis.Segment{
             .{ .text = title_text, .style = .{ .fg = theme.header_fg, .bold = true } },
@@ -88,6 +91,23 @@ pub const DiffPreviewWidget = struct {
         ));
         try child_list.append(ctx.arena, .{ .origin = .{ .row = current_row, .col = 2 }, .surface = header_surf });
         current_row += 2;
+
+        // ─── Status indicator: response complete, ready for review ───
+        const status_segments = &[_]vaxis.Segment{
+            .{ .text = "● ", .style = .{ .fg = theme.tool_success } },
+            .{ .text = "Response complete — review changes below", .style = .{ .fg = theme.dimmed } },
+        };
+        const status_rich = vxfw.RichText{
+            .text = status_segments,
+            .softwrap = false,
+            .width_basis = .parent,
+        };
+        const status_surf = try status_rich.draw(ctx.withConstraints(
+            .{ .width = inner_width, .height = 1 },
+            .{ .width = inner_width, .height = 1 },
+        ));
+        try child_list.append(ctx.arena, .{ .origin = .{ .row = current_row, .col = 2 }, .surface = status_surf });
+        current_row += 1;
 
         // ─── Stats line: adds/dels for this hunk + decision badge ───
         var adds: usize = 0;

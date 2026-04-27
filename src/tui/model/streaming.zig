@@ -402,8 +402,8 @@ pub fn executeToolCalls(self: *Model, tool_calls: []const core.client.ToolCallIn
                     if (new_content_opt) |new_cont| {
                         var diff_result = myers.MyersDiff.diff(self.allocator, orig, new_cont) catch null;
                         if (diff_result) |*dr| {
-                            if (dr.hunks.len >= 2) {
-                                // Multi-hunk: activate diff preview
+                            if (dr.hunks.len >= 1) {
+                                // Any edit with hunks: activate diff preview for review before applying
                                 const decisions = self.allocator.alloc(widget_diff_preview.HunkDecision, dr.hunks.len) catch null;
                                 if (decisions) |decs| {
                                     @memset(decs, .pending);
