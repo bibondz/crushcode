@@ -876,6 +876,135 @@ fn tryExecuteRg(allocator: std.mem.Allocator, pattern: []const u8, path: []const
     };
 }
 
+/// Try ast-grep (sg) binary for AST-aware code search.
+/// Returns null if sg is not installed or fails to spawn.
+/// Falls back gracefully so rg/grep can take over.
+fn tryExecuteSg(allocator: std.mem.Allocator, pattern: []const u8, path: []const u8, language: ?[]const u8, max_results: u32) ?ToolExecution {
+    // Build argv: sg run -p '<pattern>' --json [path]
+    // Optionally add -l <language> if provided
+    var argv_list = array_list_compat.ArrayList([]const u8).init(allocator);
+    defer argv_list.deinit();
+
+    argv_list.append("sg") catch return null;
+    argv_list.append("run") catch return null;
+
+    const pattern_arg = std.fmt.allocPrint(allocator, "-p{s}", .{pattern}) catch return null;
+    argv_list.append(pattern_arg) catch return null;
+
+    argv_list.append("--json") catch return null;
+
+    if (language) |lang| {
+        const lang_arg = std.fmt.allocPrint(allocator, "-l{s}", .{lang}) catch return null;
+        argv_list.append(lang_arg) catch return null;
+    }
+
+    argv_list.append(path) catch return null;
+
+    const argv = argv_list.toOwnedSlice() catch return null;
+    defer allocator.free(argv);
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    const spawn_result = child.spawn();
+    if (spawn_result) |success| {
+        _ = success;
+    } else |_| {
+        // sg not found or failed to spawn — return null for rg/grep fallback
+        return null;
+    }
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+    defer {
+        stdout.deinit(allocator);
+        stderr.deinit(allocator);
+    }
+
+    child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024) catch return null;
+
+    const term = child.wait() catch return null;
+    const exit_code: u8 = switch (term) {
+        .Exited => |code| @intCast(code),
+        .Signal => |code| @intCast(code),
+        else => 1,
+    };
+
+    // Exit code 1 in sg means no matches (not an error), 2+ means error
+    if (exit_code >= 127) return null;
+
+    // Parse JSON output: [{ "text": "...", "file": "...", "range": { ... } }, ...]
+    const output = stdout.items;
+    if (output.len == 0) return null;
+
+    // Quick check: output should start with '[' for valid JSON array
+    var trimmed = std.mem.trimLeft(u8, output, " \t\n\r");
+    if (trimmed.len == 0 or trimmed[0] != '[') return null;
+
+    // Count matches by counting '"file":' occurrences (lightweight)
+    var count: u32 = 0;
+    var pos: usize = 0;
+    while (pos < trimmed.len) : (pos += 1) {
+        if (std.mem.startsWith(u8, trimmed[pos..], "\"file\"")) {
+            count += 1;
+            pos += 5; // skip past "file"
+        }
+    }
+
+    if (count == 0) return null;
+
+    // Parse each match to produce human-readable output
+    var result_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer result_buf.deinit();
+    const writer = result_buf.writer();
+
+    const SgMatch = struct {
+        text: []const u8,
+        file: []const u8,
+        range: struct {
+            start: struct {
+                line: u32,
+                column: u32,
+            },
+            end: struct {
+                line: u32,
+                column: u32,
+            },
+        },
+    };
+
+    const parsed = std.json.parseFromSlice([]SgMatch, allocator, trimmed, .{
+        .ignore_unknown_fields = true,
+    }) catch return null;
+    defer parsed.deinit();
+
+    var shown: u32 = 0;
+    for (parsed.value) |match_item| {
+        if (max_results > 0 and shown >= max_results) break;
+        writer.print("{s}:{d}:{d}: {s}\n", .{
+            match_item.file,
+            match_item.range.start.line + 1, // sg uses 0-indexed lines
+            match_item.range.start.column,
+            std.mem.trim(u8, match_item.text, " \t\n\r"),
+        }) catch return null;
+        shown += 1;
+    }
+
+    const result_str = result_buf.toOwnedSlice() catch return null;
+
+    // Truncate sg output
+    const truncated_output = truncateToolOutput(allocator, result_str) catch return null;
+    defer {
+        if (truncated_output.ptr != result_str.ptr) allocator.free(truncated_output);
+    }
+
+    return .{
+        .display = std.fmt.allocPrint(allocator, "🔧 sg(\"{s}\") → {d} AST matches\n", .{ pattern, shown }) catch return null,
+        .result = std.fmt.allocPrint(allocator, "Found {d} AST matches for '{s}' (ast-grep):\n{s}", .{ shown, pattern, truncated_output }) catch return null,
+    };
+}
+
 fn tryExecuteGrep(allocator: std.mem.Allocator, pattern: []const u8, path: []const u8, include: ?[]const u8, max_results: u32) !ToolExecution {
     var cmd_buf = array_list_compat.ArrayList(u8).init(allocator);
     defer cmd_buf.deinit();
@@ -927,11 +1056,35 @@ fn executeGrepTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     const include = parsed.value.include;
     const max_results = parsed.value.max_results orelse 50;
 
-    // Try ripgrep first
+    // 3-tier search: ast-grep (sg) → ripgrep (rg) → grep
+    // sg provides AST-aware matching when installed; falls back gracefully.
+
+    // Detect language from include pattern for sg (e.g., "*.zig" → "Zig")
+    const sg_language: ?[]const u8 = sg_language: {
+        if (include) |inc| {
+            // Map common extensions to ast-grep language names
+            if (std.mem.endsWith(u8, inc, ".ts") or std.mem.endsWith(u8, inc, ".tsx")) break :sg_language "TypeScript";
+            if (std.mem.endsWith(u8, inc, ".js") or std.mem.endsWith(u8, inc, ".jsx")) break :sg_language "JavaScript";
+            if (std.mem.endsWith(u8, inc, ".py")) break :sg_language "Python";
+            if (std.mem.endsWith(u8, inc, ".rs")) break :sg_language "Rust";
+            if (std.mem.endsWith(u8, inc, ".go")) break :sg_language "Go";
+            if (std.mem.endsWith(u8, inc, ".java")) break :sg_language "Java";
+            if (std.mem.endsWith(u8, inc, ".c")) break :sg_language "C";
+            if (std.mem.endsWith(u8, inc, ".cpp") or std.mem.endsWith(u8, inc, ".cc") or std.mem.endsWith(u8, inc, ".cxx")) break :sg_language "Cpp";
+            if (std.mem.endsWith(u8, inc, ".zig")) break :sg_language "Zig"; // sg doesn't support Zig but try anyway
+        }
+        break :sg_language null;
+    };
+
+    // Tier 1: ast-grep (sg) — AST-aware structural search
+    if (tryExecuteSg(allocator, parsed.value.pattern, search_path, sg_language, max_results)) |result| {
+        return result;
+    }
+    // Tier 2: ripgrep (rg)
     if (tryExecuteRg(allocator, parsed.value.pattern, search_path, include, max_results)) |result| {
         return result;
     }
-    // Fallback to grep
+    // Tier 3: grep (POSIX fallback)
     return tryExecuteGrep(allocator, parsed.value.pattern, search_path, include, max_results);
 }
 
