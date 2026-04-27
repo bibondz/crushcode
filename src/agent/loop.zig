@@ -8,6 +8,8 @@ const metrics_mod = @import("metrics_collector");
 const tool_inspection = @import("tool_inspection");
 const tool_parallel = @import("tool_parallel");
 const compaction_mod = @import("compaction");
+const loop_detector_mod = @import("loop_detector");
+const notifier_mod = @import("notifier");
 
 const Allocator = std.mem.Allocator;
 
@@ -243,6 +245,46 @@ pub const AgentMode = enum {
     }
 };
 
+/// Per-mode agent configuration.
+/// Allows each AgentMode to have its own model, temperature, and step limit.
+/// Inspired by OpenCode's per-agent model/temperature/steps pattern.
+pub const ModeConfig = struct {
+    /// Override model for this mode (null = use default from config).
+    model: ?[]const u8 = null,
+    /// Temperature for AI calls in this mode.
+    temperature: f64 = 0.7,
+    /// Maximum iterations for this mode (overrides LoopConfig.max_iterations).
+    max_iterations: ?u32 = null,
+
+    pub fn init() ModeConfig {
+        return .{};
+    }
+
+    /// Plan mode defaults: conservative, fewer steps, no model override.
+    pub fn planDefaults() ModeConfig {
+        return .{
+            .temperature = 0.3,
+            .max_iterations = 10,
+        };
+    }
+
+    /// Build mode defaults: balanced.
+    pub fn buildDefaults() ModeConfig {
+        return .{
+            .temperature = 0.5,
+            .max_iterations = 20,
+        };
+    }
+
+    /// Execute mode defaults: full power.
+    pub fn executeDefaults() ModeConfig {
+        return .{
+            .temperature = 0.7,
+            .max_iterations = 25,
+        };
+    }
+};
+
 /// Agent loop configuration
 pub const LoopConfig = struct {
     max_iterations: u32,
@@ -251,6 +293,11 @@ pub const LoopConfig = struct {
     tool_timeout_ms: u64,
     agent_mode: AgentMode,
     compaction_config: compaction_mod.CompactionConfig,
+    /// Per-mode overrides. Keyed by AgentMode tag name.
+    /// When non-null, the mode's max_iterations and temperature are used.
+    plan_config: ModeConfig,
+    build_config: ModeConfig,
+    execute_config: ModeConfig,
 
     pub fn init() LoopConfig {
         return LoopConfig{
@@ -260,7 +307,25 @@ pub const LoopConfig = struct {
             .tool_timeout_ms = 30000,
             .agent_mode = .execute,
             .compaction_config = compaction_mod.CompactionConfig{},
+            .plan_config = ModeConfig.planDefaults(),
+            .build_config = ModeConfig.buildDefaults(),
+            .execute_config = ModeConfig.executeDefaults(),
         };
+    }
+
+    /// Get the effective ModeConfig for the current agent_mode.
+    pub fn activeModeConfig(self: *const LoopConfig) ModeConfig {
+        return switch (self.agent_mode) {
+            .plan => self.plan_config,
+            .build => self.build_config,
+            .execute => self.execute_config,
+        };
+    }
+
+    /// Get effective max_iterations (mode override or global).
+    pub fn effectiveMaxIterations(self: *const LoopConfig) u32 {
+        const mc = self.activeModeConfig();
+        return mc.max_iterations orelse self.max_iterations;
     }
 };
 
@@ -290,6 +355,14 @@ pub const AgentLoop = struct {
     compactor: ?compaction_mod.ContextCompactor = null,
     /// Tracks whether history has been compacted (replaced with summary + recent messages)
     compacted_history: ?array_list_compat.ArrayList(compaction_mod.CompactMessage) = null,
+    /// SHA-256 based loop detection — catches repeated tool interactions
+    /// (both successful and failed) within a sliding window.
+    /// Reference: Crush loop_detection.go
+    loop_detector: loop_detector_mod.LoopDetector,
+    /// Desktop notification support — fires OS notifications on agent
+    /// completion, loop detection, and permission waits.
+    /// Reference: Crush coordinator.go notify package
+    notifier: notifier_mod.DesktopNotifier,
 
     pub fn init(allocator: Allocator) AgentLoop {
         return AgentLoop{
@@ -303,6 +376,8 @@ pub const AgentLoop = struct {
             .running = false,
             .recent_tool_names = array_list_compat.ArrayList([]const u8).init(allocator),
             .recent_error_messages = array_list_compat.ArrayList([]const u8).init(allocator),
+            .loop_detector = loop_detector_mod.LoopDetector.init(),
+            .notifier = notifier_mod.DesktopNotifier.init(),
         };
     }
 
@@ -494,14 +569,15 @@ pub const AgentLoop = struct {
         try self.addMessage("user", user_message);
 
         var done = false;
-        while (!done and self.iteration < self.config.max_iterations) {
+        const eff_max = self.config.effectiveMaxIterations();
+        while (!done and self.iteration < eff_max) {
             self.iteration += 1;
             const step = try self.allocator.create(StepResult);
             step.* = StepResult.init(self.allocator);
             step.iteration = self.iteration;
 
             if (self.config.show_intermediate) {
-                std.log.info("--- Agent Loop Iteration {d}/{d} ---", .{ self.iteration, self.config.max_iterations });
+                std.log.info("--- Agent Loop Iteration {d}/{d} (mode: {s}) ---", .{ self.iteration, eff_max, self.config.agent_mode.toString() });
             }
 
             // Context compaction: check if history exceeds token budget
@@ -621,7 +697,7 @@ pub const AgentLoop = struct {
                             std.log.info("Tool result [{s}]: {s}", .{ status, result_ptr.output });
                         }
 
-                        // Track failed tool calls for repetition detection
+                        // Track failed tool calls for loop detection
                         if (!par_result.success) {
                             self.recent_tool_names.append(try self.allocator.dupe(u8, tc.name)) catch {};
                             self.recent_error_messages.append(try self.allocator.dupe(u8, result_ptr.output)) catch {};
@@ -635,6 +711,22 @@ pub const AgentLoop = struct {
                                 parallel_cleaned_up = true;
                                 break;
                             }
+                        }
+
+                        // SHA-256 loop detection — catches ALL repeated interactions
+                        // (both success and failure) within a sliding window
+                        if (self.loop_detector.recordAndCheck(tc.name, tc.arguments, output_str)) {
+                            if (self.config.show_intermediate) {
+                                std.log.warn("Loop detected: tool '{s}' repeated identically too many times. Breaking loop.", .{tc.name});
+                            }
+                            self.notifier.notifyWithUrgency("Crushcode — Loop Detected", "Agent stuck repeating tool calls", .critical);
+                            done = true;
+                            if (!parallel_cleaned_up) {
+                                for (results) |*r| r.deinit();
+                                self.allocator.free(results);
+                                parallel_cleaned_up = true;
+                            }
+                            break;
                         }
                     }
 
@@ -681,6 +773,17 @@ pub const AgentLoop = struct {
                                     break;
                                 }
                             }
+
+                            // SHA-256 loop detection — catches ALL repeated interactions
+                            // (both success and failure) within a sliding window
+                            if (self.loop_detector.recordAndCheck(tc.name, tc.arguments, tr.output)) {
+                                if (self.config.show_intermediate) {
+                                    std.log.warn("Loop detected: tool '{s}' repeated identically too many times. Breaking loop.", .{tc.name});
+                                }
+                                self.notifier.notifyWithUrgency("Crushcode — Loop Detected", "Agent stuck repeating tool calls", .critical);
+                                done = true;
+                                break;
+                            }
                         } else {
                             // Tool not found or failed — report error back to AI
                             const err_msg = try std.fmt.allocPrint(self.allocator, "Tool '{s}' not found or execution failed", .{tc.name});
@@ -706,6 +809,10 @@ pub const AgentLoop = struct {
         result.total_retries = self.total_retries;
 
         self.running = false;
+
+        // Desktop notification: agent loop completed
+        self.notifier.notify("Crushcode — Agent Done", "Completed after iterations");
+
         return result;
     }
 
@@ -733,7 +840,7 @@ pub const AgentLoop = struct {
     pub fn printStatus(self: *AgentLoop) void {
         const stdout = file_compat.File.stdout().writer();
         stdout.print("\n=== Agent Loop Engine ===\n", .{}) catch {};
-        stdout.print("  Iteration: {d}/{d}\n", .{ self.iteration, self.config.max_iterations }) catch {};
+        stdout.print("  Iteration: {d}/{d} (mode: {s})\n", .{ self.iteration, self.config.effectiveMaxIterations(), self.config.agent_mode.toString() }) catch {};
         stdout.print("  Total tool calls: {d}\n", .{self.total_tool_calls}) catch {};
         stdout.print("  Total retries: {d}\n", .{self.total_retries}) catch {};
         stdout.print("  History messages: {d}\n", .{self.history.items.len}) catch {};
@@ -786,6 +893,8 @@ pub const AgentLoop = struct {
         }
         self.recent_error_messages.deinit();
         self.registered_tools.deinit();
+        self.loop_detector.deinit();
+        self.notifier.deinit();
     }
 };
 

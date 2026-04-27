@@ -180,3 +180,28 @@ Created: 2026-04-14 · Updated: 2026-04-27
 - Sandboxed execution (gVisor/LXC)
 - Multi-platform gateway (Telegram/Discord/Slack)
 - Vault→persistence merge (circular dep risk)
+
+---
+
+## v1.8.0 — TUI UX ✅ DONE
+
+**วัตถุประสงค์**: Input history search + responsive layout
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Input history (Up/Down) | ✅ DONE | inputHistoryUp/Down, saves draft, 1000 entry cap |
+| Ctrl+R reverse-i-search | ✅ DONE | Incremental search through history, cycle matches, (no match) display |
+| Responsive sidebar | ✅ DONE | min(30, max(20, width/4)), auto-hide at <80 chars |
+
+---
+
+## Post-v1.8.0 — Agent Improvements (IN PROGRESS)
+
+**วัตถุประสงค์**: Close gaps vs reference repos (Crush, OpenCode) in agent infrastructure
+
+| Item | Status | Description |
+|------|--------|-------------|
+| SHA-256 loop detection | ✅ DONE | `src/agent/loop_detector.zig` — ring buffer, SHA-256 sigs, window=10, maxRepeats=5, 8/8 tests |
+| Desktop notifications | ⬜ TODO | OS notify when agent finishes/needs permission |
+| Agent mode refinement | ⬜ TODO | OpenCode subagent/primary/all pattern |
+| MoA wiring to TUI | ⬜ TODO | moa.zig (438L) exists but unwired to TUI |

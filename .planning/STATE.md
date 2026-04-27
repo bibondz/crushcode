@@ -1,4 +1,4 @@
-# State: Crushcode v1.7.0
+# State: Crushcode v1.8.0+
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-27
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v1.7.0 — AST-Aware Search COMPLETE |
-| Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0 |
-| Next | Backlog items or v1.8.0 |
-| Latest commit | `920060f` — feat(search): add ast-grep (sg) binary spawn as tier-1 search |
+| Milestone | Post-v1.8.0 — Agent Improvements |
+| Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0, v1.8.0 |
+| Next | Agent gaps: desktop notifications, agent mode refinement |
+| Latest commit | `ccdb5a9` — feat(tui): input history search + responsive layout |
 
 ---
 
@@ -31,22 +31,44 @@
 | v1.5.0 | Stability + Polish | Build.zig refactor (-86L), /export CLI+TUI, KP-1 verified stale, slash commands verified |
 | v1.6.0 | Security + Cost | Guardrail redaction, cache-aware Anthropic, post-inspection masking, context compaction |
 | v1.7.0 | AST-Aware Search | sg binary spawn, 3-tier grep cascade (sg→rg→grep), language auto-detect |
+| v1.8.0 | TUI UX | Input history (Up/Down + Ctrl+R reverse-i-search), responsive sidebar layout |
 
 ---
 
-## v1.7.0 Progress — AST-Aware Search
+## Post-v1.8.0 Progress — Agent Improvements
 
+| Item | Status | Notes |
+|------|--------|-------|
+| SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests passing |
+| Desktop notifications | ⬜ Not started | Platform-specific (OS notify), lower priority |
+| Agent mode refinement | ⬜ Not started | OpenCode subagent/primary/all pattern |
+
+### SHA-256 Loop Detection — Details
+- **File:** `src/agent/loop_detector.zig` (~210 lines)
+- **Pattern:** Ring buffer of SHA-256 signatures (stack-allocated, no allocator)
+- **Config:** window=10, maxRepeats=5, max window=32
+- **Integration:** Wired into both sequential + parallel tool execution paths in `loop.zig`
+- **Build:** `simpleMod` in build.zig (zero deps — pure `std`)
+- **Old detection preserved:** `self_heal.detectRepetition` still catches failing-tool patterns separately
+- **Reference:** Crush `loop_detection.go` (92L)
+
+---
+
+## Previously Completed
+
+### v1.8.0 — TUI UX
+| Item | Status | Notes |
+|------|--------|-------|
+| Input history (Up/Down) | ✅ Done | inputHistoryUp/Down, saves draft, 1000 entry cap |
+| Ctrl+R reverse-i-search | ✅ Done | Incremental search, cycle matches, (no match) display |
+| Responsive sidebar | ✅ Done | min(30, max(20, width/4)), auto-hide <80 chars |
+
+### v1.7.0 — AST-Aware Search
 | Item | Status | Notes |
 |------|--------|-------|
 | sg binary spawn | ✅ Done | tryExecuteSg() spawns `sg run -p <pattern> --json` via std.process.Child |
 | 3-tier grep cascade | ✅ Done | sg (AST) → rg (regex) → grep (POSIX) fallback chain |
 | Language auto-detect | ✅ Done | Maps include patterns (*.ts, *.py, *.rs etc.) to ast-grep language names |
-| Build verify | ✅ Done | Clean build, exit 0 |
-| Tag + push | ✅ Done | v1.7.0 tagged and pushed to origin |
-
----
-
-## Previously Completed
 
 ### v1.5.0 — Stability + Polish
 | Item | Status | Notes |
@@ -81,6 +103,7 @@
 | Guardrails | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Auto-Compact | **multi-tier** ✅ | ✅ single-tier | ❌ | ❌ | ❌ |
 | AST Search | **sg binary** ✅ | ❌ | ❌ | ❌ | ❌ |
+| Loop Detection | **SHA-256** ✅ | ❌ | ❌ | ❌ | ✅ (Go) |
 
 ---
 
@@ -88,16 +111,16 @@
 
 | Item | Priority | Notes |
 |------|----------|-------|
+| Desktop notifications | Medium | Platform-specific OS notify |
+| Agent mode refinement | Low | OpenCode subagent/primary/all pattern |
+| MoA wiring to TUI | Low | moa.zig (438L) exists, unwired |
 | Streaming diff preview | Low | diffpane/tuicr integration |
-| Mixture-of-Agents | Low | Hermes MoA reasoning |
 | Skill hub integration | Low | External skill marketplace |
-| Sandboxed execution | Low | gVisor/LXC |
 | Multi-platform gateway | Low | Telegram/Discord/Slack |
-| Vault→persistence merge | Low | Circular dep risk |
 
 ---
 
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** v1.7.0 shipped. All milestones through v1.7.0 complete. Backlog items remain.
+**Status:** v1.8.0 shipped. Post-v1.8.0 agent improvements in progress. SHA-256 loop detection complete.

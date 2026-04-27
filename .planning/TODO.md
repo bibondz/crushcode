@@ -1,7 +1,7 @@
 # Crushcode — TODO & Known Issues
 
-**Updated:** 2026-04-26
-**Version:** v1.4.x (Phase 22-24 shipped)
+**Updated:** 2026-04-27
+**Version:** v1.8.0+ (Post-v1.8.0 agent improvements)
 
 ---
 
@@ -34,19 +34,17 @@
 
 ### [HARNESS-1] Cache-Aware Anthropic HTTP Body
 
-**Status:** Partial
-**Files:** `src/ai/client.zig` — CacheControl + CacheMarkedMessage structs exist
-
-**Gap:** CacheControl structs are defined but not wired into the actual HTTP body format for Anthropic API requests. Need to add `cache_control` field to message objects in the JSON body.
+**Status:** ✅ Done (v1.6.0)
+**Files:** `src/ai/client.zig` — buildCacheAwareStreamingBody wired for Anthropic/Bedrock/VertexAI
 
 ---
 
 ### [HARNESS-2] Guardrail Redaction Pass
 
-**Status:** Partial
+**Status:** ✅ Done (v1.6.0)
 **Files:** `src/guardrail/pipeline.zig`
 
-**Gap:** Deny mode works. Redact mode needs to actually modify the content (replace PII/secrets with `[REDACTED]`) before sending to provider.
+**Shipped:** PII/secrets replaced with `[REDACTED]` before sending to provider.
 
 ---
 
@@ -82,10 +80,8 @@
 
 ### [BZ-1] Build.zig Cleanup
 
-**Status:** Not started
-**File:** `build.zig` (~1115 lines)
-
-**Goal:** Reduce to ~700 lines by creating `createStdModule()` helper.
+**Status:** ✅ Done (v1.5.0, commit cd81742)
+**File:** `build.zig` — 1123→1037 lines (-86). Consolidated compat loop, test array, addImports.
 
 ---
 
@@ -107,12 +103,21 @@
 
 ### Future TUI Improvements
 
-| Item | Effort | Notes |
+| Item | Effort | Status | Notes |
+|------|--------|--------|-------|
+| ~~Responsive layout~~ | ~~Medium~~ | ✅ v1.8.0 | min(30, max(20, w/4)), auto-hide <80 |
+| ~~Input history search~~ | ~~Low~~ | ✅ v1.8.0 | Ctrl+R reverse-i-search, Up/Down history |
+| Mouse-resizable panes (SplitView) | Medium | ⬜ | vaxis SplitView available |
+| Proper dialog overlay abstraction | Medium | ⬜ | Currently 6 ad-hoc overlays |
+
+### Agent Improvements (Post-v1.8.0)
+
+| Item | Status | Notes |
 |------|--------|-------|
-| Responsive layout (FlexRow/FlexColumn) | Medium | vaxis widgets available |
-| Mouse-resizable panes (SplitView) | Medium | vaxis SplitView available |
-| Input history search (Ctrl+R conflict) | Low | Need new binding |
-| Proper dialog overlay abstraction | Medium | Currently 6 ad-hoc overlays |
+| SHA-256 loop detection | ✅ Done | `src/agent/loop_detector.zig` (210L), ring buffer, 8/8 tests |
+| Desktop notifications | ⬜ TODO | OS notify when agent finishes/needs permission |
+| Agent mode refinement | ⬜ TODO | OpenCode subagent/primary/all pattern |
+| MoA wiring to TUI | ⬜ TODO | moa.zig (438L) exists, unwired |
 
 ---
 

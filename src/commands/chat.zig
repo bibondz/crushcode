@@ -148,6 +148,7 @@ const graph_mod = @import("graph");
 const cognition_mod = @import("cognition");
 const mcp_bridge_mod = @import("mcp_bridge");
 const agent_loop_mod = @import("agent_loop");
+const moa_mod = @import("moa");
 const tool_executors = @import("chat_tool_executors");
 const tools_mod = @import("tools");
 const tool_loader = @import("tool_loader");
@@ -502,6 +503,54 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         allocator.free(client.provider.config.base_url);
         client.provider.config.base_url = try allocator.dupe(u8, override_url);
     }
+
+    // ── Mixture-of-Agents engine ──────────────────────────────
+    const MoaCtx = struct { client_ptr: *core.AIClient, allocator: std.mem.Allocator };
+    var moa_ctx = MoaCtx{ .client_ptr = &client, .allocator = allocator };
+    var moa_engine = moa_mod.MoAEngine.init(allocator, moa_mod.defaultConfig());
+    defer moa_engine.deinit();
+    var moa_enabled = false;
+
+    // Adapter: MoA SendFn → AIClient.sendChatWithHistory
+    // Converts SimpleMessage[] to ChatMessage[] and calls the real AI client.
+    const moaSendAdapter = struct {
+        fn send(ctx: *anyopaque, model: []const u8, messages: []const moa_mod.SimpleMessage, temperature: f64) anyerror!moa_mod.ModelResponse {
+            const mctx: *MoaCtx = @ptrCast(@alignCast(ctx));
+            _ = model; // Use the client's configured provider/model
+
+            // Convert SimpleMessage → ChatMessage
+            var chat_msgs = array_list_compat.ArrayList(core.ChatMessage).init(mctx.allocator);
+            defer {
+                for (chat_msgs.items) |*msg| {
+                    mctx.allocator.free(msg.role);
+                    if (msg.content) |c| mctx.allocator.free(c);
+                }
+                chat_msgs.deinit();
+            }
+            for (messages) |msg| {
+                try chat_msgs.append(.{
+                    .role = try mctx.allocator.dupe(u8, msg.role),
+                    .content = try mctx.allocator.dupe(u8, msg.content),
+                });
+            }
+
+            // Save and override temperature (client uses f32)
+            const saved_temp = mctx.client_ptr.temperature;
+            mctx.client_ptr.temperature = @floatCast(temperature);
+            defer mctx.client_ptr.temperature = saved_temp;
+
+            const response = mctx.client_ptr.sendChatWithHistory(chat_msgs.items) catch {
+                return error.NetworkError;
+            };
+
+            const content = if (response.choices.len > 0) blk: {
+                if (response.choices[0].message.content) |c| break :blk c;
+                break :blk "";
+            } else "";
+            const tokens: u32 = if (response.usage) |u| @intCast(u.total_tokens) else 0;
+            return moa_mod.ModelResponse{ .content = content, .tokens_used = tokens };
+        }
+    }.send;
 
     var hotswap = ModelHotSwap.init(allocator, current_provider_name, current_model_name) catch null;
     defer if (hotswap) |*hs| hs.deinit();
@@ -1334,7 +1383,14 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         if (std.mem.eql(u8, user_message, "/mode") or std.mem.startsWith(u8, user_message, "/mode ")) {
             const mode_arg = std.mem.trim(u8, user_message["/mode".len..], " ");
             if (mode_arg.len == 0) {
+                const mc = loop_config.activeModeConfig();
+                const eff_iter = loop_config.effectiveMaxIterations();
                 out("Current mode: {s} — {s}\n", .{ current_agent_mode.toString(), current_agent_mode.description() });
+                if (mc.model) |m| {
+                    out("  max_steps={d}  temperature={d:.1}  model={s}\n", .{ eff_iter, mc.temperature, m });
+                } else {
+                    out("  max_steps={d}  temperature={d:.1}  model=default\n", .{ eff_iter, mc.temperature });
+                }
             } else {
                 const new_mode = agent_loop_mod.AgentMode.fromString(mode_arg) orelse {
                     out("{s}Unknown mode '{s}'. Available: plan, build, execute{s}\n", .{ Style.err.start(), mode_arg, Style.err.reset() });
@@ -1345,6 +1401,29 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 agent_loop.setConfig(loop_config);
                 tool_executors.setAgentMode(new_mode);
                 out("Switched to {s} — {s}\n", .{ new_mode.toString(), new_mode.description() });
+            }
+            continue;
+        }
+
+        // ── /moa — Toggle Mixture-of-Agents ────────────────────
+        if (std.mem.eql(u8, user_message, "/moa") or std.mem.startsWith(u8, user_message, "/moa ")) {
+            const moa_arg = std.mem.trim(u8, user_message["/moa".len..], " ");
+            if (moa_arg.len == 0) {
+                out("MoA: {s}  (queries={d}, syntheses={d})\n", .{
+                    if (moa_enabled) "enabled" else "disabled",
+                    moa_engine.total_queries,
+                    moa_engine.total_syntheses,
+                });
+            } else if (std.mem.eql(u8, moa_arg, "on")) {
+                moa_enabled = true;
+                moa_engine.setEnabled(true);
+                out("MoA enabled — queries will use multiple models\n", .{});
+            } else if (std.mem.eql(u8, moa_arg, "off")) {
+                moa_enabled = false;
+                moa_engine.setEnabled(false);
+                out("MoA disabled\n", .{});
+            } else {
+                out("{s}Usage: /moa [on|off]{s}\n", .{ Style.warning.start(), Style.warning.reset() });
             }
             continue;
         }
@@ -1904,6 +1983,45 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         });
 
         const turn_start_len = messages.items.len;
+
+        // ── MoA path: when enabled, route through Mixture-of-Agents ──
+        if (moa_enabled) {
+            var moa_result_owned: ?moa_mod.MoAResult = moa_engine.querySimple(user_message, moaSendAdapter, &moa_ctx) catch |err| blk: {
+                out("{s}MoA query failed: {s}. Falling back to single model.{s}\n", .{ Style.warning.start(), @errorName(err), Style.warning.reset() });
+                break :blk null;
+            };
+            if (moa_result_owned) |*result| {
+                defer result.deinit(allocator);
+                out("\n{s}--- MoA Synthesized Response ({d} models, {d}ms) ---{s}\n", .{
+                    Style.dimmed.start(),
+                    result.successful_references,
+                    result.total_duration_ms,
+                    Style.dimmed.reset(),
+                });
+                markdown_mod.MarkdownRenderer.render(result.synthesized_response);
+                out("\n", .{});
+                // Show reference model details
+                for (result.reference_results) |ref| {
+                    if (ref.success) {
+                        out("{s}  ✓ {s}{s} ({d}ms, {d} tokens)\n", .{
+                            Style.muted.start(),
+                            ref.model_name,
+                            Style.muted.reset(),
+                            ref.duration_ms,
+                            ref.tokens_used,
+                        });
+                    } else {
+                        out("{s}  ✗ {s}: {s}{s}\n", .{
+                            Style.err.start(),
+                            ref.model_name,
+                            ref.error_message orelse "unknown error",
+                            Style.err.reset(),
+                        });
+                    }
+                }
+                continue;
+            }
+        }
 
         var bridge_ctx = chat_bridge.InteractiveBridgeContext{
             .allocator = allocator,

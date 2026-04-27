@@ -677,12 +677,14 @@ pub fn build(b: *std.Build) !void {
         imp("self_heal", retry_self_heal_mod),
     });
 
-    // Wire metrics, tool inspection, parallel execution, and compaction into agent loop
+    // Wire metrics, tool inspection, parallel execution, compaction, loop detection, and notifications into agent loop
     addImports(agent_loop_mod, &.{
         imp("metrics_collector", metrics_collector_mod),
         imp("tool_inspection", tool_inspection_mod),
         imp("tool_parallel", tool_parallel_mod),
         imp("compaction", compaction_mod),
+        imp("loop_detector", simpleMod(b, "src/agent/loop_detector.zig", target, optimize)),
+        imp("notifier", simpleMod(b, "src/notification/notifier.zig", target, optimize)),
     });
 
     // Wire trace, retry, guardrail, metrics into AI client
@@ -808,7 +810,7 @@ pub fn build(b: *std.Build) !void {
         imp("streaming_types", streaming_types_mod), imp("session", session_mod), imp("cognition", cognition_mod),
         imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod),
         imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod), imp("shell", shell_mod),
-        imp("http_client", http_client_mod),
+        imp("http_client", http_client_mod), imp("moa", moa_mod),
     });
     addImports(tui_mod, &.{
         imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod),
