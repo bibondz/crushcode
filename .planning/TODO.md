@@ -53,13 +53,6 @@ _No HIGH priority items currently._
 
 ---
 
-### Multi-Platform Gateway
-
-**Status:** Not started
-**Scope:** Telegram/Discord/Slack bot gateway for remote access
-
----
-
 ## Done (v2.1.0 — 2026-04-27)
 
 - [x] Single-hunk diff preview activation (`streaming.zig`: >= 2 → >= 1)

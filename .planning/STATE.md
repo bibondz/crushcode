@@ -128,7 +128,6 @@
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| Multi-platform gateway | Low | Telegram/Discord/Slack |
 | Windows cross-compile | Low | 1 remaining error (Zig stdlib open() bug — upstream) |
 
 ---

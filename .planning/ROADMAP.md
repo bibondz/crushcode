@@ -176,7 +176,6 @@ Created: 2026-04-14 · Updated: 2026-04-27
 ### Backlog (remaining)
 - Mixture-of-Agents reasoning (Hermes MoA)
 - Sandboxed execution (gVisor/LXC)
-- Multi-platform gateway (Telegram/Discord/Slack)
 - Vault→persistence merge (circular dep risk)
 
 ---
