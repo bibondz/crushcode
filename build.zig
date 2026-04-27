@@ -91,6 +91,7 @@ pub fn build(b: *std.Build) !void {
     addImports(provider_config_mod, &.{imp("toml", toml_mod)});
 
     const fileops_mod = simpleMod(b, "src/fileops/reader.zig", target, optimize);
+    const repo_map_mod = createMod(b, "src/context/repo_map.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
     const pty_plugin_mod = simpleMod(b, "src/plugins/pty.zig", target, optimize);
     const table_formatter_plugin_mod = simpleMod(b, "src/plugins/table_formatter.zig", target, optimize);
     const notifier_plugin_mod = simpleMod(b, "src/plugins/notifier.zig", target, optimize);
@@ -510,7 +511,7 @@ pub fn build(b: *std.Build) !void {
     addImports(config_mod, &.{imp("migrate", migrate_mod)});
 
     const project_mod = simpleMod(b, "src/config/project.zig", target, optimize);
-    addImports(tui_mod, &.{imp("project", project_mod)});
+    addImports(tui_mod, &.{imp("project", project_mod), imp("repo_map", repo_map_mod)});
     addImports(config_mod, &.{imp("project", project_mod)});
 
     const main_mod = createMod(b, "src/main.zig", target, optimize, &.{

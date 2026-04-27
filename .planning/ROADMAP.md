@@ -125,6 +125,30 @@ Created: 2026-04-14 · Updated: 2026-04-27
 
 ---
 
+## v2.2.0 — Context Intelligence ✅ DONE
+
+**วัตถุประสงค์**: Give AI project structure awareness, add auto-commit workflow, test integration
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Repo map | ✅ DONE | `src/context/repo_map.zig` — directory tree summary injected into system prompt |
+| Auto-commit toggle | ✅ DONE | `/autocommit` slash command — git add + commit after each diff preview |
+| Test runner tool | ✅ DONE | `run_tests(filter?)` — AI can run project tests and get results |
+| Windows cross-compile | ✅ DONE | 8 POSIX API calls gated, clean x86_64-windows-gnu build |
+
+---
+
+## v2.1.0 — Diff Preview for All Edits ✅ DONE
+
+**วัตถุประสงค์**: Every file edit gets interactive diff preview before applying
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Single-hunk diff preview | ✅ DONE | All edits with hunks activate interactive review |
+| Streaming-complete indicator | ✅ DONE | "● Response complete" status in diff widget |
+
+---
+
 ## ไม่ทำ (defer indefinitely)
 - Voice input
 - Vim mode

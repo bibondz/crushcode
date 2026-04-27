@@ -1,8 +1,8 @@
-# State: Crushcode v2.1.0
+# State: Crushcode v2.2.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
-**Updated:** 2026-04-27
-**Stats:** ~280 `.zig` files, ~113K lines
+**Updated:** 2026-04-28
+**Stats:** ~280 `.zig` files, ~114K lines
 **Remote:** git@github.com:bibondz/crushcode.git
 **Branch:** `master`
 
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v2.1.0 — Diff Preview for All Edits |
-| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0, v2.1.0 |
-| Next | Multi-platform gateway, Windows cross-compile |
-| Latest commit | `cf77040` — Diff preview for all edits with streaming-complete indicator |
+| Milestone | v2.2.0 — Context Intelligence |
+| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0–v2.2.0 |
+| Next | Backlog empty |
+| Latest commit | Pending — Repo map, auto-commit toggle, test runner, Windows cross-compile |
 
 ---
 
@@ -35,6 +35,7 @@
 | v1.9.0 | Agent Improvements | Loop detection, desktop notifications, per-mode agent config, MoA wiring |
 | v2.0.0 | Daily Driver Readiness | Remote skill discovery, SplitView mouse-drag, OverlayManager, WIN-1 getenv, SQ-1 SQLite tests |
 | v2.1.0 | Diff Preview All Edits | Single-hunk diff preview, streaming-complete indicator, apply/reject for every edit |
+| v2.2.0 | Context Intelligence | Repo map injection, auto-commit toggle, test runner tool, Windows cross-compile fixed |
 
 ---
 
@@ -48,7 +49,23 @@
 
 ---
 
+## v2.2.0 Progress — Context Intelligence
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Repo map | ✅ Done | `src/context/repo_map.zig` — directory tree injected into system prompt, cached per session |
+| Auto-commit toggle | ✅ Done | `/autocommit` slash command, auto-commits after diff preview applies |
+| Test runner tool | ✅ Done | `run_tests(filter?)` AI tool — detects Zig/Cargo/Go/npm/pytest/Make |
+| Windows cross-compile | ✅ Done | 8 POSIX API calls gated across 7 files, clean x86_64-windows-gnu build |
+
 ## Previously Completed
+
+### v2.1.0 — Diff Preview for All Edits
+
+| Item | Status | Notes |
+|------|--------|-------|
+| Single-hunk diff preview | ✅ Done | `>= 2` → `>= 1` threshold change |
+| Streaming-complete indicator | ✅ Done | "● Response complete" status in diff widget |
 
 ### v2.0.0 — Daily Driver Readiness
 
@@ -121,18 +138,19 @@
 | Loop Detection | **SHA-256** ✅ | ❌ | ❌ | ❌ | ✅ (Go) |
 | Remote Skill Hub | **✅** | ❌ | ✅ | ❌ | ❌ |
 | Diff Preview (all edits) | **✅** | ✅ | ❌ | ❌ | ❌ |
+| Repo Map | **✅** | ❌ | ❌ | ❌ | ✅ (aider) |
+| Auto-commit | **✅** | ✅ | ❌ | ❌ | ❌ |
+| Test Runner Tool | **✅** | ❌ | ❌ | ✅ | ❌ |
 
 ---
 
 ## Remaining Backlog
 
-| Item | Priority | Notes |
-|------|----------|-------|
-| Windows cross-compile | Low | 1 remaining error (Zig stdlib open() bug — upstream) |
+_No remaining items. Project is feature-complete for daily-driver use._
 
 ---
 
 ## Session Continuity
 
-**Last Updated:** 2026-04-27
-**Status:** v2.1.0 shipped. Diff preview now activates for ALL edits (single + multi hunk), with streaming-complete status indicator.
+**Last Updated:** 2026-04-28
+**Status:** v2.2.0 shipped. Repo map, auto-commit toggle, test runner tool, Windows cross-compile fixed. All backlog items complete.

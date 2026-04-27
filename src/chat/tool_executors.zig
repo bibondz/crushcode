@@ -440,6 +440,10 @@ fn searchFilesExecutor(allocator: std.mem.Allocator, call_id: []const u8, argume
     return adaptToolExecution(allocator, call_id, "search_files", arguments, executeSearchFilesTool);
 }
 
+fn runTestsExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "run_tests", arguments, executeRunTestsTool);
+}
+
 // Web tool executors
 fn webFetchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
     return adaptToolExecution(allocator, call_id, "web_fetch", arguments, executeWebFetchTool);
@@ -515,6 +519,7 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "git_diff", .executor = gitDiffExecutor },
     .{ .name = "git_log", .executor = gitLogExecutor },
     .{ .name = "search_files", .executor = searchFilesExecutor },
+    .{ .name = "run_tests", .executor = runTestsExecutor },
     .{ .name = "web_fetch", .executor = webFetchExecutor },
     .{ .name = "web_search", .executor = webSearchExecutor },
     .{ .name = "image_display", .executor = imageDisplayExecutor },
@@ -1372,6 +1377,87 @@ fn executeSearchFilesTool(allocator: std.mem.Allocator, tool_call: core.ParsedTo
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 search_files(\"{s}\") → {d} files\n", .{ parsed.value.pattern, count }),
         .result = try std.fmt.allocPrint(allocator, "Found {d} files matching '{s}':\n{s}", .{ count, parsed.value.pattern, truncated_output }),
+    };
+}
+
+fn executeRunTestsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const RunTestsArgs = struct {
+        filter: ?[]const u8 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(RunTestsArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    // Detect test command from project type
+    const test_cmd: []const u8 = blk: {
+        if (std.fs.cwd().access("build.zig", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "zig build test --cache-dir /tmp/zigcache 2>&1 | grep -i \"{s}\"; zig build test --cache-dir /tmp/zigcache 2>&1", .{f})
+            else
+                "zig build test --cache-dir /tmp/zigcache 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("Cargo.toml", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "cargo test \"{s}\" 2>&1", .{f})
+            else
+                "cargo test 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("go.mod", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "go test -run \"{s}\" ./... 2>&1", .{f})
+            else
+                "go test ./... 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("package.json", .{})) {
+            break :blk "npm test 2>&1";
+        } else |_| {}
+        if (std.fs.cwd().access("pytest.ini", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "pytest -k \"{s}\" 2>&1", .{f})
+            else
+                "pytest 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("pyproject.toml", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "pytest -k \"{s}\" 2>&1", .{f})
+            else
+                "pytest 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("setup.py", .{})) {
+            const cmd = if (parsed.value.filter) |f|
+                try std.fmt.allocPrint(allocator, "pytest -k \"{s}\" 2>&1", .{f})
+            else
+                "pytest 2>&1";
+            break :blk cmd;
+        } else |_| {}
+        if (std.fs.cwd().access("Makefile", .{})) {
+            break :blk "make test 2>&1";
+        } else |_| {}
+        break :blk "echo 'No test command detected for this project'";
+    };
+
+    const result = try process.runShellCommand(allocator, test_cmd);
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    const output = if (result.stderr.len > 0 and result.stdout.len == 0) result.stderr else result.stdout;
+    const truncated_output = try truncateToolOutput(allocator, output);
+    defer {
+        if (truncated_output.ptr != output.ptr) allocator.free(truncated_output);
+    }
+
+    // Determine pass/fail from exit code
+    const status_text: []const u8 = if (result.exit_code == 0) "PASSED" else "FAILED";
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 run_tests() → {s} (exit {d})\n", .{ status_text, result.exit_code }),
+        .result = try std.fmt.allocPrint(allocator, "Test results ({s}, exit code {d}):\n{s}", .{ status_text, result.exit_code, truncated_output }),
     };
 }
 

@@ -669,18 +669,30 @@ pub fn finishDiffPreview(self: *Model) void {
     const result_text = result_buf.toOwnedSlice(self.allocator) catch "error: failed to apply hunks";
     defer if (!std.mem.startsWith(u8, result_text, "error:")) self.allocator.free(result_text);
 
+    // Count applied hunks
+    var applied_count: usize = 0;
+    for (self.diff_preview_decisions) |d| {
+        if (d == .applied) applied_count += 1;
+    }
+
     // Write the result to file
     if (self.diff_preview_file_path.len > 0 and !std.mem.startsWith(u8, result_text, "error:")) {
         if (std.fs.cwd().createFile(self.diff_preview_file_path, .{})) |file| {
             file.writeAll(result_text) catch {};
             file.close();
         } else |_| {}
-    }
 
-    // Count applied hunks
-    var applied_count: usize = 0;
-    for (self.diff_preview_decisions) |d| {
-        if (d == .applied) applied_count += 1;
+        // Auto-commit if enabled
+        if (self.auto_commit_edits and applied_count > 0) {
+            const msg = std.fmt.allocPrint(self.allocator, "edit: {d} hunk(s) applied to {s}", .{
+                applied_count, self.diff_preview_file_path,
+            }) catch "edit: applied hunks";
+            defer self.allocator.free(msg);
+            var child = std.process.Child.init(&.{ "git", "add", self.diff_preview_file_path }, self.allocator);
+            _ = child.spawnAndWait() catch {};
+            var commit_child = std.process.Child.init(&.{ "git", "commit", "-m", msg }, self.allocator);
+            _ = commit_child.spawnAndWait() catch {};
+        }
     }
 
     const tool_result = if (applied_count > 0)

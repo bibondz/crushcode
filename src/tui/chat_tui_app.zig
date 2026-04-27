@@ -290,6 +290,8 @@ pub const Model = struct {
     context_tokens: u64,
     last_compaction_summary: []const u8,
     cached_project_info: ?project_mod.ProjectInfo,
+    cached_repo_map: ?[]const u8,
+    auto_commit_edits: bool = false, // toggle with /autocommit
     max_tokens: u32,
     temperature: f32,
     override_url: ?[]const u8,
@@ -471,6 +473,7 @@ pub const Model = struct {
             .context_tokens = 0,
             .last_compaction_summary = "",
             .cached_project_info = project_mod.detectProject(allocator),
+        .cached_repo_map = null,
             .max_tokens = options.max_tokens,
             .temperature = options.temperature,
             .override_url = if (options.override_url) |override_url| try allocator.dupe(u8, override_url) else null,
@@ -784,6 +787,7 @@ pub const Model = struct {
         if (self.system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.effective_system_prompt) |system_prompt| self.allocator.free(system_prompt);
         if (self.codebase_context) |codebase_context| self.allocator.free(codebase_context);
+        if (self.cached_repo_map) |repo_map| self.allocator.free(repo_map);
         if (self.knowledge_graph) |kg| {
             kg.deinit();
             self.allocator.destroy(kg);
@@ -1301,6 +1305,29 @@ pub const Model = struct {
             }
         }
 
+        // Inject repository map (computed once, cached)
+        if (self.cached_repo_map == null) {
+            const repo_map_mod = @import("repo_map");
+            const map_result = repo_map_mod.generateWithStats(self.allocator, 60) catch null;
+            if (map_result) |mr| {
+                if (mr.file_count >= 3 and mr.map_text.len > 0) {
+                    self.cached_repo_map = mr.map_text;
+                } else {
+                    mr.deinit(self.allocator);
+                    self.cached_repo_map = "";
+                }
+            }
+        }
+        if (self.cached_repo_map) |repo_map| {
+            if (repo_map.len > 0) {
+                rw.print(
+                    \\
+                    \\## Repository Map
+                    \\{s}
+                , .{repo_map}) catch {};
+            }
+        }
+
         // Load all context files (AGENTS.md, instructions.md, CLAUDE.md, etc.) via unified loader
         if (@hasDecl(project_mod, "loadContextFiles")) {
             const maybe_ctx = project_mod.loadContextFiles(self.allocator) catch null;
@@ -1445,6 +1472,7 @@ pub const Model = struct {
                 \\- git_diff(target?, file_path?, staged?)
                 \\- git_log(count?, oneline?, file_path?)
                 \\- search_files(pattern, directory?, max_results?)
+                \\- run_tests(filter?)
             , .{}) catch {};
             // Add project-specific tool usage tips
             if (self.cached_project_info) |project| {
@@ -4302,6 +4330,12 @@ pub const Model = struct {
              };
              defer self.allocator.free(result);
              try history_mod.addMessageUnlocked(self, "assistant", result);
+        } else if (std.mem.eql(u8, name, "/autocommit")) {
+            self.auto_commit_edits = !self.auto_commit_edits;
+            const status: []const u8 = if (self.auto_commit_edits) "ON — each edit will be auto-committed to git" else "OFF — edits apply without committing";
+            const msg = std.fmt.allocPrint(self.allocator, "Auto-commit: {s}", .{status}) catch "Toggled";
+            defer self.allocator.free(msg);
+            try history_mod.addMessageUnlocked(self, "system", msg);
         } else if (std.mem.eql(u8, name, "/export") or std.mem.startsWith(u8, name, "/export ")) {
             const export_args = std.mem.trim(u8, name["/export".len..], " ");
             const timestamp = std.time.timestamp();
