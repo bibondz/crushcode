@@ -331,6 +331,12 @@ pub fn handleGrep(args: args_mod.Args) !void {
         }
     }
 
+    // Tier 1: Try ast-grep (sg) binary for true AST-aware structural search
+    if (trySgCli(allocator, pattern, target, language)) {
+        return; // sg succeeded, results already printed
+    }
+
+    // Tier 2: Fall back to built-in AstGrep (line-based substring matching)
     var grep = pattern_search_mod.AstGrep.init(allocator, pattern, language);
     const file_exists = std.fs.cwd().statFile(target) catch null;
 
@@ -364,4 +370,124 @@ pub fn handleGrep(args: args_mod.Args) !void {
         }
         pattern_search_mod.AstGrep.printMatches(matches);
     }
+}
+
+/// Try spawning the ast-grep (sg) binary for structural code search.
+/// Returns true if sg ran successfully and printed results.
+/// Returns false if sg is not installed or failed (caller should fall back).
+fn trySgCli(allocator: std.mem.Allocator, pattern: []const u8, target: []const u8, language: pattern_search_mod.AstGrep.Language) bool {
+    // Build argv: sg run -p <pattern> --json [-l <lang>] <target>
+    // Max 7 args: sg, run, -p<pattern>, --json, -l<lang>, <target>
+    var argv_buf: [7][]const u8 = undefined;
+    var argc: usize = 0;
+
+    argv_buf[argc] = "sg";
+    argc += 1;
+    argv_buf[argc] = "run";
+    argc += 1;
+
+    const pattern_arg = std.fmt.allocPrint(allocator, "-p{s}", .{pattern}) catch return false;
+    argv_buf[argc] = pattern_arg;
+    argc += 1;
+
+    argv_buf[argc] = "--json";
+    argc += 1;
+
+    // Map AstGrep.Language to sg language names
+    if (language != .unknown) {
+        const lang_name: []const u8 = switch (language) {
+            .javascript => "JavaScript",
+            .typescript => "TypeScript",
+            .tsx => "Tsx",
+            .python => "Python",
+            .go => "Go",
+            .rust => "Rust",
+            .c => "C",
+            .cpp => "Cpp",
+            .java => "Java",
+            .json => "Json",
+            .yaml => "Yaml",
+            .bash => "Bash",
+            .ruby => "Ruby",
+            .php => "Php",
+            .swift => "Swift",
+            .kotlin => "Kotlin",
+            .scala => "Scala",
+            .solidity => "Solidity",
+            .html => "Html",
+            .css => "Css",
+            .unknown => unreachable,
+        };
+        const lang_arg = std.fmt.allocPrint(allocator, "-l{s}", .{lang_name}) catch return false;
+        argv_buf[argc] = lang_arg;
+        argc += 1;
+    }
+
+    argv_buf[argc] = target;
+    argc += 1;
+
+    const argv = argv_buf[0..argc];
+
+    var child = std.process.Child.init(argv, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    child.spawn() catch return false;
+
+    var stdout = std.ArrayListUnmanaged(u8){};
+    var stderr = std.ArrayListUnmanaged(u8){};
+
+    child.collectOutput(allocator, &stdout, &stderr, 1024 * 1024) catch return false;
+
+    const term = child.wait() catch return false;
+    const exit_code: u8 = switch (term) {
+        .Exited => |code| @intCast(code),
+        .Signal => |code| @intCast(code),
+        else => 99,
+    };
+
+    // sg exit 1 = no matches (not error), 2+ = error, 127 = not found
+    if (exit_code >= 127) return false;
+    if (stdout.items.len == 0) return false;
+
+    // Parse JSON output: array of { "text", "file", "range": { "start": { "line", "column" } } }
+    const trimmed = std.mem.trimLeft(u8, stdout.items, " \t\n\r");
+    if (trimmed.len == 0 or trimmed[0] != '[') return false;
+
+    const SgMatch = struct {
+        text: []const u8,
+        file: []const u8,
+        range: struct {
+            start: struct {
+                line: u32,
+                column: u32,
+            },
+            end: struct {
+                line: u32,
+                column: u32,
+            },
+        },
+    };
+
+    const parsed = std.json.parseFromSlice([]SgMatch, allocator, trimmed, .{
+        .ignore_unknown_fields = true,
+    }) catch return false;
+    defer parsed.deinit();
+
+    if (parsed.value.len == 0) return false;
+
+    stdout_print("Found {d} AST matches (ast-grep):\n", .{parsed.value.len});
+    for (parsed.value) |match_item| {
+        const clean_text = std.mem.trim(u8, match_item.text, " \t\n\r");
+        // Truncate long lines for readability
+        const display_text: []const u8 = if (clean_text.len > 120) clean_text[0..120] else clean_text;
+        stdout_print("{s}:{d}:{d}: {s}\n", .{
+            match_item.file,
+            match_item.range.start.line + 1, // sg uses 0-indexed
+            match_item.range.start.column,
+            display_text,
+        });
+    }
+
+    return true;
 }
