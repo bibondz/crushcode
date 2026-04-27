@@ -30,7 +30,7 @@ pub const ProjectMemory = struct {
         self.clear();
 
         // 1. User global: ~/.crushcode/CLAUDE.md
-        const home = std.posix.getenv("HOME") orelse "";
+        const home = file_compat.getEnv("HOME") orelse "";
         if (home.len > 0) {
             const user_path = std.fs.path.join(self.allocator, &.{ home, ".crushcode", "CLAUDE.md" }) catch return;
             if (std.fs.cwd().readFileAlloc(self.allocator, user_path, 1024 * 1024)) |content| {

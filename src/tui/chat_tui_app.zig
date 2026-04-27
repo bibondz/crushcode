@@ -1,3 +1,5 @@
+const file_compat = @import("file_compat");
+const overlay = @import("overlay");
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
@@ -365,9 +367,20 @@ pub const Model = struct {
     right_pane_content: ?[]const u8 = null,
     right_pane_title: ?[]const u8 = null,
     right_pane_width: u16 = 60,
+    /// SplitView drag state — mouse-resizable pane dividers
+    dragging_sidebar_divider: bool = false,
+    dragging_right_pane_divider: bool = false,
+    sidebar_drag_width: u16 = 25, // user-adjusted sidebar width (default 25)
+    drag_start_col: u16 = 0, // mouse col when drag started
+    drag_start_width: u16 = 0, // pane width when drag started
+    /// Last known terminal dimensions (set during draw, read during handleEvent)
+    last_screen_width: u16 = 120,
+    last_screen_height: u16 = 40,
     cwd_files: std.ArrayList([]const u8),
     scroll_mode: bool = false,
     show_help: bool = false,
+    /// Unified overlay state manager — tracks which overlay is active
+    overlay_manager: overlay.OverlayManager = .{},
     auto_scroll: bool = true,
     selected_message_index: ?usize = null,
     /// Input history for Up/Down arrow navigation and Ctrl+S reverse-i-search
@@ -562,7 +575,7 @@ pub const Model = struct {
         }
         // Initialize auto-skill generator (non-fatal)
         {
-            const home = std.posix.getenv("HOME") orelse "";
+            const home = file_compat.getEnv("HOME") orelse "";
             if (home.len > 0) {
                 const skills_dir = std.fmt.allocPrint(model.allocator, "{s}/.crushcode/skills/auto", .{home}) catch null;
                 if (skills_dir) |dir| {
@@ -1959,6 +1972,68 @@ pub const Model = struct {
                 }
             },
             .mouse => |mouse| {
+                // SplitView: handle pane divider drags
+                if (mouse.button == .left) {
+                    const mouse_col: u16 = @intCast(@max(mouse.col, @as(i16, 0)));
+
+                    // Compute current layout for divider hit-testing
+                    const sv: bool = self.sidebar_visible and self.last_screen_width >= 80;
+                    const cur_sidebar_w: u16 = if (sv) @min(self.sidebar_drag_width, @max(@as(u16, 20), @as(u16, @intCast(self.last_screen_width / 4)))) else 0;
+                    const cur_right_w: u16 = if (self.right_pane_visible and self.right_pane_content != null) self.right_pane_width else 0;
+                    const cur_main_w: u16 = self.last_screen_width -| cur_sidebar_w -| cur_right_w;
+
+                    if (mouse.type == .press) {
+                        // Check if click is on sidebar divider (between main and sidebar)
+                        if (sv and mouse_col >= cur_main_w -| 1 and mouse_col <= cur_main_w + 1) {
+                            self.dragging_sidebar_divider = true;
+                            self.drag_start_col = mouse_col;
+                            self.drag_start_width = cur_sidebar_w;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // Check if click is on right pane divider (between sidebar and right pane)
+                        if (cur_right_w > 0) {
+                            const right_edge: u16 = self.last_screen_width -| cur_right_w;
+                            if (mouse_col >= right_edge -| 1 and mouse_col <= right_edge + 1) {
+                                self.dragging_right_pane_divider = true;
+                                self.drag_start_col = mouse_col;
+                                self.drag_start_width = cur_right_w;
+                                ctx.consumeAndRedraw();
+                                return;
+                            }
+                        }
+                    }
+
+                    if (mouse.type == .drag or mouse.type == .motion) {
+                        // Dragging sidebar divider
+                        if (self.dragging_sidebar_divider) {
+                            const delta: i16 = @as(i16, @intCast(mouse_col)) - @as(i16, @intCast(self.drag_start_col));
+                            const new_w: u16 = @intCast(std.math.clamp(@as(i16, @intCast(self.drag_start_width)) + delta, 15, @as(i16, @intCast(self.last_screen_width / 2))));
+                            self.sidebar_drag_width = new_w;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                        // Dragging right pane divider
+                        if (self.dragging_right_pane_divider) {
+                            const delta: i16 = @as(i16, @intCast(self.drag_start_col)) - @as(i16, @intCast(mouse_col));
+                            const new_w: u16 = @intCast(std.math.clamp(@as(i16, @intCast(self.drag_start_width)) + delta, 30, @as(i16, @intCast(self.last_screen_width / 2))));
+                            self.right_pane_width = new_w;
+                            ctx.consumeAndRedraw();
+                            return;
+                        }
+                    }
+                }
+
+                // Release: stop any active drag
+                if (mouse.type == .release) {
+                    if (self.dragging_sidebar_divider or self.dragging_right_pane_divider) {
+                        self.dragging_sidebar_divider = false;
+                        self.dragging_right_pane_divider = false;
+                        ctx.consumeAndRedraw();
+                        return;
+                    }
+                }
+
                 // Left click in message area: scan recent messages for file paths
                 if (mouse.button == .left and mouse.type == .press) {
                     // Skip when overlays are active
@@ -2004,11 +2079,14 @@ pub const Model = struct {
         }
 
         const max = ctx.max.size();
-        // Responsive sidebar: cap at 25% of terminal width, minimum 20 chars
+        // Store screen dimensions for mouse handler access
+        self.last_screen_width = @intCast(max.width);
+        self.last_screen_height = @intCast(max.height);
+        // Responsive sidebar: use user-adjusted width (via drag), clamped to 15..width/2
         // Auto-hide when terminal is too narrow (< 80 chars)
         const sidebar_visible_effective = self.sidebar_visible and max.width >= 80;
         const sidebar_width: u16 = if (sidebar_visible_effective)
-            @min(@as(u16, 30), @max(@as(u16, 20), @as(u16, @intCast(max.width / 4))))
+            @min(self.sidebar_drag_width, @max(@as(u16, 15), @as(u16, @intCast(max.width / 2))))
         else
             0;
         const right_pane_w: u16 = if (self.right_pane_visible and self.right_pane_content != null) self.right_pane_width else 0;
@@ -2238,6 +2316,21 @@ pub const Model = struct {
                 .{ .width = sidebar_width, .height = sidebar_height },
             ));
             try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(main_width) }, .surface = sidebar_surface });
+
+            // SplitView: draw sidebar divider column (visual separator + drag handle)
+            const div_style: vaxis.Style = if (self.dragging_sidebar_divider)
+                .{ .fg = self.current_theme.accent, .bold = true }
+            else
+                .{ .fg = self.current_theme.border };
+            const div_col: u16 = if (main_width > 0) main_width -| 1 else 0;
+            if (main_width > 1) {
+                const div_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = 1, .height = sidebar_height });
+                var row_i: u16 = 0;
+                while (row_i < sidebar_height) : (row_i += 1) {
+                    div_surface.writeCell(0, row_i, .{ .char = .{ .grapheme = "│", .width = 1 }, .style = div_style });
+                }
+                try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(div_col) }, .surface = div_surface });
+            }
         }
 
         // Right pane — file preview
@@ -2323,15 +2416,28 @@ pub const Model = struct {
             ));
             const right_col: u16 = max.width -| right_pane_w;
             try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(right_col) }, .surface = right_surface });
+
+            // SplitView: draw right pane divider column (visual separator + drag handle)
+            if (right_col > 1) {
+                const rp_div_style: vaxis.Style = if (self.dragging_right_pane_divider)
+                    .{ .fg = self.current_theme.accent, .bold = true }
+                else
+                    .{ .fg = self.current_theme.border };
+                const rp_div_surface = try vxfw.Surface.init(ctx.arena, self.widget(), .{ .width = 1, .height = pane_height });
+                var rp_row: u16 = 0;
+                while (rp_row < pane_height) : (rp_row += 1) {
+                    rp_div_surface.writeCell(0, rp_row, .{ .char = .{ .grapheme = "│", .width = 1 }, .style = rp_div_style });
+                }
+                try child_list.append(ctx.arena, .{ .origin = .{ .row = 0, .col = @intCast(right_col -| 1) }, .surface = rp_div_surface });
+            }
         }
 
         // Check if any overlay is active for backdrop rendering
-        const any_overlay_active = self.show_palette or
-            self.pending_permission != null or
-            self.diff_preview_active or
-            self.show_session_list or
-            self.resume_prompt_session != null or
-            self.show_help;
+         // Use overlay_manager for centralized check, falling back to
+         // pending_permission / resume_prompt which are data-driven overlays
+         const any_overlay_active = self.overlay_manager.anyActive() or
+             self.pending_permission != null or
+             self.resume_prompt_session != null;
 
         // Dimmed backdrop behind overlays
         if (any_overlay_active) {

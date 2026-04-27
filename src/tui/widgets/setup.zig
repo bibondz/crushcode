@@ -1,3 +1,4 @@
+const file_compat = @import("file_compat");
 const std = @import("std");
 const vaxis = @import("vaxis");
 const theme_mod = @import("theme");
@@ -196,7 +197,7 @@ pub fn setupDefaultModel(provider_name: []const u8) []const u8 {
 }
 
 pub fn setupConfigPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse "/root";
+    const home = file_compat.getEnv("HOME") orelse "/root";
     return std.fmt.allocPrint(allocator, "{s}/.crushcode/config.toml", .{home});
 }
 

@@ -3,6 +3,7 @@
 /// Records task outcomes (success/failure/partial), computes quality scores,
 /// and persists history to ~/.crushcode/feedback.json.  Provides statistics,
 /// recommended tools per task type, and a prompt section for learned preferences.
+const file_compat = @import("file_compat");
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 
@@ -46,7 +47,7 @@ pub const FeedbackStore = struct {
     max_entries: u32,
 
     pub fn init(allocator: Allocator) !FeedbackStore {
-        const home = std.posix.getenv("HOME") orelse "";
+        const home = file_compat.getEnv("HOME") orelse "";
         const file_path: []const u8 = if (home.len > 0)
             try std.fs.path.join(allocator, &.{ home, ".crushcode", "feedback.json" })
         else

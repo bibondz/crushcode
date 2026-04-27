@@ -1,3 +1,4 @@
+const file_compat = @import("file_compat");
 const std = @import("std");
 const core = @import("core_api");
 const sqlite_mod = @import("sqlite");
@@ -57,7 +58,7 @@ pub const Session = struct {
 };
 
 pub fn defaultSessionDir(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse "/root";
+    const home = file_compat.getEnv("HOME") orelse "/root";
     return std.fmt.allocPrint(allocator, "{s}/.crushcode/sessions", .{home});
 }
 

@@ -1,6 +1,7 @@
 /// File reference parser and resolver for @-file syntax in chat input.
 /// Detects patterns like @src/main.zig, reads the file, and injects content
 /// into the AI context.
+const file_compat = @import("file_compat");
 const std = @import("std");
 
 /// Maximum file size to read (1 MB)
@@ -119,7 +120,7 @@ fn resolveFile(allocator: std.mem.Allocator, raw_path: []const u8) FileReference
 
     if (raw_path.len >= 2 and raw_path[0] == '~' and raw_path[1] == '/') {
         // Resolve ~/ to $HOME
-        const home = std.posix.getenv("HOME") orelse {
+        const home = file_compat.getEnv("HOME") orelse {
             const resolved_copy = allocator.dupe(u8, raw_path) catch return .{
                 .path = raw_path,
                 .resolved_path = raw_path,

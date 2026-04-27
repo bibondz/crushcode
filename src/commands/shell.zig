@@ -267,7 +267,7 @@ fn waitWithTimeout(child: *std.process.Child, timeout_seconds: u32) !ShellResult
 
 /// Execute shell command in interactive shell mode (basic PTY support)
 pub fn executeInteractiveShell() !void {
-    const shell = std.posix.getenv("SHELL") orelse "/bin/sh";
+    const shell = file_compat.getEnv("SHELL") orelse "/bin/sh";
 
     out("Interactive shell mode\n", .{});
     out("Shell: {s}\n", .{shell});

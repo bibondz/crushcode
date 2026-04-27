@@ -73,7 +73,7 @@ pub fn handleCompletion(args: args_mod.Args) !void {
 
 /// Auto-detect shell from $SHELL environment variable
 fn detectShell() ?[]const u8 {
-    const shell_env = std.posix.getenv("SHELL") orelse return null;
+    const shell_env = file_compat.getEnv("SHELL") orelse return null;
 
     // Extract basename from path like /bin/bash, /usr/bin/zsh, etc.
     var start: usize = shell_env.len;

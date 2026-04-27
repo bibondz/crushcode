@@ -135,6 +135,7 @@ pub fn build(b: *std.Build) !void {
     const tui_markdown_mod = createMod(b, "src/tui/markdown.zig", target, optimize, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     const diff_mod = simpleMod(b, "src/tui/diff.zig", target, optimize);
     addImports(diff_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
+    const overlay_mod = simpleMod(b, "src/tui/overlay.zig", target, optimize);
     const theme_mod = simpleMod(b, "src/tui/theme.zig", target, optimize);
     addImports(theme_mod, &.{imp("vaxis", vaxis_dep.module("vaxis"))});
     // Allow markdown.zig and diff.zig to access theme.zig for theme-aware styling
@@ -225,7 +226,7 @@ pub fn build(b: *std.Build) !void {
         imp("streaming_types", streaming_types_mod),     imp("streaming", streaming_session_mod), imp("streaming_buffer", streaming_buffer_mod),
         imp("streaming_display", streaming_display_mod),
     });
-    addImports(session_mod, &.{imp("core_api", core_api_mod), imp("sqlite", sqlite_mod), imp("session_db", session_db_mod), imp("db_migration", db_migration_mod)});
+    addImports(session_mod, &.{imp("core_api", core_api_mod), imp("sqlite", sqlite_mod), imp("session_db", session_db_mod), imp("db_migration", db_migration_mod), imp("file_compat", compat_file_mod)});
     const session_summarizer_mod = simpleMod(b, "src/core/session_summarizer.zig", target, optimize);
     const model_hotswap_mod = simpleMod(b, "src/core/model_hotswap.zig", target, optimize);
     addImports(chat_mod, &.{
@@ -285,6 +286,7 @@ pub fn build(b: *std.Build) !void {
     });
     const multiline_input_mod = createMod(b, "src/tui/widgets/multiline_input.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
+        imp("file_compat", compat_file_mod),
     });
     const widget_input_mod = createMod(b, "src/tui/widgets/input.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
@@ -318,6 +320,7 @@ pub fn build(b: *std.Build) !void {
         imp("widget_types", widget_types_mod),
         imp("widget_helpers", widget_helpers_mod),
         imp("slash_commands", slash_commands_mod),
+        imp("file_compat", compat_file_mod),
     });
     const widget_spinner_mod = createMod(b, "src/tui/widgets/spinner.zig", target, optimize, &.{
         imp("vaxis", vaxis_dep.module("vaxis")),
@@ -354,6 +357,7 @@ pub fn build(b: *std.Build) !void {
     const code_preview_mod = simpleMod(b, "src/tui/code_preview.zig", target, optimize);
     addImports(code_preview_mod, &.{imp("string_utils", string_utils_mod)});
     const image_mod = simpleMod(b, "src/tui/image.zig", target, optimize);
+    addImports(image_mod, &.{imp("file_compat", compat_file_mod)});
     const widget_data_table_mod = simpleMod(b, "src/tui/widgets/data_table.zig", target, optimize);
     const widget_scroll_panel_mod = simpleMod(b, "src/tui/widgets/scroll_panel.zig", target, optimize);
     addImports(tui_mod, &.{
@@ -375,8 +379,9 @@ pub fn build(b: *std.Build) !void {
         imp("widget_scroll_panel", widget_scroll_panel_mod),
         imp("widget_diff_preview", widget_diff_preview_mod),
         imp("image", image_mod),
+        imp("file_compat", compat_file_mod),
+        imp("overlay", overlay_mod),
     });
-
     const json_output_mod = simpleMod(b, "src/streaming/json_output.zig", target, optimize);
     const auto_classifier_mod = createMod(b, "src/permission/auto_classifier.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
@@ -581,7 +586,7 @@ pub fn build(b: *std.Build) !void {
     const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
     const semantic_compressor_mod = simpleMod(b, "src/agent/semantic_compressor.zig", target, optimize);
     addImports(semantic_compressor_mod, &.{imp("string_utils", string_utils_mod)});
-    const doctor_mod = createMod(b, "src/commands/doctor.zig", target, optimize, &.{imp("shell", shell_mod)});
+    const doctor_mod = createMod(b, "src/commands/doctor.zig", target, optimize, &.{imp("shell", shell_mod), imp("file_compat", compat_file_mod)});
     const review_mod = createMod(b, "src/commands/review.zig", target, optimize, &.{imp("shell", shell_mod)});
     const commit_mod = createMod(b, "src/commands/commit.zig", target, optimize, &.{imp("shell", shell_mod)});
     const recipe_mod = createMod(b, "src/recipes/recipe.zig", target, optimize, &.{
@@ -590,6 +595,7 @@ pub fn build(b: *std.Build) !void {
     const recipe_loader_mod = createMod(b, "src/recipes/loader.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
         imp("recipe", recipe_mod),
+        imp("file_compat", compat_file_mod),
     });
     const recipe_runner_mod = createMod(b, "src/recipes/runner.zig", target, optimize, &.{
         imp("array_list_compat", compat_array_list_mod),
@@ -608,6 +614,7 @@ pub fn build(b: *std.Build) !void {
     const adversarial_mod = simpleMod(b, "src/agent/adversarial.zig", target, optimize);
     const user_model_mod = simpleMod(b, "src/agent/user_model.zig", target, optimize);
     const feedback_mod = simpleMod(b, "src/agent/feedback.zig", target, optimize);
+    addImports(feedback_mod, &.{imp("file_compat", compat_file_mod)});
     const delegate_mod = simpleMod(b, "src/agent/delegate.zig", target, optimize);
     addImports(subagent_mod, &.{imp("delegate", delegate_mod)});
     const moa_mod = simpleMod(b, "src/agent/moa.zig", target, optimize);
@@ -963,6 +970,24 @@ pub fn build(b: *std.Build) !void {
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);
+
+    // SQ-1: Dedicated sqlite test step with C linkage (-lc + sqlite3 amalgamation)
+    // Uses a separate module instance to avoid duplicate symbol conflicts with the main exe.
+    const sqlite_test_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
+    sqlite_test_mod.addIncludePath(b.path("vendor/sqlite3"));
+    const sqlite_tests = b.addTest(.{ .root_module = sqlite_test_mod });
+    sqlite_tests.addCSourceFile(.{
+        .file = b.path("vendor/sqlite3/sqlite3.c"),
+        .flags = &sqlite_c_flags,
+    });
+    sqlite_tests.addCSourceFile(.{
+        .file = b.path("vendor/sqlite3/zig_helpers.c"),
+        .flags = &.{},
+    });
+    sqlite_tests.addIncludePath(b.path("vendor/sqlite3"));
+    sqlite_tests.linkLibC();
+    const test_sqlite_step = b.step("test-sqlite", "Run sqlite unit tests (with C linkage)");
+    test_sqlite_step.dependOn(&sqlite_tests.step);
 
     // Dedicated registry test step
     const registry_tests = b.addTest(.{ .root_module = registry_mod });

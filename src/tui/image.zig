@@ -5,6 +5,7 @@
 /// neither. Kitty protocol rendering is handled by vaxis directly.
 ///
 /// Sixel reference: https://vt100.net/docs/vt3xx-gp/chapter14.html
+const file_compat = @import("file_compat");
 const std = @import("std");
 
 // ── Protocol detection ────────────────────────────────────────────────
@@ -24,14 +25,14 @@ pub const GraphicsProtocol = enum {
 ///   3. Default → none
 pub fn detectProtocol() GraphicsProtocol {
     // TERM_PROGRAM takes priority — it identifies the terminal emulator.
-    if (std.posix.getenv("TERM_PROGRAM")) |tp| {
+    if (file_compat.getEnv("TERM_PROGRAM")) |tp| {
         if (std.mem.eql(u8, tp, "kitty")) return .kitty;
         if (std.mem.eql(u8, tp, "ghostty")) return .kitty; // ghostty supports kitty protocol
         if (std.mem.eql(u8, tp, "WezTerm")) return .kitty; // wezterm supports kitty protocol
     }
 
     // Fall back to TERM variable.
-    if (std.posix.getenv("TERM")) |term| {
+    if (file_compat.getEnv("TERM")) |term| {
         if (std.mem.indexOf(u8, term, "xterm-kitty") != null) return .kitty;
         if (std.mem.indexOf(u8, term, "sixel") != null) return .sixel;
     }

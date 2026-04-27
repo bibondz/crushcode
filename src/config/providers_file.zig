@@ -29,7 +29,7 @@ pub const ProviderDef = struct {
 
 /// Get the path to providers.toml (~/.crushcode/providers.toml)
 pub fn getProvidersPath(allocator: std.mem.Allocator) ![]const u8 {
-    const home = std.posix.getenv("HOME") orelse return error.HomeNotFound;
+    const home = file_compat.getEnv("HOME") orelse return error.HomeNotFound;
     return std.fs.path.join(allocator, &.{ home, ".crushcode", "providers.toml" });
 }
 

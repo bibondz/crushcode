@@ -37,7 +37,7 @@ pub const UserModel = struct {
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
     pub fn init(allocator: Allocator) !UserModel {
-        const home = std.posix.getenv("HOME") orelse "";
+        const home = file_compat.getEnv("HOME") orelse "";
         const file_path: []const u8 = if (home.len > 0)
             try std.fs.path.join(allocator, &.{ home, ".crushcode", "USER.md" })
         else

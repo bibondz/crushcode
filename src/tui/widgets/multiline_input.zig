@@ -7,6 +7,7 @@
 ///   - Cursor navigation across lines
 ///   - Standard editing keys (backspace, delete, arrows, home/end, Ctrl+A/E/K/U)
 ///   - Prompt prefix (e.g. "❯ ") on the first row
+const file_compat = @import("file_compat");
 const std = @import("std");
 const vaxis = @import("vaxis");
 const vxfw = vaxis.vxfw;
@@ -702,7 +703,7 @@ fn openExternalEditor(self: *MultiLineInputState) void {
     }
 
     // Resolve editor from $EDITOR, fallback to vi
-    const editor: []const u8 = if (std.posix.getenv("EDITOR")) |raw| std.mem.sliceTo(raw, 0) else "vi";
+    const editor: []const u8 = if (file_compat.getEnv("EDITOR")) |raw| std.mem.sliceTo(raw, 0) else "vi";
 
     // Spawn editor with inherited stdio so it can interact with the terminal
     var child = std.process.Child.init(&.{ editor, filepath }, allocator);

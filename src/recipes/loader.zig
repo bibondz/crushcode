@@ -1,3 +1,4 @@
+const file_compat = @import("file_compat");
 const std = @import("std");
 const array_list_compat = @import("array_list_compat");
 const recipe = @import("recipe");
@@ -40,7 +41,7 @@ pub const RecipeLoader = struct {
         };
 
         // User-global recipes
-        if (std.posix.getenv("HOME")) |home| {
+        if (file_compat.getEnv("HOME")) |home| {
             const global_path = try std.fmt.allocPrint(self.allocator, "{s}/.config/crushcode/recipes", .{home});
             defer self.allocator.free(global_path);
             self.loadFromDirectory(global_path) catch |err| {

@@ -71,8 +71,8 @@ pub fn restoreCursor() void {
 /// Get terminal size
 pub fn getTerminalSize() ?struct { rows: u16, cols: u16 } {
     // Try environment variables first (most portable)
-    if (posix.getenv("LINES")) |lines| {
-        if (posix.getenv("COLUMNS")) |cols| {
+    if (file_compat.getEnv("LINES")) |lines| {
+        if (file_compat.getEnv("COLUMNS")) |cols| {
             const lines_int = std.fmt.parseInt(u16, lines, 10) catch return null;
             const cols_int = std.fmt.parseInt(u16, cols, 10) catch return null;
             return .{ .rows = lines_int, .cols = cols_int };

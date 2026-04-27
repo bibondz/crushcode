@@ -1,3 +1,4 @@
+const file_compat = @import("file_compat");
 const std = @import("std");
 const shell_mod = @import("shell");
 const array_list_compat = @import("array_list_compat");
@@ -190,7 +191,7 @@ fn checkCrushcodeBinary(allocator: Allocator) !DiagnosticCheck {
 
 fn checkConfiguration(allocator: Allocator) !DiagnosticCheck {
     _ = allocator;
-    const home = std.posix.getenv("HOME") orelse {
+    const home = file_compat.getEnv("HOME") orelse {
         return DiagnosticCheck{
             .category = .configuration,
             .name = "Config directory",
@@ -242,7 +243,7 @@ fn checkProviders(allocator: Allocator) !DiagnosticCheck {
         "DEEPSEEK_API_KEY",
     };
     for (&provider_envs) |env_name| {
-        if (std.posix.getenv(env_name)) |val| {
+        if (file_compat.getEnv(env_name)) |val| {
             if (val.len > 0) key_count += 1;
         }
     }
@@ -267,7 +268,7 @@ fn checkProviders(allocator: Allocator) !DiagnosticCheck {
 
 fn checkEnvironment(allocator: Allocator) !DiagnosticCheck {
     _ = allocator;
-    const home = std.posix.getenv("HOME") orelse {
+    const home = file_compat.getEnv("HOME") orelse {
         return DiagnosticCheck{
             .category = .environment,
             .name = "HOME",
@@ -286,7 +287,7 @@ fn checkEnvironment(allocator: Allocator) !DiagnosticCheck {
 
 fn checkTerminal(allocator: Allocator) !DiagnosticCheck {
     _ = allocator;
-    const term = std.posix.getenv("TERM") orelse {
+    const term = file_compat.getEnv("TERM") orelse {
         return DiagnosticCheck{
             .category = .environment,
             .name = "Terminal",
@@ -384,7 +385,7 @@ fn checkPython(allocator: Allocator) !DiagnosticCheck {
 
 fn checkConfigPermissions(allocator: Allocator) !DiagnosticCheck {
     _ = allocator;
-    const home = std.posix.getenv("HOME") orelse {
+    const home = file_compat.getEnv("HOME") orelse {
         return DiagnosticCheck{
             .category = .permissions,
             .name = "Config dir",

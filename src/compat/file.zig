@@ -80,3 +80,31 @@ pub const File = struct {
 pub fn wrap(file: std.fs.File) File {
     return File.wrap(file);
 }
+
+/// Cross-platform environment variable getter.
+/// On Linux/macOS, uses std.posix.getenv (returns optional sentinel slice).
+/// On Windows, uses std.process.getEnvVarOwned (allocates, caller must free).
+///
+/// For non-Windows targets, returns a borrowed sentinel-terminated slice
+/// (no allocation needed). For Windows, the caller must free the result.
+///
+/// Usage (non-Windows, the common case):
+///   const home = file_compat.getEnv("HOME") orelse "";
+pub fn getEnv(key: []const u8) ?[:0]const u8 {
+    // Use comptime to avoid Windows compile errors
+    if (@import("builtin").target.os.tag == .windows) {
+        return null; // Windows callers should use getEnvOwned
+    }
+    return std.posix.getenv(key);
+}
+
+/// Allocate-and-copy version of getEnv. Works on ALL platforms.
+/// Caller owns the returned slice and must free it with allocator.
+/// Returns null if the variable is not set.
+pub fn getEnvOwned(allocator: std.mem.Allocator, key: []const u8) ?[]const u8 {
+    const result = std.process.getEnvVarOwned(allocator, key) catch |err| switch (err) {
+        error.EnvironmentVariableNotFound => return null,
+        else => return null,
+    };
+    return result;
+}
