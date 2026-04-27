@@ -134,7 +134,7 @@ Created: 2026-04-14 · Updated: 2026-04-27
 
 ---
 
-## v1.5.0 — Stability + Polish (IN PROGRESS)
+## v1.5.0 — Stability + Polish ✅ DONE
 
 **วัตถุประสงค์**: Fix known bugs, clean up codebase, polish remaining edges
 
@@ -144,9 +144,34 @@ Created: 2026-04-14 · Updated: 2026-04-27
 |------|--------|-------------|
 | KP-1 KnowledgePipeline | ✅ VERIFIED STALE | Dangling pointer was vxfw.App (already fixed). Pipeline works correctly. |
 | Build.zig cleanup | ✅ DONE | 1123→1037 lines (-86). Consolidated compat loop, test array, addImports. |
-| /export stub | ✅ DONE (CLI) | Real implementation: creates timestamped markdown file. TUI handler pending. |
+| /export stub | ✅ DONE | Real implementation: creates timestamped markdown file. CLI + TUI. |
 | /doctor, /review, /commit | ✅ VERIFIED REAL | 512L, 168L, 411L — all fully implemented, not stubs. |
 | TUI /export handler | ✅ DONE | Full message history export to markdown file in TUI mode. |
+
+---
+
+## v1.6.0 — Security + Cost Optimization ✅ DONE
+
+**วัตถุประสงค์**: Wire existing 80%+ done infrastructure, close security gaps, reduce API costs
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Guardrail redaction | ✅ DONE | Wire redacted_content into AI request flow (PII masking) |
+| Cache-aware Anthropic | ✅ DONE | Wire buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
+| Post-inspection masking | ✅ DONE | Mask tool output containing secrets instead of blocking |
+| Context compaction w/ LLM | ✅ DONE | ContextCompactor wired into AgentLoop, compactLight on token threshold |
+
+---
+
+## v1.7.0 — AST-Aware Search ✅ DONE
+
+**วัตถุประสงค์**: Add ast-grep (sg) binary spawn for structural code search
+
+| Item | Status | Description |
+|------|--------|-------------|
+| sg binary spawn | ✅ DONE | tryExecuteSg() spawns `sg run -p <pattern> --json`, parses JSON matches |
+| 3-tier grep cascade | ✅ DONE | sg (AST) → rg (regex) → grep (POSIX) fallback chain |
+| Language auto-detect | ✅ DONE | Maps include patterns to ast-grep language names for `-l` flag |
 
 ### Backlog (researched but deferred)
 - Streaming diff preview (diffpane, tuicr)
@@ -154,18 +179,4 @@ Created: 2026-04-14 · Updated: 2026-04-27
 - Skill hub integration
 - Sandboxed execution (gVisor/LXC)
 - Multi-platform gateway (Telegram/Discord/Slack)
-- sg binary spawn for AST-aware search
 - Vault→persistence merge (circular dep risk)
-
----
-
-## v1.6.0 — Security + Cost Optimization (IN PROGRESS)
-
-**วัตถุประสงค์**: Wire existing 80%+ done infrastructure, close security gaps, reduce API costs
-
-| Item | Status | Description | LOC est. |
-|------|--------|-------------|----------|
-| Guardrail redaction | ✅ DONE | Wire redacted_content into AI request flow (PII masking) |
-| Cache-aware Anthropic | ✅ DONE | Wire buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
-| Post-inspection masking | ✅ DONE | Mask tool output containing secrets instead of blocking |
-| Context compaction w/ LLM | ✅ DONE | ContextCompactor wired into AgentLoop, compactLight on token threshold |

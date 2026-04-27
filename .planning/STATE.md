@@ -1,4 +1,4 @@
-# State: Crushcode v1.4.0
+# State: Crushcode v1.7.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-27
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v1.4.0 — ALL 33 phases COMPLETE |
-| Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0 |
-| Next | v1.5.0 — Stability + Polish (in progress) |
-| Latest commit | `cd81742` — refactor build.zig, fix /export stub |
+| Milestone | v1.7.0 — AST-Aware Search COMPLETE |
+| Tags | v0.2.1, v0.2.2, v1.0.0, v1.1.0, v1.2.0, v1.3.0, v1.4.0, v1.5.0, v1.6.0, v1.7.0 |
+| Next | Backlog items or v1.8.0 |
+| Latest commit | `920060f` — feat(search): add ast-grep (sg) binary spawn as tier-1 search |
 
 ---
 
@@ -28,30 +28,35 @@
 | v1.2.0 | TUI Foundation | Virtual scroll, palette, split pane, file tree sidebar |
 | v1.3.0 | TUI Polish | 6 themes, sparkline, syntax preview, click-to-preview, dialogs |
 | v1.4.0 | Full AI Agent | Auto-compact, Myers diff, system prompt, relevance scoring, user model, auto-skill, plan mode, feedback loop, 30 tools, graduated permissions, sub-agent delegation |
+| v1.5.0 | Stability + Polish | Build.zig refactor (-86L), /export CLI+TUI, KP-1 verified stale, slash commands verified |
+| v1.6.0 | Security + Cost | Guardrail redaction, cache-aware Anthropic, post-inspection masking, context compaction |
+| v1.7.0 | AST-Aware Search | sg binary spawn, 3-tier grep cascade (sg→rg→grep), language auto-detect |
 
 ---
 
-## v1.6.0 Progress — Security + Cost Optimization
+## v1.7.0 Progress — AST-Aware Search
 
 | Item | Status | Notes |
 |------|--------|-------|
-| Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
-| Cache-aware Anthropic | ✅ Done | buildCacheAwareStreamingBody for Anthropic/Bedrock/VertexAI |
-| Post-inspection masking | ✅ Done | Secrets in tool output masked instead of blocked |
-| Context compaction w/ LLM | ✅ Done | compactLight wired into AgentLoop |
+| sg binary spawn | ✅ Done | tryExecuteSg() spawns `sg run -p <pattern> --json` via std.process.Child |
+| 3-tier grep cascade | ✅ Done | sg (AST) → rg (regex) → grep (POSIX) fallback chain |
+| Language auto-detect | ✅ Done | Maps include patterns (*.ts, *.py, *.rs etc.) to ast-grep language names |
+| Build verify | ✅ Done | Clean build, exit 0 |
+| Tag + push | ✅ Done | v1.7.0 tagged and pushed to origin |
 
+---
+
+## Previously Completed
+
+### v1.5.0 — Stability + Polish
 | Item | Status | Notes |
 |------|--------|-------|
 | KP-1 KnowledgePipeline | ✅ Verified stale | Dangling pointer was vxfw.App, already fixed |
 | Build.zig cleanup | ✅ Done (cd81742) | 1123→1037 lines, consolidated imports |
-| /export CLI | ✅ Done (cd81742) | Real markdown export, custom path support |
+| /export CLI + TUI | ✅ Done | Real markdown export, custom path support |
 | /doctor, /review, /commit | ✅ Verified real | 512L, 168L, 411L — fully implemented |
-| TUI /export handler | ✅ Done | Wire into chat_tui_app.zig, full message history |
 
----
-
-## v1.6.0 Progress — Security + Cost Optimization
-
+### v1.6.0 — Security + Cost Optimization
 | Item | Status | Notes |
 |------|--------|-------|
 | Guardrail redaction | ✅ Done | PII redaction wired into sendChatStreaming |
@@ -75,24 +80,24 @@
 | Circuit Breaker | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Guardrails | **✅ unique** | ❌ | ❌ | ❌ | ❌ |
 | Auto-Compact | **multi-tier** ✅ | ✅ single-tier | ❌ | ❌ | ❌ |
+| AST Search | **sg binary** ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
-## Known Remaining Items (v1.5.0)
+## Remaining Backlog
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| KnowledgePipeline fix (KP-1) | High | Dangling pointer, currently disabled |
-| Build.zig cleanup | Medium | 1115→~700 lines, createStdModule() helper |
-| Slash command stubs | Medium | /export, /review, /doctor, /commit |
-| Cache-aware Anthropic body | Low | CacheControl structs exist, not wired |
-| Guardrail redaction | Low | deny works, redact not fully wired |
-| Responsive layout | Low | FlexRow/FlexColumn unused |
-| Input history search | Low | Ctrl+R taken by /refresh |
+| Streaming diff preview | Low | diffpane/tuicr integration |
+| Mixture-of-Agents | Low | Hermes MoA reasoning |
+| Skill hub integration | Low | External skill marketplace |
+| Sandboxed execution | Low | gVisor/LXC |
+| Multi-platform gateway | Low | Telegram/Discord/Slack |
+| Vault→persistence merge | Low | Circular dep risk |
 
 ---
 
 ## Session Continuity
 
 **Last Updated:** 2026-04-27
-**Status:** v1.5.0 in progress. All known issues resolved. Backlog items remain (low priority).
+**Status:** v1.7.0 shipped. All milestones through v1.7.0 complete. Backlog items remain.
