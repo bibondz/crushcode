@@ -191,6 +191,36 @@ const Theme = theme_mod.Theme;
 const ColorMode = theme_mod.ColorMode;
 const Style = color_mod.Style;
 const HookContext = lifecycle_hooks_mod.HookContext;
+
+/// Map a Zig error from the AI request path to a friendly boxed error message.
+/// Uses error_display_mod.printBoxed() for consistent UX.
+fn printRequestError(err: anyerror) void {
+    const title: []const u8 = "Request Failed";
+    const message: []const u8 = switch (err) {
+        error.ServerError => "The AI provider returned a server error.\nPlease try again in a moment.",
+        error.NetworkError => "Could not connect to the AI provider.\nCheck your internet connection.",
+        error.AuthenticationError => "Authentication failed — check your API key.\nRun: crushcode connect <provider>",
+        error.RateLimitError => "Rate limit exceeded — too many requests.\nWait a minute and try again.",
+        error.TimeoutError => "The request timed out.\nThe provider may be slow or overloaded.",
+        error.RetryExhausted => "Request failed after multiple retries.\nThe provider may be experiencing issues.",
+        error.EmptyResponse => "The AI returned an empty response.\nTry rephrasing your message.",
+        error.ConfigurationError => "Configuration error — check your settings.\nRun: crushcode connect <provider>",
+        error.OutOfMemory => "Out of memory. Try a shorter message or restart.",
+        else => "An unexpected error occurred.\nPlease try again.",
+    };
+    error_display_mod.printError(title, message);
+}
+
+/// Check if an error is transient (worth retrying with non-streaming fallback).
+fn isTransientError(err: anyerror) bool {
+    return switch (err) {
+        error.ServerError,
+        error.NetworkError,
+        error.TimeoutError,
+        => true,
+        else => false,
+    };
+}
 const IntentGate = intent_gate_mod.IntentGate;
 const LifecycleHooks = lifecycle_hooks_mod.LifecycleHooks;
 const Guardian = guardian_mod.Guardian;
@@ -414,19 +444,30 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
                     stdout.print("{s}", .{token}) catch {};
                 }
             }
-        }.callback) catch |err| {
-            out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
-            json_out.emitError(@errorName(err));
-            return err;
+        }.callback) catch |err| blk: {
+            // Phase 47: Streaming fallback — retry transient errors non-streaming
+            if (isTransientError(err)) {
+                const warn_style = Style{ .fg = .yellow };
+                out("\n{s}⚠ Streaming failed, retrying without streaming...{s}\n", .{ warn_style.start(), warn_style.reset() });
+                break :blk ai_client.sendChat(message) catch |fallback_err| {
+                    printRequestError(fallback_err);
+                    json_out.emitError(@errorName(fallback_err));
+                    return; // Error already displayed
+                };
+            } else {
+                printRequestError(err);
+                json_out.emitError(@errorName(err));
+                return; // Error already displayed
+            }
         };
 
         out("\n", .{});
         content_slice = "";
     } else {
         response = ai_client.sendChat(message) catch |err| {
-            out("\nError sending request: {}\n", .{err});
+            printRequestError(err);
             json_out.emitError(@errorName(err));
-            return err;
+            return; // Error already displayed — don't propagate to avoid stack trace
         };
 
         if (response.choices.len == 0) {
@@ -576,16 +617,27 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
                         stdout.print("{s}", .{token}) catch {};
                     }
                 }
-            }.callback) catch |err| {
-                out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
-                chat_bridge.active_bridge_context = null;
-                return err;
+            }.callback) catch |err| blk: {
+                // Streaming fallback for tool-result follow-up
+                if (isTransientError(err)) {
+                    const warn_style = Style{ .fg = .yellow };
+                    out("\n{s}⚠ Streaming failed, retrying without streaming...{s}\n", .{ warn_style.start(), warn_style.reset() });
+                    break :blk ai_client.sendChatWithHistory(ss_messages.items) catch |fb_err| {
+                        printRequestError(fb_err);
+                        chat_bridge.active_bridge_context = null;
+                        return; // Error already displayed
+                    };
+                } else {
+                    printRequestError(err);
+                    chat_bridge.active_bridge_context = null;
+                    return; // Error already displayed
+                }
             };
         } else {
             final_response = ai_client.sendChatWithHistory(ss_messages.items) catch |err| {
-                out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
+                printRequestError(err);
                 chat_bridge.active_bridge_context = null;
-                return err;
+                return; // Error already displayed
             };
         }
 
