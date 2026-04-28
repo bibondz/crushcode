@@ -13,6 +13,8 @@ const shell_state_mod = @import("shell_state");
 const blocklist_mod = @import("permission_blocklist");
 const safelist_mod = @import("permission_safelist");
 const myers = @import("myers");
+const ansi_strip = @import("ansi_strip");
+const sandbox_mod = @import("permission_sandbox");
 const file_tracker_mod = @import("file_tracker");
 const web_fetch_mod = @import("web_fetch");
 const web_search_mod = @import("web_search");
@@ -97,6 +99,7 @@ threadlocal var hashline_mode: bool = false;
 threadlocal var active_semantic_api_base: ?[]const u8 = null;
 threadlocal var active_semantic_api_key: ?[]const u8 = null;
 threadlocal var active_semantic_embed_model: ?[]const u8 = null;
+threadlocal var active_sandbox_mode: []const u8 = "cwd";
 
 pub fn setSemanticConfig(api_base: ?[]const u8, api_key: ?[]const u8, embed_model: ?[]const u8) void {
     active_semantic_api_base = api_base;
@@ -122,6 +125,10 @@ pub fn setCommandBlocklist(blocklist: ?*CommandBlocklist) void {
 
 pub fn setSafeCommandList(safelist: ?*SafeCommandList) void {
     active_safelist = safelist;
+}
+
+pub fn setActiveSandboxMode(mode: []const u8) void {
+    active_sandbox_mode = mode;
 }
 
 pub fn setJsonOutput(json_out: json_output_mod.JsonOutput) void {
@@ -688,45 +695,78 @@ fn executeShellTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall
         return buildValidationError(allocator, "shell", msg);
     }
 
-    if (parsed.value.timeout) |secs| {
-        if (secs > 0) {
-            const cmd = try std.fmt.allocPrint(allocator, "timeout --signal=KILL {d} sh -c {s}", .{ secs, parsed.value.command });
-            defer allocator.free(cmd);
-            const result = try process.runShellCommand(allocator, cmd);
-            defer {
-                allocator.free(result.stdout);
-                allocator.free(result.stderr);
-            }
-            const exit_code = result.exit_code;
-            const timed_out = exit_code == 124;
-            // Truncate stdout only — preserve exit_code and stderr formatting
-            const truncated_stdout = try truncateToolOutput(allocator, result.stdout);
-            defer {
-                if (truncated_stdout.ptr != result.stdout.ptr) allocator.free(truncated_stdout);
-            }
-            return .{
-                .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\", timeout={d}s) → exit {d}{s}\n", .{ parsed.value.command, secs, exit_code, if (timed_out) " (TIMEOUT)" else "" }),
-                .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, result.stderr }),
-            };
+    // Sandbox check: validate write targets before execution
+    if (active_shell_state) |shell_state| {
+        const sandbox_config = sandbox_mod.SandboxConfig{
+            .mode = parseSandboxMode(active_sandbox_mode),
+            .custom_path = if (std.mem.startsWith(u8, active_sandbox_mode, "custom:"))
+                active_sandbox_mode[7..]
+            else
+                null,
+        };
+        var checker = sandbox_mod.SandboxChecker.init(allocator, sandbox_config, shell_state.getCwd());
+        defer checker.deinit();
+
+        const sandbox_result = checker.isCommandAllowed(parsed.value.command) catch
+            sandbox_mod.SandboxResult{ .allowed = true };
+        if (!sandbox_result.allowed) {
+            const reason = sandbox_result.reason orelse "Write target outside sandbox";
+            const msg = try std.fmt.allocPrint(allocator, "Sandbox blocked: {s}. Set sandbox_mode=off in config.toml to disable.", .{reason});
+            defer allocator.free(msg);
+            return buildValidationError(allocator, "shell", msg);
         }
     }
 
-    const result = try process.runShellCommand(allocator, parsed.value.command);
+    // Execute with Zig-native timeout (replaces fragile "timeout --signal=KILL" wrapper)
+    const result = try process.runShellCommandWithTimeout(allocator, parsed.value.command, parsed.value.timeout);
     defer {
         allocator.free(result.stdout);
         allocator.free(result.stderr);
     }
     const exit_code = result.exit_code;
+    const timed_out = result.timed_out;
 
-    // Truncate stdout only — preserve exit_code and stderr formatting
-    const truncated_stdout = try truncateToolOutput(allocator, result.stdout);
+    // Strip ANSI escape sequences from stdout BEFORE truncation
+    const clean_stdout = try ansi_strip.stripAnsiEscapes(allocator, result.stdout);
+    defer allocator.free(clean_stdout);
+
+    // Strip ANSI from stderr too
+    const clean_stderr = try ansi_strip.stripAnsiEscapes(allocator, result.stderr);
+    defer allocator.free(clean_stderr);
+
+    // Truncate cleaned stdout for AI context (30KB midpoint truncation)
+    const truncated_stdout = try truncateToolOutput(allocator, clean_stdout);
     defer {
-        if (truncated_stdout.ptr != result.stdout.ptr) allocator.free(truncated_stdout);
+        if (truncated_stdout.ptr != clean_stdout.ptr) allocator.free(truncated_stdout);
     }
+
+    const timeout_label = if (parsed.value.timeout) |t|
+        try std.fmt.allocPrint(allocator, ", timeout={d}s", .{t})
+    else
+        "";
+    defer {
+        if (parsed.value.timeout != null) allocator.free(timeout_label);
+    }
+
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\") → exit {d}\n", .{ parsed.value.command, exit_code }),
-        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{ exit_code, truncated_stdout, result.stderr }),
+        .display = try std.fmt.allocPrint(allocator, "🔧 shell(\"{s}\"{s}) → exit {d}{s}\n", .{
+            parsed.value.command,
+            timeout_label,
+            exit_code,
+            if (timed_out) " (TIMEOUT)" else "",
+        }),
+        .result = try std.fmt.allocPrint(allocator, "exit_code: {d}\nstdout:\n{s}\nstderr:\n{s}", .{
+            exit_code,
+            truncated_stdout,
+            clean_stderr,
+        }),
     };
+}
+
+fn parseSandboxMode(mode_str: []const u8) sandbox_mod.SandboxMode {
+    if (std.mem.eql(u8, mode_str, "off")) return .off;
+    if (std.mem.startsWith(u8, mode_str, "custom:")) return .custom;
+    return .cwd;
 }
 
 fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {

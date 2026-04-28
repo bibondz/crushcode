@@ -191,7 +191,9 @@ pub fn build(b: *std.Build) !void {
     const json_helpers_mod = simpleMod(b, "src/core/json_helpers.zig", target, optimize);
     const string_utils_mod = simpleMod(b, "src/core/string_utils.zig", target, optimize);
     const process_mod = simpleMod(b, "src/core/process.zig", target, optimize);
-    addImports(shell_mod, &.{imp("string_utils", string_utils_mod)});
+    const ansi_strip_mod = simpleMod(b, "src/shell/ansi_strip.zig", target, optimize);
+    const sandbox_mod = simpleMod(b, "src/permission/sandbox.zig", target, optimize);
+    addImports(shell_mod, &.{imp("string_utils", string_utils_mod), imp("process", process_mod), imp("ansi_strip", ansi_strip_mod)});
     const web_fetch_mod = simpleMod(b, "src/tools/web_fetch.zig", target, optimize);
     const web_search_mod = createMod(b, "src/tools/web_search.zig", target, optimize, &.{
         imp("web_fetch", web_fetch_mod),
@@ -873,7 +875,8 @@ pub fn build(b: *std.Build) !void {
         imp("subagent", subagent_mod), imp("safety_checkpoint", safety_checkpoint_mod),
         imp("session_db", session_db_mod), imp("hooks_registry", hooks_registry_mod),
         imp("hashline_edit", hashline_edit_mod), imp("image_analyzer", image_analyzer_mod),
-        imp("semantic_search", semantic_search_mod),
+        imp("semantic_search", semantic_search_mod), imp("ansi_strip", ansi_strip_mod),
+        imp("permission_sandbox", sandbox_mod),
     });
     addImports(todo_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
     addImports(apply_patch_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
@@ -989,7 +992,7 @@ pub fn build(b: *std.Build) !void {
         hooks_registry_mod, hooks_config_mod, doctor_mod, review_mod, commit_mod, recipe_mod,
         recipe_loader_mod, recipe_runner_mod, tool_inspection_mod, tool_parallel_mod,
         trace_span_mod, trace_context_mod, trace_writer_mod, retry_policy_mod, retry_self_heal_mod,
-        tui_test_harness_mod, registry_mod, fileops_mod, hashline_edit_mod,
+        tui_test_harness_mod, registry_mod, fileops_mod, hashline_edit_mod, ansi_strip_mod, sandbox_mod,
     };
     const test_step = b.step("test", "Run tests");
     for (&test_modules) |mod| test_step.dependOn(&b.addTest(.{ .root_module = mod }).step);

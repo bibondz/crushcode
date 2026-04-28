@@ -3,6 +3,8 @@ const string_utils = @import("string_utils");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const posix = std.posix;
+const process_mod = @import("process");
+const ansi_strip = @import("ansi_strip");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -14,8 +16,8 @@ pub const ShellResult = struct {
     stderr: []const u8,
 };
 
-/// Maximum output size before truncation (30KB)
-pub const MAX_OUTPUT_CHARS: usize = 30 * 1024;
+/// Maximum output size before truncation (1MB)
+pub const MAX_OUTPUT_CHARS: usize = 1024 * 1024;
 
 /// Count the number of newlines in a string
 fn countLines(text: []const u8) usize {
@@ -142,128 +144,31 @@ fn parseRedirections(command: []const u8, allocator: std.mem.Allocator) struct {
     return .{ .command = clean_command.toOwnedSlice() catch command, .redirections = redirections.toOwnedSlice() catch &.{} };
 }
 
-/// Execute shell command via std.process.Child with optional timeout
+/// Execute shell command via process.runShellCommandWithTimeout with ANSI stripping
 pub fn executeShellCommand(command: []const u8, timeout_seconds: ?u32) !ShellResult {
     const allocator = std.heap.page_allocator;
-    const parsed = parseRedirections(command, allocator);
-    const cmd = parsed.command;
 
-    const argv: [3][]const u8 = .{ "sh", "-c", cmd };
-    var child = std.process.Child.init(&argv, std.heap.page_allocator);
-
-    _ = try child.spawn();
-
-    // Handle timeout using a background thread
-    if (timeout_seconds) |timeout| {
-        return try waitWithTimeout(&child, timeout);
+    const result = try process_mod.runShellCommandWithTimeout(allocator, command, timeout_seconds);
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
     }
 
-    const term = child.wait() catch |err| {
-        return ShellResult{
-            .exit_code = 1,
-            .stdout = "",
-            .stderr = @errorName(err),
-        };
-    };
+    // Strip ANSI escape sequences from stdout
+    const clean_stdout = try ansi_strip.stripAnsiEscapes(allocator, result.stdout);
+    defer allocator.free(clean_stdout);
 
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |code| @intCast(code),
-        else => 1,
-    };
+    // Strip ANSI from stderr too
+    const clean_stderr = try ansi_strip.stripAnsiEscapes(allocator, result.stderr);
+    defer allocator.free(clean_stderr);
+
+    // Apply midpoint truncation if needed
+    const truncated = try truncateOutputAlloc(allocator, clean_stdout);
 
     return ShellResult{
-        .exit_code = exit_code,
-        .stdout = "",
-        .stderr = "",
-    };
-}
-
-/// Wait for child process with timeout using a background thread
-fn waitWithTimeout(child: *std.process.Child, timeout_seconds: u32) !ShellResult {
-    const allocator = std.heap.page_allocator;
-
-    // Shared state between threads
-    const SharedState = struct {
-        term: ?std.process.Child.Term = null,
-        done: bool = false,
-        lock: std.Thread.Mutex = .{},
-    };
-
-    const state = try allocator.create(SharedState);
-    defer allocator.destroy(state);
-    state.* = .{ .done = false };
-
-    // Spawn thread to wait for the process
-    const thread = try std.Thread.spawn(.{}, struct {
-        fn run(s: *SharedState, c: *std.process.Child) void {
-            const result = c.wait() catch {
-                s.lock.lock();
-                s.term = .{ .Exited = 1 };
-                s.done = true;
-                s.lock.unlock();
-                return;
-            };
-            s.lock.lock();
-            s.term = result;
-            s.done = true;
-            s.lock.unlock();
-        }
-    }.run, .{ state, child });
-
-    // Poll for completion or timeout
-    const start = std.time.milliTimestamp();
-    const timeout_ms = @as(i64, timeout_seconds) * 1000;
-
-    while (true) {
-        state.lock.lock();
-        const is_done = state.done;
-        state.lock.unlock();
-
-        if (is_done) break;
-
-        std.Thread.sleep(10 * std.time.ns_per_ms);
-        const elapsed = std.time.milliTimestamp() - start;
-        if (elapsed >= timeout_ms) {
-            // Timeout reached - kill the process
-            // First check if already done
-            state.lock.lock();
-            if (state.done) {
-                // Already finished, no need to kill
-                state.lock.unlock();
-            } else {
-                state.lock.unlock();
-                // Use raw POSIX kill to send SIGTERM - don't call child's kill() which internally waits
-                if (@import("builtin").os.tag != .windows) {
-                    posix.kill(child.id, posix.SIG.TERM) catch {};
-                }
-                thread.join();
-                return ShellResult{
-                    .exit_code = 124,
-                    .stdout = "",
-                    .stderr = "Command timed out",
-                };
-            }
-            break;
-        }
-    }
-
-    thread.join();
-
-    state.lock.lock();
-    const term = state.term orelse std.process.Child.Term{ .Exited = 1 };
-    state.lock.unlock();
-
-    const exit_code: u8 = switch (term) {
-        .Exited => |code| @intCast(code),
-        .Signal => |code| @intCast(code),
-        else => 1,
-    };
-
-    return ShellResult{
-        .exit_code = exit_code,
-        .stdout = "",
-        .stderr = "",
+        .exit_code = if (result.timed_out) 124 else result.exit_code,
+        .stdout = truncated,
+        .stderr = try allocator.dupe(u8, clean_stderr),
     };
 }
 
@@ -362,8 +267,19 @@ pub fn handleShell(args: [][]const u8) !void {
     out("\n", .{});
 
     const result = try executeShellCommand(cmd_str, timeout);
+    defer allocator.free(result.stdout);
+    defer allocator.free(result.stderr);
 
-    out("\n[Exit code: {d}]\n", .{result.exit_code});
+    out("\n[Exit code: {d}", .{result.exit_code});
+    if (result.exit_code == 124) {
+        out(" (TIMEOUT)]\n", .{});
+    } else {
+        out("]\n", .{});
+    }
+
+    if (result.stdout.len > 0) {
+        out("{s}\n", .{result.stdout});
+    }
     if (result.stderr.len > 0) {
         out("[Stderr: {s}]\n", .{result.stderr});
     }

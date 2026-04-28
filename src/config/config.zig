@@ -58,6 +58,8 @@ pub const Config = struct {
     commands_dir: ?[]const u8 = null,
     /// Remote skill URLs — fetch index.json and cache skills from these endpoints
     skill_urls: [][]const u8 = &.{},
+    /// Shell sandbox mode: "off", "cwd", "custom:/path" (default: "cwd")
+    sandbox_mode: []const u8 = "",
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -104,6 +106,7 @@ pub const Config = struct {
         if (self.commands_dir) |d| self.allocator.free(d);
         for (self.skill_urls) |u| self.allocator.free(u);
         self.allocator.free(self.skill_urls);
+        if (self.sandbox_mode.len > 0) self.allocator.free(self.sandbox_mode);
     }
 
     pub fn load(self: *Config, config_path: []const u8) !void {
@@ -323,6 +326,8 @@ pub const Config = struct {
             for (self.skill_urls) |u| self.allocator.free(u);
             self.allocator.free(self.skill_urls);
             self.skill_urls = try self.parseCommaList(value);
+        } else if (std.mem.eql(u8, key, "sandbox_mode")) {
+            self.sandbox_mode = try self.allocator.dupe(u8, value);
         } else {
             try self.setApiKey(key, value);
         }
