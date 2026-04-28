@@ -356,6 +356,7 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         defer skill_loader.deinit();
 
         skill_loader.loadFromDirectory("skills") catch {};
+        skill_loader.loadFromDirectory(".alloy") catch {};
         const skills = skill_loader.getSkills();
         if (skills.len > 0) {
             skill_xml = try skill_loader.toPromptXml(allocator);

@@ -178,6 +178,7 @@ pub fn build(b: *std.Build) !void {
     const skills_loader_mod = createMod(b, "src/skills/loader.zig", target, optimize, &.{
         imp("skills_resolver", skills_resolver_mod),
     });
+    addImports(skills_mod, &.{imp("skills_loader", skills_loader_mod)});
     const collections_mod = simpleMod(b, "src/core/collections.zig", target, optimize);
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
     addImports(skill_pipeline_mod, &.{imp("collections", collections_mod)});

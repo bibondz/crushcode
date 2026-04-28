@@ -193,7 +193,9 @@ pub fn printHelp() !void {
         \\  edit <file>   Edit/create a file
         \\  git <subcmd>  Git operations (status, add, commit, push, pull, branch)
         \\  skill <name>  Run a skill command (echo, date, whoami, etc.)
-        \\  skills-load [dir]  Load and list SKILL.md files (default: skills/)
+        \\  skill list [--alloy]  List loaded Alloy/SKILL.md skills
+        \\  skill load <dir>  Load skills from a directory
+        \\  skills-load [dir]  Load and list SKILL.md/Alloy.md files (default: skills/)
         \\  parallel      Show parallel executor status
         \\  agents       Spawn multiple AI agents in parallel
         \\  tools         List, enable, disable, check tools
@@ -291,7 +293,7 @@ pub fn printHelp() !void {
         \\  forge          → crush     (auto-agentic)
         \\  strike         → chat      (strike up a conversation)
         \\  furnace        → tui       (the hot main interface)
-        \\  alloy          → skill     (blended skills)
+        \\  alloy          → skill     (blended skills — supports Alloy.md files)
         \\  anvil          → edit      (shape your code)
         \\  bellows        → shell     (pump commands)
         \\  blueprint      → scaffold  (plan your build)

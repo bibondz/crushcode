@@ -64,6 +64,7 @@ pub fn handleCapabilities(_: args_mod.Args) !void {
     var skill_loader = skills_loader_mod.SkillLoader.init(allocator);
     defer skill_loader.deinit();
     skill_loader.loadFromDirectory("skills") catch {};
+    skill_loader.loadFromDirectory(".alloy") catch {};
     for (skill_loader.getSkills()) |skill| {
         try catalog.register(.{
             .name = skill.name,

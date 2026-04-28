@@ -2,6 +2,7 @@ const std = @import("std");
 const file_compat = @import("file_compat");
 const array_list_compat = @import("array_list_compat");
 const shell = @import("shell");
+const skills_loader_mod = @import("skills_loader");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -83,10 +84,10 @@ fn skillPwd(args: []const []const u8) !shell.ShellResult {
     return shell.executeShellCommand("pwd", null);
 }
 
-/// Handle skill command from CLI
+/// Handle skill/alloy command from CLI
 pub fn handleSkill(args: [][]const u8) !void {
     if (args.len == 0) {
-        // List all skills
+        // List all built-in skills
         out("Available Skills:\n\n", .{});
 
         const skills = getAllSkills();
@@ -95,6 +96,80 @@ pub fn handleSkill(args: [][]const u8) !void {
         }
 
         out("\nUsage: crushcode skill <name> [args]\n", .{});
+        out("       crushcode skill list [--alloy]  (list Alloy.md skills)\n", .{});
+        out("       crushcode skill load <dir>       (load skills from directory)\n", .{});
+        return;
+    }
+
+    const subcommand = args[0];
+
+    // Alloy subcommands: list, load, unload
+    if (std.mem.eql(u8, subcommand, "list") or std.mem.eql(u8, subcommand, "--alloy") or std.mem.eql(u8, subcommand, "ls")) {
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        var loader = skills_loader_mod.SkillLoader.init(allocator);
+        defer loader.deinit();
+
+        loader.loadFromDirectory("skills") catch {};
+        loader.loadFromDirectory(".alloy") catch {};
+        loader.loadFromDirectory(".claude/skills") catch {};
+
+        const loaded = loader.getSkills();
+        if (loaded.len == 0) {
+            out("No Alloy/SKILL.md files found in skills/, .alloy/, .claude/skills/\n", .{});
+            return;
+        }
+
+        out("Loaded {} Alloy skill(s):\n\n", .{loaded.len});
+        for (loaded) |skill| {
+            out("  {s}", .{skill.name});
+            if (skill.description.len > 0) {
+                out(" - {s}", .{skill.description});
+            }
+            out("\n", .{});
+            if (skill.triggers.len > 0) {
+                out("    triggers: ", .{});
+                for (skill.triggers, 0..) |trigger, i| {
+                    if (i > 0) out(", ", .{});
+                    out("{s}", .{trigger});
+                }
+                out("\n", .{});
+            }
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "load")) {
+        if (args.len < 2) {
+            out("Usage: crushcode skill load <directory>\n", .{});
+            return;
+        }
+
+        var gpa = std.heap.GeneralPurposeAllocator(.{}){};
+        defer _ = gpa.deinit();
+        const allocator = gpa.allocator();
+
+        var loader = skills_loader_mod.SkillLoader.init(allocator);
+        defer loader.deinit();
+
+        const dir_path = args[1];
+        loader.loadFromDirectory(dir_path) catch |err| {
+            out("Error loading skills from '{s}': {}\n", .{ dir_path, err });
+            return;
+        };
+
+        const loaded = loader.getSkills();
+        out("Loaded {} skill(s) from {s}:\n", .{ loaded.len, dir_path });
+        for (loaded) |skill| {
+            out("  - {s}: {s}\n", .{ skill.name, skill.description });
+        }
+        return;
+    }
+
+    if (std.mem.eql(u8, subcommand, "unload")) {
+        out("Note: Skills are loaded per-session. Start a new session to unload.\n", .{});
         return;
     }
 

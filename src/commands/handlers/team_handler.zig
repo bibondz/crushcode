@@ -43,6 +43,7 @@ pub fn handleSkillsResolve(args: args_mod.Args) !void {
     try search_paths.append("./skills");
     try search_paths.append(".claude/skills");
     try search_paths.append(".crushcode/skills");
+    try search_paths.append("./.alloy");
 
     var resolver_state = skills_resolver.SkillResolver.init(allocator, search_paths.items);
     defer resolver_state.deinit();
@@ -96,6 +97,7 @@ pub fn handleSkillsScan(args: args_mod.Args) !void {
     try search_paths.append("./skills");
     try search_paths.append(".claude/skills");
     try search_paths.append(".crushcode/skills");
+    try search_paths.append("./.alloy");
 
     var resolver_state = skills_resolver.SkillResolver.init(allocator, search_paths.items);
     defer resolver_state.deinit();

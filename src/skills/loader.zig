@@ -63,7 +63,9 @@ pub const SkillLoader = struct {
 
             const basename = entry.basename;
             const is_skill_file = std.mem.eql(u8, basename, "SKILL.md") or
-                std.mem.endsWith(u8, basename, ".skill.md");
+                std.mem.endsWith(u8, basename, ".skill.md") or
+                std.mem.eql(u8, basename, "Alloy.md") or
+                std.mem.endsWith(u8, basename, ".alloy.md");
 
             if (!is_skill_file) continue;
 
@@ -120,7 +122,9 @@ pub const SkillLoader = struct {
             const basename = std.fs.path.basename(path);
             if (std.mem.endsWith(u8, basename, ".skill.md")) {
                 skill.name = try self.allocator.dupe(u8, basename[0 .. basename.len - ".skill.md".len]);
-            } else if (std.mem.eql(u8, basename, "SKILL.md")) {
+            } else if (std.mem.endsWith(u8, basename, ".alloy.md")) {
+                skill.name = try self.allocator.dupe(u8, basename[0 .. basename.len - ".alloy.md".len]);
+            } else if (std.mem.eql(u8, basename, "SKILL.md") or std.mem.eql(u8, basename, "Alloy.md")) {
                 const parent = std.fs.path.dirname(path) orelse ".";
                 skill.name = try self.allocator.dupe(u8, std.fs.path.basename(parent));
             } else {
@@ -399,7 +403,9 @@ pub fn loadSkillsFromDirectory(allocator: Allocator, dir_path: []const u8) ![]Sk
 
         const basename = entry.basename;
         const is_skill_file = std.mem.eql(u8, basename, "SKILL.md") or
-            std.mem.endsWith(u8, basename, ".skill.md");
+            std.mem.endsWith(u8, basename, ".skill.md") or
+            std.mem.eql(u8, basename, "Alloy.md") or
+            std.mem.endsWith(u8, basename, ".alloy.md");
         if (!is_skill_file) continue;
 
         const full_path = try std.fs.path.join(allocator, &[_][]const u8{ dir_path, entry.path });
@@ -438,6 +444,8 @@ pub fn loadSkillsFromDirectory(allocator: Allocator, dir_path: []const u8) ![]Sk
         if (owned.name.len == 0) {
             if (std.mem.endsWith(u8, basename, ".skill.md")) {
                 owned.name = try allocator.dupe(u8, basename[0 .. basename.len - ".skill.md".len]);
+            } else if (std.mem.endsWith(u8, basename, ".alloy.md")) {
+                owned.name = try allocator.dupe(u8, basename[0 .. basename.len - ".alloy.md".len]);
             } else {
                 owned.name = try allocator.dupe(u8, basename);
             }
