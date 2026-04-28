@@ -289,6 +289,12 @@ Created: 2026-04-14 · Updated: 2026-04-27
 Based on gap analysis of 17 CLI core references + 36 orchestra references.
 
 ### Phase 39: Forge Naming System
+
+**Plans:** 1 plan
+
+Plans:
+- [ ] 39-01-PLAN.md — Add 17 Forge aliases to CLI dispatch + help text + FORGE_GLOSSARY.md + CRUSH.md
+
 - Add Forge command aliases to registry.zig (forge, strike, furnace, alloy, anvil, bellows, blueprint, ledger, smiths, rack, tongs, reheat, slag, sparks, smelt, quench, foundry)
 - Update help text with Forge terminology
 - Create FORGE_GLOSSARY.md reference doc
