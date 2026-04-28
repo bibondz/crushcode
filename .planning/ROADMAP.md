@@ -302,6 +302,16 @@ Plans:
 - Keep original commands working (aliases only, no removal)
 
 ### Phase 40: Shell Safety
+
+**Plans:** 5 plans
+
+Plans:
+- [ ] 40-01-PLAN.md — ANSI escape stripping utility (src/shell/ansi_strip.zig)
+- [ ] 40-02-PLAN.md — Process timeout with output capture (src/core/process.zig)
+- [ ] 40-03-PLAN.md — Shell sandbox checker + config (src/permission/sandbox.zig)
+- [ ] 40-04-PLAN.md — Wire safety into CLI shell + build.zig modules
+- [ ] 40-05-PLAN.md — Wire safety into AI agent shell tool (tool_executors.zig)
+
 - Output size limits (1MB cap + truncation)
 - ANSI escape stripping from command output
 - Per-command timeout with cancellation
