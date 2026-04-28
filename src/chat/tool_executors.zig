@@ -816,6 +816,19 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
     // Checkpoint: snapshot current file content before overwriting
     checkpointBeforeWrite(parsed.value.path, "write_file");
 
+    // Generate diff preview for existing files
+    var write_diff_preview: ?[]const u8 = null;
+    defer if (write_diff_preview) |dp| allocator.free(dp);
+    blk: {
+        const old_content = std.fs.cwd().readFileAlloc(allocator, parsed.value.path, 100 * 1024 * 1024) catch break :blk;
+        defer allocator.free(old_content);
+        var diff_result = myers.MyersDiff.diff(allocator, old_content, parsed.value.content) catch break :blk;
+        defer diff_result.deinit();
+        if (diff_result.hunks.len > 0) {
+            write_diff_preview = myers.formatUnifiedDiff(allocator, &diff_result, parsed.value.path, parsed.value.path) catch null;
+        }
+    }
+
     const file = try std.fs.cwd().createFile(parsed.value.path, .{});
     defer file.close();
     try file.writeAll(parsed.value.content);
@@ -825,8 +838,17 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
         tracker.invalidate(parsed.value.path);
     }
 
+    // Build display with diff preview
+    var write_display_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer write_display_buf.deinit();
+    const wdw = write_display_buf.writer();
+    wdw.print("🔧 write_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, parsed.value.content.len }) catch {};
+    if (write_diff_preview) |dp| {
+        wdw.print("{s}\n", .{dp}) catch {};
+    }
+
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 write_file(\"{s}\") → {d} bytes\n", .{ parsed.value.path, parsed.value.content.len }),
+        .display = try write_display_buf.toOwnedSlice(),
         .result = try std.fmt.allocPrint(allocator, "Wrote {d} bytes to {s}", .{ parsed.value.content.len, parsed.value.path }),
     };
 }
@@ -1231,6 +1253,20 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     try new_content.appendSlice(parsed.value.new_string);
     try new_content.appendSlice(content[after_first..]);
 
+    const lines_before = countLines(content);
+    const lines_after = countLines(new_content.items);
+
+    // Generate diff preview before applying
+    var diff_preview: ?[]const u8 = null;
+    defer if (diff_preview) |dp| allocator.free(dp);
+    gen_diff: {
+        var diff_result = myers.MyersDiff.diff(allocator, content, new_content.items) catch break :gen_diff;
+        defer diff_result.deinit();
+        if (diff_result.hunks.len > 0) {
+            diff_preview = myers.formatUnifiedDiff(allocator, &diff_result, parsed.value.file_path, parsed.value.file_path) catch null;
+        }
+    }
+
     const out_file = try std.fs.cwd().createFile(parsed.value.file_path, .{});
     defer out_file.close();
     try out_file.writeAll(new_content.items);
@@ -1239,9 +1275,6 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     if (active_file_tracker) |tracker| {
         tracker.invalidate(parsed.value.file_path);
     }
-
-    const lines_before = countLines(content);
-    const lines_after = countLines(new_content.items);
 
     // [Quality] Auto LSP diagnostics after edit — check for type errors
     var diag_note: ?[]const u8 = null;
@@ -1270,8 +1303,17 @@ fn executeEditTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall)
     }
     defer if (diag_note) |n| allocator.free(n);
 
+    // Build display with diff preview
+    var display_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer display_buf.deinit();
+    const dw = display_buf.writer();
+    dw.print("🔧 edit(\"{s}\") → replaced {d} chars with {d} chars{s}\n", .{ parsed.value.file_path, parsed.value.old_string.len, parsed.value.new_string.len, diag_note orelse "" }) catch {};
+    if (diff_preview) |dp| {
+        dw.print("{s}\n", .{dp}) catch {};
+    }
+
     return .{
-        .display = try std.fmt.allocPrint(allocator, "🔧 edit(\"{s}\") → replaced {d} chars with {d} chars{s}\n", .{ parsed.value.file_path, parsed.value.old_string.len, parsed.value.new_string.len, diag_note orelse "" }),
+        .display = try display_buf.toOwnedSlice(),
         .result = try std.fmt.allocPrint(allocator, "Edited {s}: replaced text at position {d}. File: {d} lines → {d} lines{s}", .{ parsed.value.file_path, pos, lines_before, lines_after, diag_note orelse "" }),
     };
 }

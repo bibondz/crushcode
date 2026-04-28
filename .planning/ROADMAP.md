@@ -295,21 +295,55 @@ Based on gap analysis of 17 CLI core references + 36 orchestra references.
 
 ---
 
-## v3.1.0 — Trace & Observability 🔥 CURRENT
+## v3.1.0 — Trace & Observability ✅ DONE
 
 **วัตถุประสงค์**: Make every agent run inspectable, debuggable, and comparable. Build on existing trace/ modules (span.zig, writer.zig, context.zig) to add HTML trace reports, run comparison, failure diagnosis, and a `crushcode trace` CLI command.
 
 Based on CheetahClaws Layer 5 (Observability, Trace, and Replay) roadmap analysis.
 
-### Phase 43: Trace HTML Export + Run Comparison
+### Phase 43: Trace HTML Export + Run Comparison ✅ (d93c03a)
 
-**Plans:** 4 plans in 3 waves
+**Plans:** 4 plans in 3 waves — ALL COMPLETE
 
 Plans:
-- [ ] 43-01-PLAN.md — Trace reader: JSONL parser, trace enumeration, span filtering, failure classification
-- [ ] 43-02-PLAN.md — Export format generators: self-contained HTML, JSON, Markdown
-- [ ] 43-03-PLAN.md — Run comparison engine: metric deltas, verdicts, tool usage diff
-- [ ] 43-04-PLAN.md — CLI wiring: `crushcode trace` command, registry, build.zig
+- [x] 43-01-PLAN.md — Trace reader: JSONL parser, trace enumeration, span filtering, failure classification
+- [x] 43-02-PLAN.md — Export format generators: self-contained HTML, JSON, Markdown
+- [x] 43-03-PLAN.md — Run comparison engine: metric deltas, verdicts, tool usage diff
+- [x] 43-04-PLAN.md — CLI wiring: `crushcode trace` command, registry, build.zig
+
+**Delivered:** reader.zig (724L), html_report.zig (264L), json_export.zig (80L), markdown_export.zig (93L), comparison.zig (647L), trace_cmd.zig (327L) + `lens` Forge alias
+
+---
+
+## v3.2.0 — Agent Core Live ✅ DONE
+
+**วัตถุประสงค์**: Make crushcode a REAL coding agent — AI uses tools in a multi-turn loop during interactive chat.
+
+**Critical discovery**: After deep investigation, the entire agent core was already built:
+- `AgentLoop` (1,187L) — full tool-call cycle with retry, compaction, loop detection, modes
+- `chat_bridge.zig` (198L) — AISendFn adapter bridging AIClient ↔ AgentLoop
+- `tool_executors.zig` (2,760L) — 34 built-in tool executors with 3-tier permission
+- `session.zig` — SQLite session persistence with restore
+- `chat.zig` line 2108 — already calls `agent_loop.run(chat_bridge.sendInteractiveLoopMessages, user_message)`
+- 24+ slash commands (/mode, /model, /compact, /cost, /memory, etc.)
+
+**The only gap found**: Edit diff preview — `previewEditDiff()` existed but wasn't wired into `executeEditTool`.
+
+### Phase 44: Agent Loop Audit + Diff Preview ✅
+
+**Delivered:**
+- Diff preview wired into `edit` tool — shows Myers unified diff before applying changes
+- Diff preview wired into `write_file` tool — shows diff for existing file overwrites
+- Build clean
+
+**What was already built (no changes needed):**
+- AgentLoop ↔ chat_bridge ↔ AIClient wiring
+- 34 tool executors with permission system
+- System prompt with tool descriptions
+- Session persistence with SQLite
+- Auto-compaction, convergence detection, loop detection
+- 3-tier permission (blocklist → safelist → evaluator)
+- 3-tier search (ast-grep → ripgrep → grep)
 
 ---
 
