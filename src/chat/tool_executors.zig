@@ -27,6 +27,8 @@ const question_mod = @import("question");
 const hooks_mod = @import("hooks_registry");
 const subagent_mod = @import("subagent");
 const hashline_edit_mod = @import("hashline_edit");
+const image_analyzer_mod = @import("image_analyzer");
+const semantic_search_mod = @import("semantic_search");
 
 const AgentLoop = agent_loop_mod.AgentLoop;
 const ToolExecutor = agent_loop_mod.ToolExecutor;
@@ -90,6 +92,15 @@ threadlocal var active_session_db_ref: ?*session_db_mod.SessionDB = null;
 threadlocal var active_checkpoint_session_id: []const u8 = "";
 threadlocal var active_hook_registry: ?*hooks_mod.HookRegistry = null;
 threadlocal var hashline_mode: bool = false;
+threadlocal var active_semantic_api_base: ?[]const u8 = null;
+threadlocal var active_semantic_api_key: ?[]const u8 = null;
+threadlocal var active_semantic_embed_model: ?[]const u8 = null;
+
+pub fn setSemanticConfig(api_base: ?[]const u8, api_key: ?[]const u8, embed_model: ?[]const u8) void {
+    active_semantic_api_base = api_base;
+    active_semantic_api_key = api_key;
+    active_semantic_embed_model = embed_model;
+}
 
 pub fn setPermissionEvaluator(evaluator: ?*PermissionEvaluator) void {
     active_evaluator = evaluator;
@@ -444,6 +455,18 @@ fn runTestsExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments
     return adaptToolExecution(allocator, call_id, "run_tests", arguments, executeRunTestsTool);
 }
 
+fn createPrExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "create_pr", arguments, executeCreatePrTool);
+}
+
+fn analyzeImageExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "analyze_image", arguments, executeAnalyzeImageTool);
+}
+
+fn semanticSearchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
+    return adaptToolExecution(allocator, call_id, "semantic_search", arguments, executeSemanticSearchTool);
+}
+
 // Web tool executors
 fn webFetchExecutor(allocator: std.mem.Allocator, call_id: []const u8, arguments: []const u8) !ToolResult {
     return adaptToolExecution(allocator, call_id, "web_fetch", arguments, executeWebFetchTool);
@@ -520,6 +543,9 @@ const builtin_tool_bindings = [_]BuiltinToolDefinition{
     .{ .name = "git_log", .executor = gitLogExecutor },
     .{ .name = "search_files", .executor = searchFilesExecutor },
     .{ .name = "run_tests", .executor = runTestsExecutor },
+    .{ .name = "create_pr", .executor = createPrExecutor },
+    .{ .name = "analyze_image", .executor = analyzeImageExecutor },
+    .{ .name = "semantic_search", .executor = semanticSearchExecutor },
     .{ .name = "web_fetch", .executor = webFetchExecutor },
     .{ .name = "web_search", .executor = webSearchExecutor },
     .{ .name = "image_display", .executor = imageDisplayExecutor },
@@ -1458,6 +1484,217 @@ fn executeRunTestsTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolC
     return .{
         .display = try std.fmt.allocPrint(allocator, "🔧 run_tests() → {s} (exit {d})\n", .{ status_text, result.exit_code }),
         .result = try std.fmt.allocPrint(allocator, "Test results ({s}, exit code {d}):\n{s}", .{ status_text, result.exit_code, truncated_output }),
+    };
+}
+
+fn executeCreatePrTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const CreatePrArgs = struct {
+        title: []const u8,
+        body: ?[]const u8 = null,
+        base: ?[]const u8 = null,
+        draft: ?bool = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(CreatePrArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (try requireField(allocator, "create_pr", "create_pr requires a 'title' parameter.", parsed.value.title)) |r| return r;
+
+    // Build gh pr create command
+    var cmd_buf = array_list_compat.ArrayList([]const u8).init(allocator);
+    defer cmd_buf.deinit();
+
+    try cmd_buf.append("gh");
+    try cmd_buf.append("pr");
+    try cmd_buf.append("create");
+    try cmd_buf.append("--title");
+    try cmd_buf.append(parsed.value.title);
+
+    if (parsed.value.body) |b| {
+        try cmd_buf.append("--body");
+        try cmd_buf.append(b);
+    }
+    if (parsed.value.base) |b| {
+        try cmd_buf.append("--base");
+        try cmd_buf.append(b);
+    }
+    if (parsed.value.draft) |d| {
+        if (d) try cmd_buf.append("--draft");
+    }
+
+    const args_slice = cmd_buf.items;
+
+    var child = std.process.Child.init(args_slice, allocator);
+    child.stdout_behavior = .Pipe;
+    child.stderr_behavior = .Pipe;
+
+    const spawn_result = child.spawnAndWait() catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ create_pr failed — is 'gh' CLI installed?\n", .{}),
+            .result = try allocator.dupe(u8, "error: failed to spawn 'gh pr create'. Ensure GitHub CLI (gh) is installed and authenticated."),
+        };
+    };
+
+    const exit_code = switch (spawn_result) {
+        .Exited => |code| code,
+        else => 1,
+    };
+
+    const status_text: []const u8 = if (exit_code == 0) "PR created" else "PR creation failed";
+    return .{
+        .display = try std.fmt.allocPrint(allocator, "🔧 create_pr(\"{s}\") → {s} (exit {d})\n", .{ parsed.value.title, status_text, exit_code }),
+        .result = try std.fmt.allocPrint(allocator, "{s} (exit code {d})", .{ status_text, exit_code }),
+    };
+}
+
+fn executeAnalyzeImageTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const AnalyzeImageArgs = struct {
+        path: []const u8,
+        prompt: ?[]const u8 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(AnalyzeImageArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (try requireField(allocator, "analyze_image", "analyze_image requires a 'path' parameter.", parsed.value.path)) |r| return r;
+
+    const image_path = parsed.value.path;
+    _ = parsed.value.prompt; // Reserved for future vision API call
+
+    // Check if file exists and is a supported image format
+    if (!image_analyzer_mod.isSupportedImage(image_path)) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ analyze_image: unsupported image format for '{s}'\n", .{image_path}),
+            .result = try std.fmt.allocPrint(allocator, "error: unsupported image format. Supported: PNG, JPEG, GIF, WebP, BMP", .{}),
+        };
+    }
+
+    // Check file exists
+    std.fs.cwd().access(image_path, .{}) catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ analyze_image: file not found '{s}'\n", .{image_path}),
+            .result = try std.fmt.allocPrint(allocator, "error: file not found: {s}", .{image_path}),
+        };
+    };
+
+    // Read and base64 encode the image
+    const file = std.fs.cwd().openFile(image_path, .{}) catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ analyze_image: cannot read '{s}'\n", .{image_path}),
+            .result = try allocator.dupe(u8, "error: cannot read image file"),
+        };
+    };
+    defer file.close();
+
+    const file_size = file.getEndPos() catch 0;
+    const image_data = file.readToEndAlloc(allocator, 20 * 1024 * 1024) catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ analyze_image: file too large (>20MB)\n", .{}),
+            .result = try allocator.dupe(u8, "error: image file too large (max 20MB)"),
+        };
+    };
+    defer allocator.free(image_data);
+
+    const b64 = image_analyzer_mod.base64Encode(allocator, image_data) catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ analyze_image: base64 encoding failed\n", .{}),
+            .result = try allocator.dupe(u8, "error: failed to base64 encode image"),
+        };
+    };
+    defer allocator.free(b64);
+
+    const mime = image_analyzer_mod.mimeType(image_path);
+    const fs = formatFileSize(file_size);
+
+    // Return the base64 data URI so the AI can use it in multimodal-capable conversations
+    // For providers that support vision, this data can be sent as an image_url content block
+    const data_uri = try std.fmt.allocPrint(allocator, "data:{s};base64,{s}", .{ mime, b64 });
+
+    const display = try std.fmt.allocPrint(allocator, "🖼️ analyze_image(\"{s}\") → {s}, {d:.1} {s}, base64 encoded ({d} chars)\n", .{ image_path, mime, fs.value, fs.unit, data_uri.len });
+
+    return .{
+        .display = display,
+        .result = data_uri,
+    };
+}
+
+fn executeSemanticSearchTool(allocator: std.mem.Allocator, tool_call: core.ParsedToolCall) !ToolExecution {
+    const SearchArgs = struct {
+        query: []const u8,
+        top_k: ?u32 = null,
+        path: ?[]const u8 = null,
+    };
+
+    var parsed = try std.json.parseFromSlice(SearchArgs, allocator, tool_call.arguments, .{ .ignore_unknown_fields = true });
+    defer parsed.deinit();
+
+    if (try requireField(allocator, "semantic_search", "semantic_search requires a 'query' parameter.", parsed.value.query)) |r| return r;
+
+    const query = parsed.value.query;
+    const top_k = parsed.value.top_k orelse 10;
+    const root_path = parsed.value.path orelse ".";
+
+    // Use the active provider's API config for embeddings
+    // We need API base and key — get from the active provider config
+    const api_base = active_semantic_api_base orelse "https://api.openai.com/v1";
+    const api_key = active_semantic_api_key orelse "";
+    const embed_model = active_semantic_embed_model orelse "text-embedding-3-small";
+
+    if (api_key.len == 0) {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ semantic_search: no API key configured for embeddings\n", .{}),
+            .result = try allocator.dupe(u8, "error: no API key configured. Set an embedding provider in config."),
+        };
+    }
+
+    // Initialize semantic index
+    var index = semantic_search_mod.SemanticIndex.init(allocator);
+    defer index.deinit();
+
+    // Index the project
+    const indexed = index.indexProject(root_path, api_base, api_key, embed_model) catch 0;
+
+    if (indexed == 0) {
+        // Fallback: simple keyword grep if no embeddings available
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "🔍 semantic_search: no files indexed (embedding API may be unavailable). Try /grep for keyword search.\n", .{}),
+            .result = try std.fmt.allocPrint(allocator, "No files indexed for semantic search. Falling back to keyword-based search is recommended.", .{}),
+        };
+    }
+
+    // Search
+    const results = index.search(query, api_base, api_key, embed_model, top_k) catch {
+        return .{
+            .display = try std.fmt.allocPrint(allocator, "❌ semantic_search: query embedding failed\n", .{}),
+            .result = try allocator.dupe(u8, "error: failed to embed query"),
+        };
+    };
+
+    // Format results
+    var output = array_list_compat.ArrayList(u8).init(allocator);
+    defer output.deinit();
+    const w = output.writer();
+
+    try w.print("🔍 semantic_search(\"{s}\") — {d} files indexed, top {d} results:\n", .{ query, indexed, results.len });
+    for (results, 0..) |result, i| {
+        try w.print("  {d}. {s} (score: {d:.3})\n", .{ i + 1, result.file_path, result.score });
+        if (result.snippet.len > 0) {
+            const snippet_len = @min(result.snippet.len, 120);
+            try w.print("     → {s}\n", .{result.snippet[0..snippet_len]});
+        }
+    }
+
+    // Build result string for AI
+    var result_buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer result_buf.deinit();
+    const rw = result_buf.writer();
+    for (results) |result| {
+        try rw.print("{s} (relevance: {d:.3})\n", .{ result.file_path, result.score });
+    }
+
+    return .{
+        .display = try allocator.dupe(u8, output.items),
+        .result = try allocator.dupe(u8, result_buf.items),
     };
 }
 

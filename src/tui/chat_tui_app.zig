@@ -1473,6 +1473,9 @@ pub const Model = struct {
                 \\- git_log(count?, oneline?, file_path?)
                 \\- search_files(pattern, directory?, max_results?)
                 \\- run_tests(filter?)
+                \\- create_pr(title, body?, base?, draft?)
+                \\- analyze_image(path, prompt?)
+                \\- semantic_search(query, top_k?, path?)
             , .{}) catch {};
             // Add project-specific tool usage tips
             if (self.cached_project_info) |project| {

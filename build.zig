@@ -92,6 +92,10 @@ pub fn build(b: *std.Build) !void {
 
     const fileops_mod = simpleMod(b, "src/fileops/reader.zig", target, optimize);
     const repo_map_mod = createMod(b, "src/context/repo_map.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
+    const keymap_mod = createMod(b, "src/config/keymap.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("file_compat", compat_file_mod),
+    });
     const pty_plugin_mod = simpleMod(b, "src/plugins/pty.zig", target, optimize);
     const table_formatter_plugin_mod = simpleMod(b, "src/plugins/table_formatter.zig", target, optimize);
     const notifier_plugin_mod = simpleMod(b, "src/plugins/notifier.zig", target, optimize);
@@ -189,6 +193,10 @@ pub fn build(b: *std.Build) !void {
         imp("web_fetch", web_fetch_mod),
     });
     const image_display_mod = simpleMod(b, "src/tools/image_display.zig", target, optimize);
+    const image_analyzer_mod = createMod(b, "src/tools/image_analyzer.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("http_client", http_client_mod),
+    });
     const edit_batch_mod = simpleMod(b, "src/tools/edit_batch.zig", target, optimize);
     addImports(edit_batch_mod, &.{imp("json_helpers", json_helpers_mod), imp("string_utils", string_utils_mod)});
     const lsp_tools_mod = simpleMod(b, "src/tools/lsp_tools.zig", target, optimize);
@@ -197,6 +205,10 @@ pub fn build(b: *std.Build) !void {
     const apply_patch_mod = simpleMod(b, "src/tools/apply_patch.zig", target, optimize);
     const question_mod = simpleMod(b, "src/tools/question.zig", target, optimize);
     const subagent_mod = simpleMod(b, "src/tools/subagent.zig", target, optimize);
+    const semantic_search_mod = createMod(b, "src/search/semantic.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("http_client", http_client_mod),
+    });
     const fork_mod = createMod(b, "src/session/fork.zig", target, optimize, &.{
         imp("session", session_mod),
     });
@@ -511,7 +523,7 @@ pub fn build(b: *std.Build) !void {
     addImports(config_mod, &.{imp("migrate", migrate_mod)});
 
     const project_mod = simpleMod(b, "src/config/project.zig", target, optimize);
-    addImports(tui_mod, &.{imp("project", project_mod), imp("repo_map", repo_map_mod)});
+    addImports(tui_mod, &.{imp("project", project_mod), imp("repo_map", repo_map_mod), imp("keymap", keymap_mod)});
     addImports(config_mod, &.{imp("project", project_mod)});
 
     const main_mod = createMod(b, "src/main.zig", target, optimize, &.{
@@ -856,7 +868,8 @@ pub fn build(b: *std.Build) !void {
         imp("todo", todo_mod), imp("apply_patch", apply_patch_mod), imp("question", question_mod),
         imp("subagent", subagent_mod), imp("safety_checkpoint", safety_checkpoint_mod),
         imp("session_db", session_db_mod), imp("hooks_registry", hooks_registry_mod),
-        imp("hashline_edit", hashline_edit_mod),
+        imp("hashline_edit", hashline_edit_mod), imp("image_analyzer", image_analyzer_mod),
+        imp("semantic_search", semantic_search_mod),
     });
     addImports(todo_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
     addImports(apply_patch_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
