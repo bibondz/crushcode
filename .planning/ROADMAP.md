@@ -254,3 +254,69 @@ Created: 2026-04-14 · Updated: 2026-04-27
 | Desktop notifications | ✅ DONE | OS notify when agent finishes/needs permission |
 | Agent mode refinement | ✅ DONE | OpenCode subagent/primary/all pattern |
 | MoA wiring to TUI | ✅ DONE | moa.zig (438L) wired into agent loop |
+
+---
+
+## v2.3.0 — Tool Expansion ✅ DONE
+
+**วัตถุประสงค์**: PR creation, multimodal input, semantic search, configurable keybindings
+
+| Item | Status | Description |
+|------|--------|-------------|
+| PR creation tool | ✅ DONE | `create_pr` — gh pr create wrapper with title/body/base/draft |
+| Configurable keybindings | ✅ DONE | `src/config/keymap.zig` — TOML keymap at ~/.crushcode/keymap.toml |
+| Multimodal input | ✅ DONE | `src/tools/image_analyzer.zig` — base64 encodes PNG/JPEG/GIF/WebP/BMP |
+| Semantic search | ✅ DONE | `src/search/semantic.zig` (381L) — embedding API + cosine similarity |
+
+---
+
+## v2.4.0 — Context Awareness ✅ DONE
+
+**วัตถุประสงค์**: File watcher, streaming tool display, batch embeddings
+
+| Item | Status | Description |
+|------|--------|-------------|
+| Context file watcher | ✅ DONE | `src/config/file_watcher.zig` — polls CLAUDE.md/AGENTS.md mtime, auto-rebuilds |
+| Streaming tool display | ✅ DONE | `⏳ tool_name...` indicator before execution, cleared on completion |
+| Embedding batch API | ✅ DONE | `embedBatch()` in semantic.zig — array of texts, parseBatchEmbeddings() |
+
+---
+
+## v3.0.0 — Forge Identity + Shell Safety 🔥 CURRENT
+
+**วัตถุประสงค์**: Unique brand identity (Forge naming) + critical shell safety features + reference repo gap closure
+
+Based on gap analysis of 17 CLI core references + 36 orchestra references.
+
+### Phase 39: Forge Naming System
+- Add Forge command aliases to registry.zig (forge, strike, furnace, alloy, anvil, bellows, blueprint, ledger, smiths, rack, tongs, reheat, slag, sparks, smelt, quench, foundry)
+- Update help text with Forge terminology
+- Create FORGE_GLOSSARY.md reference doc
+- Update CRUSH.md with naming conventions
+- Keep original commands working (aliases only, no removal)
+
+### Phase 40: Shell Safety
+- Output size limits (1MB cap + truncation)
+- ANSI escape stripping from command output
+- Per-command timeout with cancellation
+- Shell tool sandbox wrappers (basic: restrict writes to cwd by default)
+
+### Phase 41: Context Management
+- Auto-truncation when approaching token limit
+- Conversation summarization for old context
+- External directory access with permission check
+
+### Phase 42: Alloy (Skill) System
+- Parse Alloy.md files dynamically
+- Inject skill tools at runtime
+- Alloy load/unload/list commands
+
+---
+
+## Ref Sources (reorganized 2026-04-28)
+
+### CLI Core (`/mnt/d/crushcode-cli-reference/`) — 17 repos
+- opencode, crush, open-claude-code, claude-code, cheetahclaws, codex, codex-rust, goose-latest, hermes-agent, oh-my-openagent, kimi-cli, deepagents, get-shit-done, ripgrep, libvaxis-latest, libvaxis-0.5.1, claude-token-efficient
+
+### Orchestra/Enhancement (`/mnt/d/crush-code-orchestra-work-ref/`) — 36 repos
+- OpenHands, Open-Claude-Cowork, kuse_cowork, openwork, eigent, goose, AionUi, multica, thClaws, BMAD-METHOD, design.md, superpowers, COG-second-brain, Firstbrain, obsidian-second-brain, karpathy-second-brain, agent-skills-standard, skills-main, caveman, cavekit, claude-code-templates, claude-code-best-practice, awesome-design-md, future-agi, magika, graphify, OpenHarness, and more

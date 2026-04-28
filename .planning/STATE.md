@@ -1,4 +1,4 @@
-# State: Crushcode v2.2.0
+# State: Crushcode v2.4.0
 
 **Project:** Crushcode - Zig-based AI Coding CLI
 **Updated:** 2026-04-28
@@ -12,10 +12,10 @@
 
 | Field | Value |
 |-------|-------|
-| Milestone | v2.2.0 — Context Intelligence |
-| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0–v2.2.0 |
-| Next | Backlog empty |
-| Latest commit | Pending — Repo map, auto-commit toggle, test runner, Windows cross-compile |
+| Milestone | v3.0.0 — Forge Identity + Shell Safety |
+| Tags | v0.2.1, v0.2.2, v1.0.0–v1.9.0, v2.0.0–v2.4.0 |
+| Next | Phase 39: Forge naming system |
+| Latest commit | a48cd6a — v2.4.0: file watcher, streaming tool display, batch embeddings |
 
 ---
 
