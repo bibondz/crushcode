@@ -605,6 +605,7 @@ pub fn build(b: *std.Build) !void {
     const compaction_mod = simpleMod(b, "src/agent/compaction.zig", target, optimize);
     const context_budget_mod = simpleMod(b, "src/agent/context_budget.zig", target, optimize);
     const context_optimizer_mod = simpleMod(b, "src/ai/context_optimizer.zig", target, optimize);
+    const token_cache_mod = simpleMod(b, "src/ai/token_cache.zig", target, optimize);
     const context_limits_mod = simpleMod(b, "src/ai/context_limits.zig", target, optimize);
     const project_memory_mod = simpleMod(b, "src/agent/project_memory.zig", target, optimize);
     const smart_context_mod = simpleMod(b, "src/agent/smart_context.zig", target, optimize);
@@ -764,6 +765,10 @@ pub fn build(b: *std.Build) !void {
     const mcp_bridge_mod = createMod(b, "src/mcp/bridge.zig", target, optimize, &.{
         imp("mcp_client", mcp_client_mod), imp("discovery", mcp_discovery_mod), imp("client", client_mod),
     });
+
+    addImports(context_optimizer_mod, &.{imp("token_cache", token_cache_mod)});
+    addImports(client_mod, &.{imp("token_cache", token_cache_mod)});
+    addImports(token_cache_mod, &.{imp("array_list_compat", compat_array_list_mod)});
 
     const hybrid_bridge_mod = createMod(b, "src/hybrid_bridge.zig", target, optimize, &.{
         imp("core_api", core_api_mod),
@@ -925,7 +930,7 @@ pub fn build(b: *std.Build) !void {
         custom_commands_mod, project_mod, permission_audit_mod, shell_state_mod, shell_history_mod,
         permission_lists_mod, run_mod, batch_mod, file_tracker_mod, structured_log_mod, logs_mod,
         tool_exposition_mod, mcp_server_mod, governance_mod, context_optimizer_mod,
-        context_limits_mod, worker_mod, router_mod, circuit_breaker_mod, capability_mod,
+        token_cache_mod, context_limits_mod, worker_mod, router_mod, circuit_breaker_mod, capability_mod,
         knowledge_schema_mod, knowledge_vault_mod, knowledge_ops_mod, knowledge_knowledge_lint_mod,
         widget_code_view_mod, widget_data_table_mod, widget_scroll_panel_mod, widget_diff_preview_mod,
         worker_runner_mod, skills_agents_parser_mod, skills_resolver_mod, knowledge_persistence_mod,
@@ -977,7 +982,7 @@ pub fn build(b: *std.Build) !void {
         tui_mod, config_mod, provider_config_mod, backup_mod, auth_mod, tools_mod,
         skills_loader_mod, custom_commands_mod, color_mod, source_tracker_mod, provider_oauth_mod,
         tool_exposition_mod, mcp_server_mod, governance_mod, permission_lists_mod,
-        context_optimizer_mod, context_limits_mod, worker_mod, router_mod, circuit_breaker_mod,
+        context_optimizer_mod, token_cache_mod, context_limits_mod, worker_mod, router_mod, circuit_breaker_mod,
         guardrail_pipeline_mod, metrics_collector_mod, knowledge_schema_mod, knowledge_ops_mod,
         knowledge_knowledge_lint_mod, widget_data_table_mod, widget_scroll_panel_mod,
         widget_code_view_mod, worker_runner_mod, skills_agents_parser_mod, skills_resolver_mod,
