@@ -98,6 +98,7 @@ const commands = [_]Command{
     .{ .name = "detect", .handler = wrapArgsOnly(handlers.handleDetect), .description = "Detect file type using content analysis (magic bytes + patterns + extension)" },
     .{ .name = "autopilot", .handler = wrapArgsOnly(handlers.handleAutopilot), .description = "Autopilot agents — wire background agents to real work (run, list, status, schedule, run-all)" },
     .{ .name = "crush", .handler = wrapArgsOnly(handlers.handleCrush), .description = "Auto-agentic: plan → execute → verify → commit" },
+    .{ .name = "trace", .handler = wrapArgsOnly(handlers.handleTrace), .description = "Inspect, compare, and export AI session traces" },
     .{ .name = "completion", .handler = wrapArgsOnly(handlers.handleCompletion), .description = "Generate shell completion script" },
     .{ .name = "skill-sync", .handler = wrapArgsOnly(handlers.handleSkillSyncCmd), .description = "Sync skills from marketplace" },
     .{ .name = "template", .handler = wrapArgsOnly(handlers.handleTemplate), .description = "Manage project templates" },
@@ -120,6 +121,7 @@ const commands = [_]Command{
     .{ .name = "smelt", .handler = wrapArgsOnly(handlers.handleWrite), .description = "Forge alias: write file (→ write)" },
     .{ .name = "quench", .handler = wrapArgsOnly(handlers.handleCheckpoint), .description = "Forge alias: checkpoints (→ checkpoint)" },
     .{ .name = "foundry", .handler = wrapArgsOnly(handlers.handleMCP), .description = "Forge alias: MCP tools (→ mcp)" },
+    .{ .name = "lens", .handler = wrapArgsOnly(handlers.handleTrace), .description = "Forge alias: trace inspection (→ trace)" },
 };
 
 // --- Comptime string map for O(1) lookup ---

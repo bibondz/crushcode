@@ -23,6 +23,7 @@ const batch_mod = @import("batch");
 const logs_mod = @import("logs");
 const session_cmd_mod = @import("session_cmd");
 const completion_mod = @import("completion");
+const trace_cmd_mod = @import("trace_cmd");
 const file_compat = @import("file_compat");
 
 inline fn stdout_print(comptime fmt: []const u8, args: anytype) void {
@@ -176,6 +177,10 @@ pub fn handleCompletion(args: args_mod.Args) !void {
     try completion_mod.handleCompletion(args);
 }
 
+pub fn handleTrace(args: args_mod.Args) !void {
+    try trace_cmd_mod.handleTrace(args);
+}
+
 pub fn printHelp() !void {
     stdout_print(
         \\Crushcode - AI Coding Assistant (Forge Edition)
@@ -226,6 +231,7 @@ pub fn printHelp() !void {
         \\  lsp            Language Server Protocol client
         \\  mcp            MCP tools management (list, tools, execute, serve)
         \\  auth           Manage authentication (login, status, logout)
+        \\  trace          Inspect, compare, and export AI session traces (list, show, compare, export)
         \\  help           Show this help message
         \\  version        Show version information
         \\
@@ -307,6 +313,7 @@ pub fn printHelp() !void {
         \\  smelt          → write     (extract and create)
         \\  quench         → checkpoint (preserve state)
         \\  foundry        → mcp       (external tool forge)
+        \\  lens           → trace     (inspect session traces)
         \\
     , .{});
 }

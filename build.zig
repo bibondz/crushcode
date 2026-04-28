@@ -691,6 +691,39 @@ pub fn build(b: *std.Build) !void {
     const trace_writer_mod = createMod(b, "src/trace/writer.zig", target, optimize, &.{
         imp("span", trace_span_mod),
     });
+    // Phase 43: Trace reader + export modules
+    const trace_reader_mod = createMod(b, "src/trace/reader.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("span", trace_span_mod),
+    });
+    const trace_comparison_mod = createMod(b, "src/trace/comparison.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+        imp("trace_reader", trace_reader_mod),
+    });
+    const trace_html_report_mod = createMod(b, "src/trace/html_report.zig", target, optimize, &.{
+        imp("trace_reader", trace_reader_mod),
+        imp("array_list_compat", compat_array_list_mod),
+    });
+    const trace_json_export_mod = createMod(b, "src/trace/json_export.zig", target, optimize, &.{
+        imp("trace_reader", trace_reader_mod),
+        imp("array_list_compat", compat_array_list_mod),
+    });
+    const trace_markdown_export_mod = createMod(b, "src/trace/markdown_export.zig", target, optimize, &.{
+        imp("trace_reader", trace_reader_mod),
+        imp("array_list_compat", compat_array_list_mod),
+    });
+    const trace_cmd_mod = createMod(b, "src/commands/trace_cmd.zig", target, optimize, &.{
+        imp("args", cli_mod),
+        imp("trace_reader", trace_reader_mod),
+        imp("trace_comparison", trace_comparison_mod),
+        imp("trace_html_report", trace_html_report_mod),
+        imp("trace_json_export", trace_json_export_mod),
+        imp("trace_markdown_export", trace_markdown_export_mod),
+        imp("file_compat", compat_file_mod),
+    });
+    // Wire trace command into handlers
+    addImports(handlers_mod, &.{imp("trace_cmd", trace_cmd_mod)});
+
     const retry_policy_mod = simpleMod(b, "src/retry/policy.zig", target, optimize);
     const retry_self_heal_mod = simpleMod(b, "src/retry/self_heal.zig", target, optimize);
 

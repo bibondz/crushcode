@@ -282,50 +282,34 @@ Created: 2026-04-14 · Updated: 2026-04-27
 
 ---
 
-## v3.0.0 — Forge Identity + Shell Safety 🔥 CURRENT
+## v3.0.0 — Forge Identity + Shell Safety ✅ DONE
 
 **วัตถุประสงค์**: Unique brand identity (Forge naming) + critical shell safety features + reference repo gap closure
 
 Based on gap analysis of 17 CLI core references + 36 orchestra references.
 
-### Phase 39: Forge Naming System
+### Phase 39: Forge Naming System ✅ (3222bc5)
+### Phase 40: Shell Safety ✅ (09f33b0)
+### Phase 41: Context Management ✅ (d00f3dc)
+### Phase 42: Alloy (Skill) System ✅ (60d2d84)
 
-**Plans:** 1 plan
+---
+
+## v3.1.0 — Trace & Observability 🔥 CURRENT
+
+**วัตถุประสงค์**: Make every agent run inspectable, debuggable, and comparable. Build on existing trace/ modules (span.zig, writer.zig, context.zig) to add HTML trace reports, run comparison, failure diagnosis, and a `crushcode trace` CLI command.
+
+Based on CheetahClaws Layer 5 (Observability, Trace, and Replay) roadmap analysis.
+
+### Phase 43: Trace HTML Export + Run Comparison
+
+**Plans:** 4 plans in 3 waves
 
 Plans:
-- [ ] 39-01-PLAN.md — Add 17 Forge aliases to CLI dispatch + help text + FORGE_GLOSSARY.md + CRUSH.md
-
-- Add Forge command aliases to registry.zig (forge, strike, furnace, alloy, anvil, bellows, blueprint, ledger, smiths, rack, tongs, reheat, slag, sparks, smelt, quench, foundry)
-- Update help text with Forge terminology
-- Create FORGE_GLOSSARY.md reference doc
-- Update CRUSH.md with naming conventions
-- Keep original commands working (aliases only, no removal)
-
-### Phase 40: Shell Safety
-
-**Plans:** 5 plans
-
-Plans:
-- [ ] 40-01-PLAN.md — ANSI escape stripping utility (src/shell/ansi_strip.zig)
-- [ ] 40-02-PLAN.md — Process timeout with output capture (src/core/process.zig)
-- [ ] 40-03-PLAN.md — Shell sandbox checker + config (src/permission/sandbox.zig)
-- [ ] 40-04-PLAN.md — Wire safety into CLI shell + build.zig modules
-- [ ] 40-05-PLAN.md — Wire safety into AI agent shell tool (tool_executors.zig)
-
-- Output size limits (1MB cap + truncation)
-- ANSI escape stripping from command output
-- Per-command timeout with cancellation
-- Shell tool sandbox wrappers (basic: restrict writes to cwd by default)
-
-### Phase 41: Context Management
-- Auto-truncation when approaching token limit
-- Conversation summarization for old context
-- External directory access with permission check
-
-### Phase 42: Alloy (Skill) System
-- Parse Alloy.md files dynamically
-- Inject skill tools at runtime
-- Alloy load/unload/list commands
+- [ ] 43-01-PLAN.md — Trace reader: JSONL parser, trace enumeration, span filtering, failure classification
+- [ ] 43-02-PLAN.md — Export format generators: self-contained HTML, JSON, Markdown
+- [ ] 43-03-PLAN.md — Run comparison engine: metric deltas, verdicts, tool usage diff
+- [ ] 43-04-PLAN.md — CLI wiring: `crushcode trace` command, registry, build.zig
 
 ---
 
