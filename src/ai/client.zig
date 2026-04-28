@@ -394,6 +394,8 @@ pub const AIClient = struct {
                 span.end(.@"error", error_body.items);
             }
 
+            std.log.err("Streaming request failed (status {d}): {s}", .{ @intFromEnum(response.head.status), error_body.items });
+
             return error.ServerError;
         }
 

@@ -483,7 +483,15 @@ pub fn appendEscapedJsonString(json_body: *array_list_compat.ArrayList(u8), valu
             '\n' => try json_body.appendSlice("\\n"),
             '\r' => try json_body.appendSlice("\\r"),
             '\t' => try json_body.appendSlice("\\t"),
-            else => try json_body.append(c),
+            else => {
+                // Escape all other control characters (0x00-0x1F) as \uXXXX
+                // JSON spec requires control chars to be escaped
+                if (c < 0x20) {
+                    try json_body.writer().print("\\u{d:0>4}", .{c});
+                } else {
+                    try json_body.append(c);
+                }
+            },
         }
     }
 }
