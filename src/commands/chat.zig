@@ -144,6 +144,8 @@ const compaction_mod = @import("compaction");
 const context_budget_mod = @import("context_budget");
 const project_memory_mod = @import("project_memory");
 const usage_pricing_mod = @import("usage_pricing");
+const usage_budget_mod = @import("usage_budget");
+const file_watcher_mod = @import("file_watcher");
 const graph_mod = @import("graph");
 const cognition_mod = @import("cognition");
 const mcp_bridge_mod = @import("mcp_bridge");
@@ -1064,6 +1066,9 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     agent_loop.setConfig(loop_config);
     try tool_executors.registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
 
+    // Phase 52: Session budget tracking — set via /cost budget <amount>
+    var session_budget: ?usage_budget_mod.BudgetManager = null;
+
     var current_agent_mode: agent_loop_mod.AgentMode = .execute;
     tool_executors.setAgentMode(current_agent_mode);
 
@@ -1212,7 +1217,38 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     const stdin = file_compat.File.stdin();
     const stdin_reader = stdin.reader();
 
+    // Phase 55: Watch context files for changes during session
+    var context_watcher = file_watcher_mod.FileWatcher.init(allocator);
+    defer context_watcher.deinit();
+    context_watcher.addFile("CLAUDE.md");
+    context_watcher.addFile("AGENTS.md");
+    context_watcher.addFile(".cursorrules");
+    context_watcher.addFile(".claude/CLAUDE.md");
+    context_watcher.addFile("SKILL.md");
+    context_watcher.addFile("Alloy.md");
+
     while (true) {
+        // Phase 55: Check if context files changed — rebuild system prompt
+        const changed = context_watcher.poll();
+        if (changed.len > 0) {
+            context_watcher.freeChanged();
+            // Reload project memory and rebuild prompt
+            project_memory.deinit();
+            project_memory = project_memory_mod.ProjectMemory.init(allocator);
+            project_memory.load() catch {};
+            if (project_memory.hasMemory()) {
+                const base_prompt = config.getSystemPrompt() orelse "";
+                const injected = project_memory.injectIntoSystemPrompt(base_prompt) catch base_prompt;
+                if (injected.len > 0) {
+                    client.system_prompt = injected;
+                }
+            }
+            const cyan_style = Style{ .fg = .cyan };
+            out("{s}↻ Context updated ({d} file(s) changed){s}\n", .{ cyan_style.start(), changed.len, cyan_style.reset() });
+        } else {
+            context_watcher.freeChanged();
+        }
+
         out("\n{s}❯ {s}", .{ Style.prompt_user.start(), Style.prompt_user.reset() });
 
         const line = stdin_reader.readUntilDelimiterOrEofAlloc(allocator, '\n', 256 * 1024) catch {
@@ -2096,6 +2132,19 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
             const cost = pricing.estimateCostSimple(current_provider_name, current_model_name, @as(u32, @intCast(total_input_tokens)), @as(u32, @intCast(total_output_tokens)));
             out("  Cost: ${d:.4}\n", .{cost});
             out("  Model: {s}/{s}\n", .{ current_provider_name, current_model_name });
+
+            // Phase 52: Show budget status if set
+            if (session_budget) |*bm| {
+                const status = bm.checkBudget();
+                out("  Budget: ${d:.2} / ${d:.2} ({d:.0}%%)\n", .{
+                    status.session_spent,
+                    status.session_limit,
+                    if (status.session_limit > 0) status.session_spent / status.session_limit * 100 else 0,
+                });
+                if (status.isOverBudget()) {
+                    out("  ⚠ BUDGET EXCEEDED\n", .{});
+                }
+            }
             continue;
         }
 
@@ -2105,7 +2154,12 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                 out("Usage: /cost budget <amount_usd>\n", .{});
                 continue;
             };
-            out("Session budget set to ${d:.2}\n", .{amount});
+            session_budget = usage_budget_mod.BudgetManager.init(allocator, .{
+                .per_session_limit_usd = amount,
+                .alert_threshold_pct = 0.8,
+            });
+            agent_loop.budget_manager = session_budget;
+            out("Session budget set to ${d:.2} (warns at 80%%)\n", .{amount});
             continue;
         }
 

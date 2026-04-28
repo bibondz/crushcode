@@ -877,12 +877,12 @@ pub fn build(b: *std.Build) !void {
     });
     addImports(chat_mod, &.{
         imp("compaction", compaction_mod), imp("context_budget", context_budget_mod), imp("project_memory", project_memory_mod),
-        imp("usage_pricing", usage_pricing_mod), imp("graph", graph_mod), imp("mcp_bridge", mcp_bridge_mod),
+        imp("usage_pricing", usage_pricing_mod), imp("usage_budget", usage_budget_mod), imp("graph", graph_mod), imp("mcp_bridge", mcp_bridge_mod),
         imp("agent_loop", agent_loop_mod), imp("tools", tools_mod), imp("skills_loader", skills_loader_mod),
         imp("streaming_types", streaming_types_mod), imp("session", session_mod), imp("cognition", cognition_mod),
         imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod),
         imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod), imp("shell", shell_mod),
-        imp("http_client", http_client_mod), imp("moa", moa_mod),
+        imp("http_client", http_client_mod), imp("moa", moa_mod), imp("file_watcher", file_watcher_mod),
     });
     addImports(tui_mod, &.{
         imp("fallback", fallback_mod), imp("graph", graph_mod), imp("lsp_manager", lsp_manager_mod),

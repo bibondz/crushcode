@@ -722,6 +722,9 @@ pub const AgentLoop = struct {
 
                         if (self.config.show_intermediate) {
                             std.log.info("Tool call (parallel): {s}({s})", .{ tc.name, tc.arguments });
+                            // Phase 53: Show parallel tool progress
+                            const stdout = file_compat.File.stdout().writer();
+                            stdout.print("\r⏳ {s} (parallel)...", .{tc.name}) catch {};
                         }
 
                         parallel_calls[i] = .{
@@ -749,6 +752,9 @@ pub const AgentLoop = struct {
                         if (self.config.show_intermediate) {
                             const status = if (par_result.success) "OK" else "FAILED";
                             std.log.info("Tool result [{s}]: {s}", .{ status, result_ptr.output });
+                            // Phase 53: Show parallel tool result
+                            const stdout = file_compat.File.stdout().writer();
+                            stdout.print("\r\x1b[2K🔧 {s} → {s}\n", .{ tc.name, status }) catch {};
                         }
 
                         // Track failed tool calls for loop detection
@@ -798,6 +804,9 @@ pub const AgentLoop = struct {
 
                         if (self.config.show_intermediate) {
                             std.log.info("Tool call: {s}({s})", .{ tc.name, tc.arguments });
+                            // Phase 53: Show tool progress in stdout for interactive mode
+                            const stdout = file_compat.File.stdout().writer();
+                            stdout.print("\r⏳ {s}...", .{tc.name}) catch {};
                         }
 
                         // Execute tool
@@ -813,6 +822,9 @@ pub const AgentLoop = struct {
                             if (self.config.show_intermediate) {
                                 const status = if (tr.success) "OK" else "FAILED";
                                 std.log.info("Tool result [{s}]: {s}", .{ status, tr.output });
+                                // Phase 53: Show tool result in stdout for interactive mode
+                                const stdout = file_compat.File.stdout().writer();
+                                stdout.print("\r\x1b[2K🔧 {s} → {s}\n", .{ tc.name, status }) catch {};
                             }
 
                             // Track failed tool calls for repetition detection

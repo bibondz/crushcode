@@ -399,6 +399,34 @@ Plans:
 
 ---
 
+## v3.5.0 — Daily Driver Polish 🔥 CURRENT
+
+**วัตถุประสงค์**: Close the last quality-of-life gaps between crushcode and a production daily-driver AI coding CLI. The codebase is mature (103K lines, 39 TODOs, 22 providers, 34 tools, 46 slash commands). Remaining work is polish, not architecture.
+
+**Based on**: Full codebase audit of TUI (5312L), interactive mode (2600L), agent loop (1200L), CLI commands, config, and reference repo gap analysis.
+
+### Phase 52: Budget Wiring — Chat.zig → AgentLoop
+
+**Gap**: BudgetManager field added to AgentLoop in Phase 50, but chat.zig never sets it. The /cost budget command parses the amount but doesn't actually create or wire a BudgetManager. Interactive sessions have no spending guard.
+**Fix**: In handleInteractiveChat, create BudgetManager from config (or /cost budget amount), assign to agent_loop.budget_manager before each agent run. Wire config.toml budget fields.
+
+### Phase 53: Streaming Tool Progress — Interactive Mode
+
+**Gap**: In interactive mode, when the agent executes tools, there's no real-time progress. User sees nothing until the entire tool call + AI follow-up completes. Single-shot mode shows "⏳ tool_name..." but interactive doesn't.
+**Fix**: Add streaming tool progress to the interactive agent loop path — show "⏳ tool_name..." indicator during tool execution, cleared when complete. Match the single-shot UX.
+
+### Phase 54: /model Switch — Live Provider+Model Swap
+
+**Gap**: /model shows current model but doesn't support switching mid-session. Users must exit and restart to change provider/model. Reference CLIs (OpenCode, Claude Code) all support mid-session switching.
+**Fix**: /model <provider>/<model> switches the AI client's provider and model without restarting the session. Re-initialize AIClient with new provider/model, keep message history.
+
+### Phase 55: Prompt Pipeline — Context Files Auto-Load
+
+**Gap**: System prompt injection works for single-shot mode (CLAUDE.md, AGENTS.md loaded), but interactive mode doesn't reload when context files change during a session. If a user edits CLAUDE.md mid-session, the old prompt stays.
+**Fix**: Check context file mtimes before each AI request (file_watcher.zig already exists). If changed, rebuild system prompt. Show "↻ Context updated" notification.
+
+---
+
 ## Ref Sources (reorganized 2026-04-28)
 
 ### CLI Core (`/mnt/d/crushcode-cli-reference/`) — 17 repos
