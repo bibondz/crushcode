@@ -101,6 +101,25 @@ const commands = [_]Command{
     .{ .name = "completion", .handler = wrapArgsOnly(handlers.handleCompletion), .description = "Generate shell completion script" },
     .{ .name = "skill-sync", .handler = wrapArgsOnly(handlers.handleSkillSyncCmd), .description = "Sync skills from marketplace" },
     .{ .name = "template", .handler = wrapArgsOnly(handlers.handleTemplate), .description = "Manage project templates" },
+
+    // --- Forge naming aliases (thematic blacksmith names) ---
+    .{ .name = "forge", .handler = wrapArgsOnly(handlers.handleCrush), .description = "Forge alias: auto-agentic (→ crush)" },
+    .{ .name = "strike", .handler = handlers.handleChat, .description = "Forge alias: chat session (→ chat)" },
+    .{ .name = "furnace", .handler = handlers.handleTUI, .description = "Forge alias: terminal UI (→ tui)" },
+    .{ .name = "alloy", .handler = wrapArgsOnly(handlers.handleSkill), .description = "Forge alias: run skill (→ skill)" },
+    .{ .name = "anvil", .handler = wrapArgsOnly(handlers.handleEdit), .description = "Forge alias: edit file (→ edit)" },
+    .{ .name = "bellows", .handler = wrapArgsOnly(handlers.handleShell), .description = "Forge alias: shell command (→ shell)" },
+    .{ .name = "blueprint", .handler = wrapArgsOnly(handlers.handleScaffold), .description = "Forge alias: project scaffold (→ scaffold)" },
+    .{ .name = "ledger", .handler = wrapArgsOnly(handlers.handleUsage), .description = "Forge alias: token usage (→ usage)" },
+    .{ .name = "smiths", .handler = wrapArgsOnly(handlers.handleAgents), .description = "Forge alias: spawn agents (→ agents)" },
+    .{ .name = "rack", .handler = wrapArgsOnly(handlers.handleTools), .description = "Forge alias: list tools (→ tools)" },
+    .{ .name = "tongs", .handler = wrapArgsOnly(handlers.handleGrep), .description = "Forge alias: pattern search (→ grep)" },
+    .{ .name = "reheat", .handler = wrapArgsOnly(handlers.handleSessions), .description = "Forge alias: manage sessions (→ sessions)" },
+    .{ .name = "slag", .handler = wrapArgsOnly(handlers.handleDiff), .description = "Forge alias: compare files (→ diff)" },
+    .{ .name = "sparks", .handler = wrapArgsOnly(handlers.handleRead), .description = "Forge alias: read file (→ read)" },
+    .{ .name = "smelt", .handler = wrapArgsOnly(handlers.handleWrite), .description = "Forge alias: write file (→ write)" },
+    .{ .name = "quench", .handler = wrapArgsOnly(handlers.handleCheckpoint), .description = "Forge alias: checkpoints (→ checkpoint)" },
+    .{ .name = "foundry", .handler = wrapArgsOnly(handlers.handleMCP), .description = "Forge alias: MCP tools (→ mcp)" },
 };
 
 // --- Comptime string map for O(1) lookup ---

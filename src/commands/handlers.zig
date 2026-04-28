@@ -178,7 +178,7 @@ pub fn handleCompletion(args: args_mod.Args) !void {
 
 pub fn printHelp() !void {
     stdout_print(
-        \\Crushcode - AI Coding Assistant
+        \\Crushcode - AI Coding Assistant (Forge Edition)
         \\
         \\Usage:
         \\  crushcode [command] [options]
@@ -286,6 +286,25 @@ pub fn printHelp() !void {
         \\  crushcode worktree
         \\  crushcode list --provider openai
         \\  crushcode plugin list
+        \\
+        \\Forge Aliases (thematic blacksmith names):
+        \\  forge          → crush     (auto-agentic)
+        \\  strike         → chat      (strike up a conversation)
+        \\  furnace        → tui       (the hot main interface)
+        \\  alloy          → skill     (blended skills)
+        \\  anvil          → edit      (shape your code)
+        \\  bellows        → shell     (pump commands)
+        \\  blueprint      → scaffold  (plan your build)
+        \\  ledger         → usage     (track your costs)
+        \\  smiths         → agents    (many workers)
+        \\  rack           → tools     (tool storage)
+        \\  tongs          → grep      (grasp patterns)
+        \\  reheat         → sessions  (revisit old work)
+        \\  slag           → diff      (see what's removed)
+        \\  sparks         → read      (knowledge ignites)
+        \\  smelt          → write     (extract and create)
+        \\  quench         → checkpoint (preserve state)
+        \\  foundry        → mcp       (external tool forge)
         \\
     , .{});
 }
