@@ -66,6 +66,8 @@ fn truncateToolOutput(allocator: std.mem.Allocator, original: []const u8) ![]con
 
 pub const ToolExecution = struct {
     display: []const u8,
+    /// Pre-execution indicator shown while tool runs (optional)
+    running_display: ?[]const u8 = null,
     result: []const u8,
 };
 
@@ -354,14 +356,20 @@ fn adaptToolExecution(
         }
     }
 
+    // Emit running indicator before execution starts
+    out("⏳ {s}...\r", .{tool_name});
+
     var success = true;
     const execution = implementation(allocator, tool_call) catch |err| blk: {
         success = false;
         break :blk try buildToolFailure(allocator, tool_call, err);
     };
     defer allocator.free(execution.display);
+    defer if (execution.running_display) |rd| allocator.free(rd);
     defer allocator.free(execution.result);
 
+    // Clear running indicator and show result
+    out("\x1b[2K", .{}); // clear line
     out("\n{s}", .{execution.display});
     active_json_output.emitToolResult(call_id, execution.result, success);
 

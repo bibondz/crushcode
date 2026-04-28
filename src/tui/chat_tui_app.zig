@@ -42,6 +42,7 @@ const array_list_compat = @import("array_list_compat");
 const compaction_mod = @import("compaction");
 const context_limits = @import("context_limits");
 const project_mod = @import("project");
+const file_watcher_mod = @import("file_watcher");
 const lifecycle_mod = @import("lifecycle_hooks");
 const memory_mod = @import("memory");
 const parallel_mod = @import("parallel");
@@ -285,6 +286,8 @@ pub const Model = struct {
     effective_system_prompt: ?[]const u8,
     codebase_context: ?[]const u8,
     context_file_count: u32,
+    context_watcher: file_watcher_mod.FileWatcher,
+    system_prompt_dirty: bool = false,
     knowledge_graph: ?*graph_mod.KnowledgeGraph,
     compactor: compaction_mod.ContextCompactor,
     context_tokens: u64,
@@ -468,6 +471,7 @@ pub const Model = struct {
             .effective_system_prompt = null,
             .codebase_context = null,
             .context_file_count = 0,
+            .context_watcher = file_watcher_mod.FileWatcher.init(allocator),
             .knowledge_graph = null,
             .compactor = compaction_mod.ContextCompactor.init(allocator, context_limits.getContextWindow(options.provider_name, options.model_name)),
             .context_tokens = 0,
@@ -804,6 +808,7 @@ pub const Model = struct {
         self.allocator.free(self.provider_name);
         self.allocator.free(self.model_name);
         self.compactor.deinit();
+        self.context_watcher.deinit();
         if (self.last_compaction_summary.len > 0) self.allocator.free(self.last_compaction_summary);
         self.allocator.free(self.api_key);
         if (self.mcp_bridge) |bridge| {
@@ -1340,6 +1345,8 @@ pub const Model = struct {
                         const escaped = project_mod.escapeXml(self.allocator, f.content) catch f.content;
                         defer if (escaped.ptr != f.content.ptr) self.allocator.free(escaped);
                         rw.print("<file path=\"{s}\">\n{s}\n</file>\n", .{ f.path, escaped }) catch {};
+                        // Register with file watcher for hot-reload
+                        self.context_watcher.addFile(f.path);
                     }
                     rw.print("</memory>", .{}) catch {};
                 }
@@ -2099,6 +2106,21 @@ pub const Model = struct {
         }
         // Tick toast stack each frame for auto-expiration
         self.toast_stack.tick();
+
+        // Poll context file watcher — reload system prompt if files changed
+        {
+            const changed = self.context_watcher.poll();
+            if (changed.len > 0) {
+                // Context files changed — rebuild system prompt on next request
+                self.system_prompt_dirty = true;
+            }
+        }
+        // Rebuild system prompt if context files changed on disk
+        if (self.system_prompt_dirty) {
+            self.system_prompt_dirty = false;
+            self.refreshEffectiveSystemPrompt() catch {};
+        }
+
         self.lock.lock();
         defer self.lock.unlock();
 

@@ -294,10 +294,42 @@ pub const SemanticIndex = struct {
         return self.parseEmbedding(response.body);
     }
 
-    /// Embed a batch of texts. Returns owned slice of f32 slices.
-    /// Not yet implemented — falls back to single embed.
-    fn embedBatch(_: *SemanticIndex, _: []const Chunk, _: []const u8, _: []const u8, _: []const u8) ![][]f32 {
-        return error.NotImplemented;
+    /// Embed a batch of texts using the /embeddings API.
+    /// Sends all texts in a single request for efficiency.
+    fn embedBatch(self: *SemanticIndex, batch: []const Chunk, api_base: []const u8, api_key: []const u8, model: []const u8) ![][]f32 {
+        var body = array_list_compat.ArrayList(u8).init(self.allocator);
+        defer body.deinit();
+        const w = body.writer();
+
+        // Build JSON: {"model":"...","input":["text1","text2",...]}
+        try w.writeAll("{\"model\":\"");
+        try w.writeAll(model);
+        try w.writeAll("\",\"input\":[");
+
+        for (batch, 0..) |chunk, i| {
+            if (i > 0) try w.writeByte(',');
+            try w.writeByte('"');
+            writeJsonEscaped(w, chunk.text) catch {};
+            try w.writeByte('"');
+        }
+        try w.writeAll("]}");
+
+        const url = try std.fmt.allocPrint(self.allocator, "{s}/embeddings", .{api_base});
+        defer self.allocator.free(url);
+
+        const auth = try std.fmt.allocPrint(self.allocator, "Bearer {s}", .{api_key});
+        defer self.allocator.free(auth);
+
+        const headers = &[_]std.http.Header{
+            .{ .name = "Content-Type", .value = "application/json" },
+            .{ .name = "Authorization", .value = auth },
+        };
+
+        const response = try http_client.httpPost(self.allocator, url, headers, body.items);
+        defer self.allocator.free(response.body);
+
+        // Parse all embedding vectors from the response
+        return self.parseBatchEmbeddings(response.body, batch.len);
     }
 
     /// Parse embedding vector from /embeddings response JSON.
@@ -329,6 +361,40 @@ pub const SemanticIndex = struct {
         }
 
         return values.toOwnedSlice();
+    }
+
+    /// Parse multiple embedding vectors from a batch /embeddings response.
+    /// Response format: {"data":[{"embedding":[0.1,0.2,...],"index":0},...]}
+    fn parseBatchEmbeddings(self: *SemanticIndex, json: []const u8, expected_count: usize) ![][]f32 {
+        var results = array_list_compat.ArrayList([]f32).init(self.allocator);
+
+        // Find each "embedding" key in the response
+        var search_start: usize = 0;
+        while (results.items.len < expected_count) {
+            const emb_key = "\"embedding\"";
+            const emb_pos = std.mem.indexOfPos(u8, json, search_start, emb_key) orelse break;
+            search_start = emb_pos + emb_key.len;
+
+            const after = json[emb_pos + emb_key.len ..];
+            var i: usize = 0;
+            while (i < after.len and after[i] != '[') i += 1;
+            if (i >= after.len) continue;
+            i += 1;
+
+            var values = array_list_compat.ArrayList(f32).init(self.allocator);
+            while (i < after.len and after[i] != ']') {
+                while (i < after.len and (after[i] == ' ' or after[i] == ',' or after[i] == '\n' or after[i] == '\r' or after[i] == '\t')) i += 1;
+                if (i >= after.len or after[i] == ']') break;
+                const start = i;
+                while (i < after.len and after[i] != ',' and after[i] != ']' and after[i] != ' ') i += 1;
+                const num_str = after[start..i];
+                const val = std.fmt.parseFloat(f32, num_str) catch 0.0;
+                try values.append(val);
+            }
+            try results.append(try values.toOwnedSlice());
+        }
+
+        return results.toOwnedSlice();
     }
 };
 
