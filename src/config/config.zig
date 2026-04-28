@@ -745,3 +745,210 @@ test "Config.getSystemPrompt returns null when empty" {
 
     try testing.expect(config.getSystemPrompt() == null);
 }
+
+// ============================================================
+// Pure Function Tests
+// ============================================================
+
+test "Config.parseCommaList - empty string returns empty slice" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const result = try config.parseCommaList("");
+    defer {
+        for (result) |item| allocator.free(item);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 0), result.len);
+}
+
+test "Config.parseCommaList - single item" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const result = try config.parseCommaList("single");
+    defer {
+        for (result) |item| allocator.free(item);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 1), result.len);
+    try testing.expectEqualStrings("single", result[0]);
+}
+
+test "Config.parseCommaList - multiple items with trimming" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const result = try config.parseCommaList("one, two, three");
+    defer {
+        for (result) |item| allocator.free(item);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 3), result.len);
+    try testing.expectEqualStrings("one", result[0]);
+    try testing.expectEqualStrings("two", result[1]);
+    try testing.expectEqualStrings("three", result[2]);
+}
+
+test "Config.parseCommaList - handles quotes and brackets" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const result = try config.parseCommaList("[\"url1\"], \"url2\"");
+    defer {
+        for (result) |item| allocator.free(item);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 2), result.len);
+    try testing.expectEqualStrings("url1", result[0]);
+    try testing.expectEqualStrings("url2", result[1]);
+}
+
+test "Config.parseCommaList - skips empty items" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const result = try config.parseCommaList("one, , three");
+    defer {
+        for (result) |item| allocator.free(item);
+        allocator.free(result);
+    }
+    try testing.expectEqual(@as(usize, 2), result.len);
+    try testing.expectEqualStrings("one", result[0]);
+    try testing.expectEqualStrings("three", result[1]);
+}
+
+test "Config.getSystemPrompt returns value when set" {
+    const allocator = testing.allocator;
+    var config = Config.init(allocator);
+    defer config.deinit();
+
+    const test_prompt = "You are a helpful assistant.";
+    config.system_prompt = try allocator.dupe(u8, test_prompt);
+    const result = config.getSystemPrompt();
+    try testing.expect(result != null);
+    try testing.expectEqualStrings(test_prompt, result.?);
+}
+
+test "Config.mergeOverride - strings override when non-empty" {
+    const user_allocator = testing.allocator;
+    const override_allocator = testing.allocator;
+
+    var user_config = Config.init(user_allocator);
+    defer user_config.deinit();
+
+    var override_config = Config.init(override_allocator);
+    defer override_config.deinit();
+
+    // Set user config values
+    user_config.default_provider = try user_allocator.dupe(u8, "openai");
+    user_config.default_model = try user_allocator.dupe(u8, "gpt-3.5-turbo");
+
+    // Set override config values
+    override_config.default_provider = try override_allocator.dupe(u8, "anthropic");
+    override_config.default_model = try override_allocator.dupe(u8, "claude-3");
+
+    try user_config.mergeOverride(&override_config);
+
+    try testing.expectEqualStrings("anthropic", user_config.default_provider);
+    try testing.expectEqualStrings("claude-3", user_config.default_model);
+}
+
+test "Config.mergeOverride - numbers override when not default" {
+    const user_allocator = testing.allocator;
+    const override_allocator = testing.allocator;
+
+    var user_config = Config.init(user_allocator);
+    defer user_config.deinit();
+
+    var override_config = Config.init(override_allocator);
+    defer override_config.deinit();
+
+    user_config.max_tokens = 2048;
+    user_config.temperature = 0.5;
+
+    override_config.max_tokens = 8192;
+    override_config.temperature = 1.0;
+
+    try user_config.mergeOverride(&override_config);
+
+    try testing.expectEqual(@as(u32, 8192), user_config.max_tokens);
+    try testing.expectEqual(@as(f32, 1.0), user_config.temperature);
+}
+
+test "Config.mergeOverride - api_keys merge (override replaces)" {
+    const user_allocator = testing.allocator;
+    const override_allocator = testing.allocator;
+
+    var user_config = Config.init(user_allocator);
+    defer user_config.deinit();
+
+    var override_config = Config.init(override_allocator);
+    defer override_config.deinit();
+
+    try user_config.setApiKey("openai", "user-key");
+    try user_config.setApiKey("gemini", "user-gemini");
+
+    try override_config.setApiKey("openai", "override-key");
+    try override_config.setApiKey("anthropic", "override-anthropic");
+
+    try user_config.mergeOverride(&override_config);
+
+    try testing.expectEqualStrings("override-key", user_config.getApiKey("openai").?);
+    try testing.expectEqualStrings("user-gemini", user_config.getApiKey("gemini").?);
+    try testing.expectEqualStrings("override-anthropic", user_config.getApiKey("anthropic").?);
+}
+
+test "Config.mergeOverride - mcp_servers replace entirely" {
+    const user_allocator = testing.allocator;
+    const override_allocator = testing.allocator;
+
+    var user_config = Config.init(user_allocator);
+    defer user_config.deinit();
+
+    var override_config = Config.init(override_allocator);
+    defer override_config.deinit();
+
+    // User has one server
+    const user_server_name = try user_allocator.dupe(u8, "user-filesystem");
+    user_config.mcp_servers = try user_allocator.alloc(MCPServerDef, 1);
+    user_config.mcp_servers[0] = .{ .name = user_server_name };
+
+    // Override has two servers
+    const override_server1_name = try override_allocator.dupe(u8, "override-filesystem");
+    const override_server2_name = try override_allocator.dupe(u8, "override-brave-search");
+    override_config.mcp_servers = try override_allocator.alloc(MCPServerDef, 2);
+    override_config.mcp_servers[0] = .{ .name = override_server1_name };
+    override_config.mcp_servers[1] = .{ .name = override_server2_name };
+
+    try user_config.mergeOverride(&override_config);
+
+    try testing.expectEqual(@as(usize, 2), user_config.mcp_servers.len);
+    try testing.expectEqualStrings("override-filesystem", user_config.mcp_servers[0].name);
+    try testing.expectEqualStrings("override-brave-search", user_config.mcp_servers[1].name);
+}
+
+test "Config.mergeOverride - provider_overrides merge" {
+    const user_allocator = testing.allocator;
+    const override_allocator = testing.allocator;
+
+    var user_config = Config.init(user_allocator);
+    defer user_config.deinit();
+
+    var override_config = Config.init(override_allocator);
+    defer override_config.deinit();
+
+    try user_config.saveProviderOverride("openrouter", "https://user.api.com");
+    try override_config.saveProviderOverride("openrouter", "https://override.api.com");
+    try override_config.saveProviderOverride("ollama", "http://localhost:11434");
+
+    try user_config.mergeOverride(&override_config);
+
+    try testing.expectEqualStrings("https://override.api.com", user_config.getProviderOverrideUrl("openrouter").?);
+    try testing.expectEqualStrings("http://localhost:11434", user_config.getProviderOverrideUrl("ollama").?);
+}

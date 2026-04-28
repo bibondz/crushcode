@@ -163,8 +163,11 @@ pub fn build(b: *std.Build) !void {
     const update_mod = createMod(b, "src/commands/update.zig", target, optimize, &.{
         imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
     });
+    const oauth_helpers_mod = createMod(b, "src/auth/oauth_helpers.zig", target, optimize, &.{
+        imp("json_extract", json_extract_mod),
+    });
     const provider_oauth_mod = createMod(b, "src/auth/provider_oauth.zig", target, optimize, &.{
-        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
+        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod), imp("oauth_helpers", oauth_helpers_mod),
     });
     const auth_cmd_mod = createMod(b, "src/commands/auth_cmd.zig", target, optimize, &.{
         imp("auth", auth_mod), imp("provider_oauth", provider_oauth_mod),
@@ -603,6 +606,12 @@ pub fn build(b: *std.Build) !void {
     });
     const agent_loop_mod = createMod(b, "src/agent/loop.zig", target, optimize, &.{imp("ai_types", ai_types_mod)});
     addImports(main_mod, &.{imp("agent_loop", agent_loop_mod)});
+    const agent_setup_mod = createMod(b, "src/commands/agent_setup.zig", target, optimize, &.{
+        imp("agent_loop", agent_loop_mod),
+        imp("chat_tool_executors", chat_tool_executors_mod),
+        imp("usage_budget", usage_budget_mod),
+        imp("tool_types", tool_types_mod),
+    });
     const workflow_mod = createMod(b, "src/workflow/phase.zig", target, optimize, &.{ imp("task", task_mod), imp("adversarial_review", adversarial_review_mod), imp("git", git_mod) });
     const compaction_mod = simpleMod(b, "src/agent/compaction.zig", target, optimize);
     const context_budget_mod = simpleMod(b, "src/agent/context_budget.zig", target, optimize);
@@ -786,7 +795,7 @@ pub fn build(b: *std.Build) !void {
 
     const mcp_transport_mod = createMod(b, "src/mcp/transport.zig", target, optimize, &.{imp("http_client", http_client_mod)});
     const mcp_oauth_mod = createMod(b, "src/mcp/oauth.zig", target, optimize, &.{
-        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod),
+        imp("env", env_mod), imp("http_client", http_client_mod), imp("json_extract", json_extract_mod), imp("oauth_helpers", oauth_helpers_mod),
     });
     const mcp_client_mod = createMod(b, "src/mcp/client.zig", target, optimize, &.{ imp("mcp_transport", mcp_transport_mod), imp("mcp_oauth", mcp_oauth_mod) });
     const mcp_discovery_mod = createMod(b, "src/mcp/discovery.zig", target, optimize, &.{
@@ -878,7 +887,7 @@ pub fn build(b: *std.Build) !void {
     addImports(chat_mod, &.{
         imp("compaction", compaction_mod), imp("context_budget", context_budget_mod), imp("project_memory", project_memory_mod),
         imp("usage_pricing", usage_pricing_mod), imp("usage_budget", usage_budget_mod), imp("graph", graph_mod), imp("mcp_bridge", mcp_bridge_mod),
-        imp("agent_loop", agent_loop_mod), imp("tools", tools_mod), imp("skills_loader", skills_loader_mod),
+        imp("agent_loop", agent_loop_mod), imp("agent_setup", agent_setup_mod), imp("tools", tools_mod), imp("skills_loader", skills_loader_mod),
         imp("streaming_types", streaming_types_mod), imp("session", session_mod), imp("cognition", cognition_mod),
         imp("autopilot", autopilot_mod), imp("phase_runner", phase_runner_mod), imp("orchestration", orchestration_mod),
         imp("chat_helpers", chat_helpers_mod), imp("chat_bridge", chat_bridge_mod), imp("shell", shell_mod),
@@ -1016,7 +1025,7 @@ pub fn build(b: *std.Build) !void {
         context_budget_mod, project_memory_mod, smart_context_mod, semantic_compressor_mod,
         user_model_mod, feedback_mod, checkpoint_mod, workflow_mod, scaffold_mod, toml_mod,
         tui_mod, config_mod, provider_config_mod, backup_mod, auth_mod, tools_mod,
-        skills_loader_mod, custom_commands_mod, color_mod, source_tracker_mod, provider_oauth_mod,
+        skills_loader_mod, custom_commands_mod, color_mod, source_tracker_mod, oauth_helpers_mod, provider_oauth_mod,
         tool_exposition_mod, mcp_server_mod, governance_mod, permission_lists_mod,
         context_optimizer_mod, token_cache_mod, context_limits_mod, worker_mod, router_mod, circuit_breaker_mod,
         guardrail_pipeline_mod, metrics_collector_mod, knowledge_schema_mod, knowledge_ops_mod,

@@ -4,18 +4,12 @@ const file_compat = @import("file_compat");
 const env_config = @import("env");
 const http_client = @import("http_client");
 const json_extract = @import("json_extract");
+const oauth_helpers = @import("oauth_helpers");
 
 const Allocator = std.mem.Allocator;
 
-/// OAuth token information.
-pub const OAuthTokens = struct {
-    access_token: []const u8,
-    refresh_token: ?[]const u8 = null,
-    token_type: []const u8 = "Bearer",
-    expires_in: ?u64 = null,
-    expires_at: ?i64 = null,
-    scope: ?[]const u8 = null,
-};
+/// Re-export OAuthTokens from shared helpers.
+pub const OAuthTokens = oauth_helpers.OAuthTokens;
 
 /// OAuth client information for dynamic registration.
 pub const OAuthClientInfo = struct {
@@ -51,18 +45,12 @@ pub const OAuthResult = struct {
 
 /// Check if token is expired.
 pub fn isTokenExpired(tokens: *const OAuthTokens) bool {
-    if (tokens.expires_at) |expires| {
-        const now = std.time.timestamp();
-        return now >= expires;
-    }
-    return false;
+    return oauth_helpers.isTokenExpired(tokens);
 }
 
 /// Calculate expiration timestamp from expires_in seconds.
 pub fn calculateExpiresAt(expires_in: u64) i64 {
-    const now = std.time.timestamp();
-    const future_time = @as(i64, @intCast(now)) + @as(i64, @intCast(expires_in));
-    return future_time;
+    return oauth_helpers.calculateExpiresAt(expires_in);
 }
 
 /// Start OAuth authentication flow for a server.
@@ -75,25 +63,25 @@ pub fn authenticateWithOAuth(
     _ = self;
     std.log.info("Starting OAuth authentication for server: {s}", .{server_name});
 
-    const state = try generateRandomState(allocator);
+    const state = try oauth_helpers.generateRandomState(allocator);
     defer allocator.free(state);
 
-    const code_verifier = try generateCodeVerifier(allocator);
+    const code_verifier = try oauth_helpers.generateCodeVerifier(allocator);
     defer allocator.free(code_verifier);
-    const code_challenge = try generateCodeChallenge(code_verifier, allocator);
+    const code_challenge = try oauth_helpers.generateCodeChallenge(code_verifier, allocator);
     defer allocator.free(code_challenge);
 
     const auth_url = try buildAuthorizationUrl(config, state, code_challenge, allocator);
     defer allocator.free(auth_url);
 
-    var callback_server = try startCallbackServer(allocator);
+    var callback_server = try oauth_helpers.startCallbackServer(allocator, 0);
     defer callback_server.deinit();
 
     const stdout = file_compat.File.stdout().writer();
     stdout.print("Please open this URL in your browser: {s}\n", .{auth_url}) catch {};
     stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch {};
 
-    const callback_result = try waitForCallback(&callback_server, state, allocator);
+    const callback_result = try oauth_helpers.waitForCallback(&callback_server, state, allocator);
     defer allocator.free(callback_result.code);
 
     const tokens = try exchangeCodeForTokens(config, callback_result.code, code_verifier, allocator);
@@ -103,40 +91,6 @@ pub fn authenticateWithOAuth(
         .success = true,
         .tokens = tokens,
     };
-}
-
-fn generateRandomState(allocator: Allocator) ![]const u8 {
-    var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
-
-    const hex_state = try allocator.alloc(u8, random_bytes.len * 2);
-    for (random_bytes, 0..) |byte, i| {
-        const hex_pair = std.fmt.bytesToHex(&[_]u8{byte}, .lower);
-        hex_state[i * 2] = hex_pair[0];
-        hex_state[i * 2 + 1] = hex_pair[1];
-    }
-
-    return hex_state;
-}
-
-fn generateCodeVerifier(allocator: Allocator) ![]const u8 {
-    var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
-
-    const verifier = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(random_bytes.len));
-    _ = std.base64.url_safe_no_pad.Encoder.encode(verifier, &random_bytes);
-
-    return verifier;
-}
-
-fn generateCodeChallenge(verifier: []const u8, allocator: Allocator) ![]const u8 {
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(verifier, &hash, .{});
-
-    const challenge = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(hash.len));
-    _ = std.base64.url_safe_no_pad.Encoder.encode(challenge, &hash);
-
-    return challenge;
 }
 
 fn buildAuthorizationUrl(
@@ -162,88 +116,6 @@ fn buildAuthorizationUrl(
 
     return try url_builder.toOwnedSlice();
 }
-
-const CallbackServer = struct {
-    stream: std.net.Server,
-    port: u16,
-    allocator: Allocator,
-
-    fn deinit(self: *CallbackServer) void {
-        _ = self.allocator;
-        self.stream.deinit();
-    }
-};
-
-fn startCallbackServer(allocator: Allocator) !CallbackServer {
-    const address = std.net.Address.parseIp("127.0.0.1", 0) catch return error.OAuthCallbackFailed;
-    const server = address.listen(.{ .reuse_address = true }) catch return error.OAuthCallbackFailed;
-    const port = server.listen_address.in.getPort();
-
-    return CallbackServer{
-        .stream = server,
-        .port = port,
-        .allocator = allocator,
-    };
-}
-
-fn waitForCallback(
-    callback_server: *CallbackServer,
-    expected_state: []const u8,
-    allocator: Allocator,
-) !CallbackResult {
-    var conn = callback_server.stream.accept() catch return error.OAuthCallbackFailed;
-    defer conn.stream.close();
-
-    var read_buf: [4096]u8 = undefined;
-    const bytes_read = conn.stream.read(&read_buf) catch return error.OAuthCallbackFailed;
-    const request = read_buf[0..bytes_read];
-
-    const query_start = std.mem.indexOf(u8, request, "?") orelse return error.OAuthCallbackFailed;
-    const line_end = std.mem.indexOfScalar(u8, request[query_start..], ' ') orelse return error.OAuthCallbackFailed;
-    const query_string = request[query_start .. query_start + line_end];
-
-    var code: ?[]const u8 = null;
-    var state: ?[]const u8 = null;
-
-    var it = std.mem.splitSequence(u8, query_string, "&");
-    while (it.next()) |param| {
-        const eq_idx = std.mem.indexOfScalar(u8, param, '=') orelse continue;
-        const key = param[0..eq_idx];
-        const value = param[eq_idx + 1 ..];
-
-        if (std.mem.eql(u8, key, "code")) {
-            code = try allocator.dupe(u8, value);
-        } else if (std.mem.eql(u8, key, "state")) {
-            state = try allocator.dupe(u8, value);
-        }
-    }
-
-    const response_html =
-        \\HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n
-        \\<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>
-    ;
-    _ = conn.stream.write(response_html) catch {};
-
-    const result_code = code orelse return error.OAuthCallbackFailed;
-    const result_state = state orelse return error.OAuthCallbackFailed;
-    errdefer allocator.free(result_code);
-    defer allocator.free(result_state);
-
-    if (!std.mem.eql(u8, result_state, expected_state)) {
-        allocator.free(result_code);
-        return error.OAuthStateMismatch;
-    }
-
-    return CallbackResult{
-        .code = result_code,
-        .state = result_state,
-    };
-}
-
-const CallbackResult = struct {
-    code: []const u8,
-    state: []const u8,
-};
 
 fn exchangeCodeForTokens(
     config: OAuthServerConfig,
@@ -276,34 +148,7 @@ fn exchangeCodeForTokens(
     const response_data = fetch_result.body;
     if (response_data.len == 0) return error.OAuthTokenExchangeFailed;
 
-    return parseTokenResponse(response_data, allocator);
-}
-
-fn parseTokenResponse(data: []const u8, allocator: Allocator) !OAuthTokens {
-    const access_token = json_extract.extractString(data, "access_token") orelse return error.OAuthTokenExchangeFailed;
-    const refresh_token = json_extract.extractString(data, "refresh_token");
-    const token_type = json_extract.extractString(data, "token_type") orelse "Bearer";
-    const expires_in = json_extract.extractInteger(data, "expires_in");
-    const scope = json_extract.extractString(data, "scope");
-
-    const at = try allocator.dupe(u8, access_token);
-    const rt = if (refresh_token) |value| try allocator.dupe(u8, value) else null;
-    const tt = try allocator.dupe(u8, token_type);
-    const sc = if (scope) |value| try allocator.dupe(u8, value) else null;
-
-    const expires_at: ?i64 = if (expires_in) |ei|
-        calculateExpiresAt(@as(u64, @intCast(ei)))
-    else
-        null;
-
-    return OAuthTokens{
-        .access_token = at,
-        .refresh_token = rt,
-        .token_type = tt,
-        .expires_in = if (expires_in) |ei| @as(u64, @intCast(ei)) else null,
-        .expires_at = expires_at,
-        .scope = sc,
-    };
+    return oauth_helpers.parseTokenResponse(response_data, allocator);
 }
 
 fn getTokenStorePath(allocator: Allocator) ![]const u8 {
@@ -458,7 +303,7 @@ pub fn refreshOAuthTokens(
     const response_data = fetch_result.body;
     if (response_data.len == 0) return error.OAuthTokenRefreshFailed;
 
-    var new_tokens = try parseTokenResponse(response_data, allocator);
+    var new_tokens = try oauth_helpers.parseTokenResponse(response_data, allocator);
     if (new_tokens.refresh_token == null) {
         new_tokens.refresh_token = try allocator.dupe(u8, refresh_token);
     }

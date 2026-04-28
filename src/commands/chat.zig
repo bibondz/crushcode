@@ -4,6 +4,7 @@ const array_list_compat = @import("array_list_compat");
 const ai_types = @import("ai_types");
 const chat_helpers = @import("chat_helpers");
 const chat_bridge = @import("chat_bridge");
+const agent_setup = @import("agent_setup");
 
 inline fn out(comptime fmt: []const u8, args: anytype) void {
     file_compat.File.stdout().writer().print(fmt, args) catch {};
@@ -1059,17 +1060,15 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer allocator.free(available_tools);
     std.debug.assert(available_tools.len > 0);
 
-    var agent_loop = AgentLoop.init(allocator);
-    defer agent_loop.deinit();
-    var loop_config = agent_loop_mod.LoopConfig.init();
-    loop_config.show_intermediate = false;
-    agent_loop.setConfig(loop_config);
-    try tool_executors.registerBuiltinAgentTools(&agent_loop, builtin_tool_schemas);
+    // Initialize agent loop using agent_setup module
+    var agent_loop = try agent_setup.createAgentLoop(allocator, builtin_tool_schemas);
+    defer agent_setup.destroyAgentLoop(allocator, agent_loop);
 
     // Phase 52: Session budget tracking — set via /cost budget <amount>
     var session_budget: ?usage_budget_mod.BudgetManager = null;
 
     var current_agent_mode: agent_loop_mod.AgentMode = .execute;
+    agent_setup.configureAgentMode(agent_loop, current_agent_mode);
     tool_executors.setAgentMode(current_agent_mode);
 
     var messages = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
@@ -1643,6 +1642,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         if (std.mem.eql(u8, user_message, "/mode") or std.mem.startsWith(u8, user_message, "/mode ")) {
             const mode_arg = std.mem.trim(u8, user_message["/mode".len..], " ");
             if (mode_arg.len == 0) {
+                const loop_config = agent_setup.getLoopConfig(agent_loop);
                 const mc = loop_config.activeModeConfig();
                 const eff_iter = loop_config.effectiveMaxIterations();
                 out("Current mode: {s} — {s}\n", .{ current_agent_mode.toString(), current_agent_mode.description() });
@@ -1657,8 +1657,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
                     continue;
                 };
                 current_agent_mode = new_mode;
-                loop_config.agent_mode = new_mode;
-                agent_loop.setConfig(loop_config);
+                agent_setup.configureAgentMode(agent_loop, new_mode);
                 tool_executors.setAgentMode(new_mode);
                 out("Switched to {s} — {s}\n", .{ new_mode.toString(), new_mode.description() });
             }
@@ -2389,6 +2388,7 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
         chat_bridge.active_show_thinking = false;
         defer loop_result.deinit();
 
+        const loop_config = agent_setup.getLoopConfig(agent_loop);
         const hit_max_iterations = loop_result.steps.items.len > 0 and
             loop_result.total_iterations >= loop_config.max_iterations and
             loop_result.steps.items[loop_result.steps.items.len - 1].has_tool_calls;

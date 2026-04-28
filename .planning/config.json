@@ -16,5 +16,8 @@
     "needs_codebase_map": false,
     "has_codebase_map": true,
     "has_existing_code": true
+  },
+  "graphify": {
+    "enabled": true
   }
 }

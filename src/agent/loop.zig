@@ -1251,3 +1251,129 @@ test "LoopResult - deinit cleans up steps" {
     result.deinit();
     // If we get here without crash, deinit worked correctly
 }
+
+// ============================================================
+// Pure Function Tests
+// ============================================================
+
+test "AgentMode.toString - all modes" {
+    try testing.expectEqualStrings("plan", AgentMode.plan.toString());
+    try testing.expectEqualStrings("build", AgentMode.build.toString());
+    try testing.expectEqualStrings("execute", AgentMode.execute.toString());
+}
+
+test "AgentMode.fromString - valid inputs" {
+    try testing.expectEqual(AgentMode.plan, AgentMode.fromString("plan").?);
+    try testing.expectEqual(AgentMode.build, AgentMode.fromString("build").?);
+    try testing.expectEqual(AgentMode.execute, AgentMode.fromString("execute").?);
+}
+
+test "AgentMode.fromString - invalid input returns null" {
+    try testing.expect(AgentMode.fromString("invalid") == null);
+    try testing.expect(AgentMode.fromString("PLAN") == null);
+    try testing.expect(AgentMode.fromString("") == null);
+}
+
+test "AgentMode.isToolAllowed - plan mode allows only read tools" {
+    const mode = AgentMode.plan;
+    try testing.expect(mode.isToolAllowed("read_file"));
+    try testing.expect(mode.isToolAllowed("glob"));
+    try testing.expect(mode.isToolAllowed("grep"));
+    try testing.expect(!mode.isToolAllowed("write_file"));
+    try testing.expect(!mode.isToolAllowed("edit"));
+    try testing.expect(!mode.isToolAllowed("bash"));
+}
+
+test "AgentMode.isToolAllowed - build mode allows read + write" {
+    const mode = AgentMode.build;
+    try testing.expect(mode.isToolAllowed("read_file"));
+    try testing.expect(mode.isToolAllowed("write_file"));
+    try testing.expect(mode.isToolAllowed("edit"));
+    try testing.expect(!mode.isToolAllowed("bash"));
+}
+
+test "AgentMode.isToolAllowed - execute mode allows all tools" {
+    const mode = AgentMode.execute;
+    try testing.expect(mode.isToolAllowed("read_file"));
+    try testing.expect(mode.isToolAllowed("write_file"));
+    try testing.expect(mode.isToolAllowed("bash"));
+    try testing.expect(mode.isToolAllowed("any_tool_name"));
+}
+
+test "AgentMode.allowedToolsList - returns correct lists" {
+    try testing.expectEqualStrings("read_file, glob, grep", AgentMode.plan.allowedToolsList());
+    try testing.expectEqualStrings("read_file, glob, grep, write_file, edit", AgentMode.build.allowedToolsList());
+    try testing.expectEqualStrings("all tools", AgentMode.execute.allowedToolsList());
+}
+
+test "AgentMode.description - returns mode descriptions" {
+    try testing.expect(std.mem.indexOf(u8, AgentMode.plan.description(), "read-only") != null);
+    try testing.expect(std.mem.indexOf(u8, AgentMode.build.description(), "read/write") != null);
+    try testing.expect(std.mem.indexOf(u8, AgentMode.execute.description(), "full access") != null);
+}
+
+test "ModeConfig.init - returns empty defaults" {
+    const config = ModeConfig.init();
+    try testing.expect(config.model == null);
+    try testing.expectEqual(@as(f64, 0.7), config.temperature);
+    try testing.expect(config.max_iterations == null);
+}
+
+test "ModeConfig.planDefaults - conservative settings" {
+    const config = ModeConfig.planDefaults();
+    try testing.expectEqual(@as(f64, 0.3), config.temperature);
+    try testing.expectEqual(@as(?u32, 10), config.max_iterations);
+}
+
+test "ModeConfig.buildDefaults - balanced settings" {
+    const config = ModeConfig.buildDefaults();
+    try testing.expectEqual(@as(f64, 0.5), config.temperature);
+    try testing.expectEqual(@as(?u32, 20), config.max_iterations);
+}
+
+test "ModeConfig.executeDefaults - full power settings" {
+    const config = ModeConfig.executeDefaults();
+    try testing.expectEqual(@as(f64, 0.7), config.temperature);
+    try testing.expectEqual(@as(?u32, 25), config.max_iterations);
+}
+
+test "LoopConfig.activeModeConfig - returns correct config" {
+    var lc = LoopConfig.init();
+    try testing.expectEqual(lc.plan_config.temperature, lc.activeModeConfig().temperature);
+    lc.agent_mode = .build;
+    try testing.expectEqual(lc.build_config.temperature, lc.activeModeConfig().temperature);
+    lc.agent_mode = .execute;
+    try testing.expectEqual(lc.execute_config.temperature, lc.activeModeConfig().temperature);
+}
+
+test "LoopConfig.effectiveMaxIterations - uses mode override when set" {
+    var lc = LoopConfig.init();
+    lc.max_iterations = 100;
+    lc.agent_mode = .plan;
+    try testing.expectEqual(@as(u32, 10), lc.effectiveMaxIterations());
+    lc.agent_mode = .execute;
+    try testing.expectEqual(@as(u32, 25), lc.effectiveMaxIterations());
+}
+
+test "LoopConfig.effectiveMaxIterations - uses global when mode override null" {
+    var lc = LoopConfig.init();
+    lc.max_iterations = 50;
+    lc.plan_config.max_iterations = null;
+    lc.agent_mode = .plan;
+    try testing.expectEqual(@as(u32, 50), lc.effectiveMaxIterations());
+}
+
+test "interrupt flag - reset and check" {
+    // Set interrupt flag
+    interrupt_requested.store(true, .monotonic);
+    try testing.expect(isInterrupted());
+    
+    // Reset and verify
+    resetInterrupt();
+    try testing.expect(!isInterrupted());
+}
+
+test "interrupt flag - initial state is false" {
+    resetInterrupt();
+    try testing.expect(!isInterrupted());
+}

@@ -4,25 +4,12 @@ const file_compat = @import("file_compat");
 const env_config = @import("env");
 const http_client = @import("http_client");
 const json_extract = @import("json_extract");
+const oauth_helpers = @import("oauth_helpers");
 
 const Allocator = std.mem.Allocator;
 
-/// OAuth token information.
-pub const OAuthTokens = struct {
-    access_token: []const u8,
-    refresh_token: ?[]const u8 = null,
-    token_type: []const u8 = "Bearer",
-    expires_in: ?u64 = null,
-    expires_at: ?i64 = null,
-    scope: ?[]const u8 = null,
-
-    pub fn deinit(self: *OAuthTokens, allocator: Allocator) void {
-        allocator.free(self.access_token);
-        if (self.refresh_token) |rt| allocator.free(rt);
-        if (std.mem.eql(u8, self.token_type, "Bearer")) {} else allocator.free(self.token_type);
-        if (self.scope) |sc| allocator.free(sc);
-    }
-};
+/// Re-export OAuthTokens from shared helpers.
+pub const OAuthTokens = oauth_helpers.OAuthTokens;
 
 /// OAuth provider configuration — defines endpoints per provider.
 pub const ProviderOAuthConfig = struct {
@@ -60,17 +47,12 @@ pub fn getConfigForProvider(provider_name: []const u8) ?ProviderOAuthConfig {
 
 /// Check if token is expired.
 pub fn isTokenExpired(tokens: *const OAuthTokens) bool {
-    if (tokens.expires_at) |expires| {
-        const now = std.time.timestamp();
-        return now >= expires;
-    }
-    return false;
+    return oauth_helpers.isTokenExpired(tokens);
 }
 
 /// Calculate expiration timestamp from expires_in seconds.
 pub fn calculateExpiresAt(expires_in: u64) i64 {
-    const now = std.time.timestamp();
-    return @as(i64, @intCast(now)) + @as(i64, @intCast(expires_in));
+    return oauth_helpers.calculateExpiresAt(expires_in);
 }
 
 /// ProviderOAuth — struct-based OAuth 2.0 PKCE client for AI providers.
@@ -88,28 +70,28 @@ pub const ProviderOAuth = struct {
 
     /// Start full OAuth browser flow: PKCE generation → callback server → token exchange → store.
     pub fn authenticate(self: *ProviderOAuth) !OAuthTokens {
-        const state = try generateRandomState(self.allocator);
+        const state = try oauth_helpers.generateRandomState(self.allocator);
         defer self.allocator.free(state);
 
-        const code_verifier = try generateCodeVerifier(self.allocator);
+        const code_verifier = try oauth_helpers.generateCodeVerifier(self.allocator);
         defer self.allocator.free(code_verifier);
-        const code_challenge = try generateCodeChallenge(code_verifier, self.allocator);
+        const code_challenge = try oauth_helpers.generateCodeChallenge(code_verifier, self.allocator);
         defer self.allocator.free(code_challenge);
 
         const redirect_uri = try std.fmt.allocPrint(self.allocator, "http://127.0.0.1:{d}/callback", .{self.config.redirect_port});
         defer self.allocator.free(redirect_uri);
 
-        const auth_url = try buildAuthorizationUrl(self.config, state, code_challenge, redirect_uri, self.allocator);
+        const auth_url = try self.buildAuthorizationUrl(state, code_challenge, redirect_uri);
         defer self.allocator.free(auth_url);
 
-        var callback_server = try startCallbackServer(self.allocator, self.config.redirect_port);
+        var callback_server = try oauth_helpers.startCallbackServer(self.allocator, self.config.redirect_port);
         defer callback_server.deinit();
 
         const stdout = file_compat.File.stdout().writer();
         stdout.print("Please open this URL in your browser:\n{s}\n", .{auth_url}) catch |err| std.log.warn("stdout write failed: {}", .{err});
         stdout.print("Waiting for OAuth callback on port {d}...\n", .{callback_server.port}) catch |err| std.log.warn("stdout write failed: {}", .{err});
 
-        const callback_result = try waitForCallback(&callback_server, state, self.allocator);
+        const callback_result = try oauth_helpers.waitForCallback(&callback_server, state, self.allocator);
         defer self.allocator.free(callback_result.code);
 
         const tokens = try self.exchangeCodeForTokens(callback_result.code, code_verifier, redirect_uri);
@@ -142,7 +124,7 @@ pub const ProviderOAuth = struct {
         if (fetch_result.status != .ok) return error.OAuthTokenRefreshFailed;
         if (fetch_result.body.len == 0) return error.OAuthTokenRefreshFailed;
 
-        var new_tokens = try parseTokenResponse(fetch_result.body, self.allocator);
+        var new_tokens = try oauth_helpers.parseTokenResponse(fetch_result.body, self.allocator);
         if (new_tokens.refresh_token == null) {
             new_tokens.refresh_token = try self.allocator.dupe(u8, refresh_token);
         }
@@ -357,6 +339,30 @@ pub const ProviderOAuth = struct {
 
     // --- Private methods ---
 
+    fn buildAuthorizationUrl(
+        self: *ProviderOAuth,
+        state: []const u8,
+        code_challenge: []const u8,
+        redirect_uri: []const u8,
+    ) ![]const u8 {
+        var url_builder = array_list_compat.ArrayList(u8).init(self.allocator);
+        defer url_builder.deinit();
+
+        try url_builder.writer().print("{s}?response_type=code&client_id={s}&redirect_uri={s}&state={s}&code_challenge={s}&code_challenge_method=S256", .{
+            self.config.auth_url,
+            self.config.client_id,
+            redirect_uri,
+            state,
+            code_challenge,
+        });
+
+        if (self.config.scopes.len > 0) {
+            try url_builder.writer().print("&scope={s}", .{self.config.scopes});
+        }
+
+        return try url_builder.toOwnedSlice();
+    }
+
     fn exchangeCodeForTokens(self: *ProviderOAuth, code: []const u8, code_verifier: []const u8, redirect_uri: []const u8) !OAuthTokens {
         var body_buf = array_list_compat.ArrayList(u8).init(self.allocator);
         defer body_buf.deinit();
@@ -378,7 +384,7 @@ pub const ProviderOAuth = struct {
         if (fetch_result.status != .ok) return error.OAuthTokenExchangeFailed;
         if (fetch_result.body.len == 0) return error.OAuthTokenExchangeFailed;
 
-        return parseTokenResponse(fetch_result.body, self.allocator);
+        return oauth_helpers.parseTokenResponse(fetch_result.body, self.allocator);
     }
 
     fn storeTokens(self: *ProviderOAuth, tokens: OAuthTokens) !void {
@@ -496,176 +502,6 @@ pub const ProviderOAuth = struct {
         return std.fs.path.join(self.allocator, &.{ config_dir, "provider_tokens.json" });
     }
 };
-
-// --- Internal helper functions ---
-
-fn generateRandomState(allocator: Allocator) ![]const u8 {
-    var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
-
-    const hex_state = try allocator.alloc(u8, random_bytes.len * 2);
-    for (random_bytes, 0..) |byte, i| {
-        const hex_pair = std.fmt.bytesToHex(&[_]u8{byte}, .lower);
-        hex_state[i * 2] = hex_pair[0];
-        hex_state[i * 2 + 1] = hex_pair[1];
-    }
-
-    return hex_state;
-}
-
-fn generateCodeVerifier(allocator: Allocator) ![]const u8 {
-    var random_bytes: [32]u8 = undefined;
-    std.crypto.random.bytes(&random_bytes);
-
-    const verifier = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(random_bytes.len));
-    _ = std.base64.url_safe_no_pad.Encoder.encode(verifier, &random_bytes);
-
-    return verifier;
-}
-
-fn generateCodeChallenge(verifier: []const u8, allocator: Allocator) ![]const u8 {
-    var hash: [32]u8 = undefined;
-    std.crypto.hash.sha2.Sha256.hash(verifier, &hash, .{});
-
-    const challenge = try allocator.alloc(u8, std.base64.url_safe_no_pad.Encoder.calcSize(hash.len));
-    _ = std.base64.url_safe_no_pad.Encoder.encode(challenge, &hash);
-
-    return challenge;
-}
-
-fn buildAuthorizationUrl(
-    config: ProviderOAuthConfig,
-    state: []const u8,
-    code_challenge: []const u8,
-    redirect_uri: []const u8,
-    allocator: Allocator,
-) ![]const u8 {
-    var url_builder = array_list_compat.ArrayList(u8).init(allocator);
-    defer url_builder.deinit();
-
-    try url_builder.writer().print("{s}?response_type=code&client_id={s}&redirect_uri={s}&state={s}&code_challenge={s}&code_challenge_method=S256", .{
-        config.auth_url,
-        config.client_id,
-        redirect_uri,
-        state,
-        code_challenge,
-    });
-
-    if (config.scopes.len > 0) {
-        try url_builder.writer().print("&scope={s}", .{config.scopes});
-    }
-
-    return try url_builder.toOwnedSlice();
-}
-
-const CallbackServer = struct {
-    stream: std.net.Server,
-    port: u16,
-    allocator: Allocator,
-
-    fn deinit(self: *CallbackServer) void {
-        _ = self.allocator;
-        self.stream.deinit();
-    }
-};
-
-fn startCallbackServer(allocator: Allocator, port: u16) !CallbackServer {
-    const address = std.net.Address.parseIp("127.0.0.1", port) catch return error.OAuthCallbackFailed;
-    const server = address.listen(.{ .reuse_address = true }) catch return error.OAuthCallbackFailed;
-    const actual_port = server.listen_address.in.getPort();
-
-    return CallbackServer{
-        .stream = server,
-        .port = actual_port,
-        .allocator = allocator,
-    };
-}
-
-const CallbackResult = struct {
-    code: []const u8,
-    state: []const u8,
-};
-
-fn waitForCallback(
-    callback_server: *CallbackServer,
-    expected_state: []const u8,
-    allocator: Allocator,
-) !CallbackResult {
-    var conn = callback_server.stream.accept() catch return error.OAuthCallbackFailed;
-    defer conn.stream.close();
-
-    var read_buf: [4096]u8 = undefined;
-    const bytes_read = conn.stream.read(&read_buf) catch return error.OAuthCallbackFailed;
-    const request = read_buf[0..bytes_read];
-
-    const query_start = std.mem.indexOf(u8, request, "?") orelse return error.OAuthCallbackFailed;
-    const line_end = std.mem.indexOfScalar(u8, request[query_start..], ' ') orelse return error.OAuthCallbackFailed;
-    const query_string = request[query_start .. query_start + line_end];
-
-    var code: ?[]const u8 = null;
-    var state: ?[]const u8 = null;
-
-    var it = std.mem.splitSequence(u8, query_string, "&");
-    while (it.next()) |param| {
-        const eq_idx = std.mem.indexOfScalar(u8, param, '=') orelse continue;
-        const key = param[0..eq_idx];
-        const value = param[eq_idx + 1 ..];
-
-        if (std.mem.eql(u8, key, "code")) {
-            code = try allocator.dupe(u8, value);
-        } else if (std.mem.eql(u8, key, "state")) {
-            state = try allocator.dupe(u8, value);
-        }
-    }
-
-    const response_html =
-        \\HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n
-        \\<html><body><h2>Authentication successful!</h2><p>You can close this tab.</p></body></html>
-    ;
-    _ = conn.stream.write(response_html) catch |err| std.log.warn("failed to send OAuth response to browser: {}", .{err});
-
-    const result_code = code orelse return error.OAuthCallbackFailed;
-    const result_state = state orelse return error.OAuthCallbackFailed;
-    errdefer allocator.free(result_code);
-    defer allocator.free(result_state);
-
-    if (!std.mem.eql(u8, result_state, expected_state)) {
-        allocator.free(result_code);
-        return error.OAuthStateMismatch;
-    }
-
-    return CallbackResult{
-        .code = result_code,
-        .state = result_state,
-    };
-}
-
-fn parseTokenResponse(data: []const u8, allocator: Allocator) !OAuthTokens {
-    const access_token = json_extract.extractString(data, "access_token") orelse return error.OAuthTokenExchangeFailed;
-    const refresh_token = json_extract.extractString(data, "refresh_token");
-    const token_type = json_extract.extractString(data, "token_type") orelse "Bearer";
-    const expires_in = json_extract.extractInteger(data, "expires_in");
-    const scope = json_extract.extractString(data, "scope");
-
-    const at = try allocator.dupe(u8, access_token);
-    const rt = if (refresh_token) |value| try allocator.dupe(u8, value) else null;
-    const tt = try allocator.dupe(u8, token_type);
-    const sc = if (scope) |value| try allocator.dupe(u8, value) else null;
-
-    const expires_at: ?i64 = if (expires_in) |ei|
-        calculateExpiresAt(@as(u64, @intCast(ei)))
-    else
-        null;
-
-    return OAuthTokens{
-        .access_token = at,
-        .refresh_token = rt,
-        .token_type = tt,
-        .expires_in = if (expires_in) |ei| @as(u64, @intCast(ei)) else null,
-        .expires_at = expires_at,
-        .scope = sc,
-    };
-}
 
 // --- Tests ---
 

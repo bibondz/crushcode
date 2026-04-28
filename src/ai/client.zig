@@ -1433,3 +1433,212 @@ test "sendMockPerfStream emits 10 tokens and returns valid response" {
     try testing.expectEqual(@as(u32, 10), usage.completion_tokens);
     try testing.expectEqual(@as(u32, 20), usage.total_tokens);
 }
+
+test "getApiModelName strips provider prefix when keep_prefix is false" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "openai/gpt-4o-mini", "test-key");
+    defer client.deinit();
+
+    const model_name = client.getApiModelName();
+    try testing.expectEqualStrings("gpt-4o-mini", model_name);
+}
+
+test "getApiModelName returns original model when no prefix" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const model_name = client.getApiModelName();
+    try testing.expectEqualStrings("gpt-4o", model_name);
+}
+
+test "getApiModelName keeps prefix when provider config keep_prefix is true" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openrouter);
+
+    const provider = registry.getProvider("openrouter").?;
+    var client = try AIClient.init(allocator, provider, "openai/gpt-4o", "test-key");
+    defer client.deinit();
+
+    const model_name = client.getApiModelName();
+    try testing.expectEqualStrings("openai/gpt-4o", model_name);
+}
+
+test "getChatPath returns /chat for ollama provider" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.ollama);
+
+    const provider = registry.getProvider("ollama").?;
+    var client = try AIClient.init(allocator, provider, "llama3", "");
+    defer client.deinit();
+
+    const path = client.getChatPath();
+    try testing.expectEqualStrings("/chat", path);
+}
+
+test "getChatPath returns /chat/completions for non-ollama providers" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const path = client.getChatPath();
+    try testing.expectEqualStrings("/chat/completions", path);
+}
+
+test "extractExtendedUsage returns correct token counts" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const usage = Usage{
+        .prompt_tokens = 100,
+        .completion_tokens = 50,
+        .total_tokens = 150,
+    };
+
+    const response = ChatResponse{
+        .id = "test-id",
+        .object = "chat.completion",
+        .created = 1234567890,
+        .model = "gpt-4o",
+        .choices = &[_]ChatChoice{},
+        .usage = usage,
+        .provider = null,
+        .cost = null,
+        .system_fingerprint = null,
+    };
+
+    const extended = client.extractExtendedUsage(&response);
+    try testing.expectEqual(@as(u32, 100), extended.input_tokens);
+    try testing.expectEqual(@as(u32, 50), extended.output_tokens);
+}
+
+test "extractExtendedUsage returns zero when usage is null" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const response = ChatResponse{
+        .id = "test-id",
+        .object = "chat.completion",
+        .created = 1234567890,
+        .model = "gpt-4o",
+        .choices = &[_]ChatChoice{},
+        .usage = null,
+        .provider = null,
+        .cost = null,
+        .system_fingerprint = null,
+    };
+
+    const extended = client.extractExtendedUsage(&response);
+    try testing.expectEqual(@as(u32, 0), extended.input_tokens);
+    try testing.expectEqual(@as(u32, 0), extended.output_tokens);
+}
+
+test "buildToolsJson returns empty string for no tools" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const tools_json = try client.buildToolsJson(allocator);
+    defer allocator.free(tools_json);
+
+    try testing.expectEqualStrings("", tools_json);
+}
+
+test "buildToolsJson builds correct JSON for single tool" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    const tools = [_]ToolSchema{.{
+        .name = "search_web",
+        .description = "Search the web for information",
+        .parameters = "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\"}}}",
+    }};
+    client.setTools(&tools);
+
+    const tools_json = try client.buildToolsJson(allocator);
+    defer allocator.free(tools_json);
+
+    try testing.expect(tools_json.len > 0);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "search_web") != null);
+    try testing.expect(std.mem.indexOf(u8, tools_json, "Search the web for information") != null);
+}
+
+test "setSystemPrompt and setTools modify client state" {
+    const allocator = testing.allocator;
+
+    var registry = registry_mod.ProviderRegistry.init(allocator);
+    defer registry.deinit();
+    try registry.registerProvider(.openai);
+
+    const provider = registry.getProvider("openai").?;
+    var client = try AIClient.init(allocator, provider, "gpt-4o", "test-key");
+    defer client.deinit();
+
+    try testing.expect(client.system_prompt == null);
+
+    client.setSystemPrompt("You are a helpful assistant");
+    try testing.expect(client.system_prompt != null);
+    try testing.expectEqualStrings("You are a helpful assistant", client.system_prompt.?);
+
+    const tools = [_]ToolSchema{.{
+        .name = "test_tool",
+        .description = "A test tool",
+        .parameters = "{}",
+    }};
+    try testing.expect(client.tools.len == 0);
+
+    client.setTools(&tools);
+    try testing.expect(client.tools.len == 1);
+    try testing.expectEqualStrings("test_tool", client.tools[0].name);
+}

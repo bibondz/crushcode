@@ -784,6 +784,7 @@ test "ProviderType.toString maps all enum values correctly" {
     try testing.expectEqualStrings("opencode-zen", ProviderType.opencode_zen.toString());
     try testing.expectEqualStrings("opencode-go", ProviderType.opencode_go.toString());
     try testing.expectEqualStrings("minimax", ProviderType.minimax.toString());
+    try testing.expectEqualStrings("nvidia", ProviderType.nvidia.toString());
 }
 
 // -------------------------------------------------------

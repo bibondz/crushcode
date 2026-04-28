@@ -371,7 +371,7 @@ Plans:
 
 ---
 
-## v3.4.0 — Agent Safety Rails 🔥 CURRENT
+## v3.4.0 — Agent Safety Rails ✅ DONE
 
 **วัตถุประสงค์**: Wire existing safety infrastructure into the agent loop. Infrastructure exists (BudgetManager, ContextCompactor, tool_timeout_ms) but none of it is connected. This is integration work.
 
@@ -399,7 +399,7 @@ Plans:
 
 ---
 
-## v3.5.0 — Daily Driver Polish 🔥 CURRENT
+## v3.5.0 — Daily Driver Polish ✅ DONE
 
 **วัตถุประสงค์**: Close the last quality-of-life gaps between crushcode and a production daily-driver AI coding CLI. The codebase is mature (103K lines, 39 TODOs, 22 providers, 34 tools, 46 slash commands). Remaining work is polish, not architecture.
 
@@ -424,6 +424,34 @@ Plans:
 
 **Gap**: System prompt injection works for single-shot mode (CLAUDE.md, AGENTS.md loaded), but interactive mode doesn't reload when context files change during a session. If a user edits CLAUDE.md mid-session, the old prompt stays.
 **Fix**: Check context file mtimes before each AI request (file_watcher.zig already exists). If changed, rebuild system prompt. Show "↻ Context updated" notification.
+
+---
+
+## v3.6.0 — Hardening Release ✅ DONE
+
+**วัตถุประสงค์**: Structural cleanup + reliability. Feature-complete (22 providers, 34 tools, 46 slash commands, full agent loop, TUI). Remaining work is deduplication, refactoring, and critical-path tests. Zero new features.
+
+**Based on**: Graphify knowledge graph analysis (4,789 nodes, 13,620 edges, 63 communities) + deep codebase audit of all 295 .zig files (121K lines).
+
+### Phase 56: OAuth Deduplication ✅
+
+**Done**: Extracted shared helpers into `auth/oauth_helpers.zig` (218L). Both `mcp/oauth.zig` (598→443L, -26%) and `auth/provider_oauth.zig` (695→531L, -24%) delegate to shared module. 3 tests included. Build ✅
+
+### Phase 57: Knowledge Lint Merge ❌ CANCELLED
+
+**Reason**: Investigation revealed `knowledge/lint.zig` (vault-based graph linter) and `core/knowledge_lint.zig` (entry-based flat linter) operate on different data models with different consumers. NOT duplication — just similar naming.
+
+### Phase 58: handleInteractiveChat Decomposition ✅
+
+**Done**: Extracted agent loop initialization into `commands/agent_setup.zig` (96L). `handleInteractiveChat()` reduced to coordinator pattern. Build ✅
+
+### Phase 59: Critical Path Tests ✅
+
+**Done**: Added 37 tests across 4 critical modules:
+- `ai/client.zig` + `ai/registry.zig`: 11 tests (getApiModelName, getChatPath, extractExtendedUsage, buildToolsJson, ProviderType.toString for nvidia)
+- `agent/loop.zig`: 17 tests (AgentMode enum ops, tool permissions, ModeConfig defaults, LoopConfig behavior, interrupt flag)
+- `config/config.zig`: 9 tests (parseCommaList variants, getSystemPrompt, mergeOverride for strings/numbers/api_keys/mcp_servers)
+Build ✅
 
 ---
 
