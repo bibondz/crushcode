@@ -54,6 +54,8 @@ pub fn main() !void {
     // Graceful shutdown: install SIGINT/SIGTERM handlers so we exit cleanly.
     // Zig's std.os.sigaction wraps the POSIX call. On Windows these are no-ops.
     // SIGINT handler — POSIX only (Linux/macOS). Windows uses SetConsoleCtrlHandler.
+    // Phase 49: Set agent loop interrupt flag instead of hard exit.
+    // If no agent loop is running, fall back to exit(130) for immediate CLI abort.
     if (builtin.target.os.tag != .windows) {
         var empty_mask: std.posix.sigset_t = undefined;
         @memset(std.mem.asBytes(&empty_mask), 0);
@@ -61,7 +63,13 @@ pub fn main() !void {
             .handler = .{ .handler = struct {
                 fn sigintHandler(sig: c_int) callconv(.c) void {
                     _ = sig;
-                    std.posix.exit(130);
+                    // Signal the agent loop to stop gracefully
+                    const agent_loop = @import("agent_loop");
+                    if (agent_loop.isInterrupted()) {
+                        // Second Ctrl+C — force exit
+                        std.posix.exit(130);
+                    }
+                    agent_loop.interrupt_requested.store(true, .monotonic);
                 }
             }.sigintHandler },
             .mask = empty_mask,

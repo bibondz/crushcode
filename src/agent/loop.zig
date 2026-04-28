@@ -10,8 +10,23 @@ const tool_parallel = @import("tool_parallel");
 const compaction_mod = @import("compaction");
 const loop_detector_mod = @import("loop_detector");
 const notifier_mod = @import("notifier");
+const budget_mod = @import("usage_budget");
 
 const Allocator = std.mem.Allocator;
+
+/// Global interrupt flag — set by SIGINT handler, checked by AgentLoop each iteration.
+/// This is the cleanest way to signal cancellation from a signal handler to the agent loop.
+pub var interrupt_requested = std.atomic.Value(bool).init(false);
+
+/// Reset the interrupt flag (call before starting a new agent loop).
+pub fn resetInterrupt() void {
+    interrupt_requested.store(false, .monotonic);
+}
+
+/// Check if interrupt was requested.
+pub fn isInterrupted() bool {
+    return interrupt_requested.load(.monotonic);
+}
 
 /// Tool call request from AI response
 pub const ToolCall = struct {
@@ -145,6 +160,8 @@ pub const LoopResult = struct {
     total_retries: u32,
     steps: array_list_compat.ArrayList(*StepResult),
     allocator: Allocator,
+    interrupted: bool = false,
+    budget_exceeded: bool = false,
 
     pub fn deinit(self: *LoopResult) void {
         for (self.steps.items) |step| {
@@ -353,6 +370,7 @@ pub const AgentLoop = struct {
     inspection_pipeline: ?*tool_inspection.ToolInspectionPipeline = null,
     parallel_executor: ?*tool_parallel.ParallelExecutor = null,
     compactor: ?compaction_mod.ContextCompactor = null,
+    budget_manager: ?budget_mod.BudgetManager = null,
     /// Tracks whether history has been compacted (replaced with summary + recent messages)
     compacted_history: ?array_list_compat.ArrayList(compaction_mod.CompactMessage) = null,
     /// SHA-256 based loop detection — catches repeated tool interactions
@@ -365,7 +383,7 @@ pub const AgentLoop = struct {
     notifier: notifier_mod.DesktopNotifier,
 
     pub fn init(allocator: Allocator) AgentLoop {
-        return AgentLoop{
+        var loop = AgentLoop{
             .allocator = allocator,
             .config = LoopConfig.init(),
             .registered_tools = std.StringHashMap(ToolExecutor).init(allocator),
@@ -379,6 +397,10 @@ pub const AgentLoop = struct {
             .loop_detector = loop_detector_mod.LoopDetector.init(),
             .notifier = notifier_mod.DesktopNotifier.init(),
         };
+        // Phase 51: Auto-enable context compaction with sensible defaults
+        // Prevents context window overflow in long agent sessions
+        loop.enableCompaction(loop.config.compaction_config.max_tokens);
+        return loop;
     }
 
     /// Configure the loop
@@ -460,6 +482,15 @@ pub const AgentLoop = struct {
 
         var attempt: u32 = 0;
         while (attempt <= self.config.retry_config.max_retries) : (attempt += 1) {
+            // Phase 48: Enforce tool timeout
+            const timeout_elapsed_ns = std.time.nanoTimestamp() - tool_start_ns;
+            const timeout_elapsed_ms: u64 = @intCast(@divTrunc(timeout_elapsed_ns, 1_000_000));
+            if (timeout_elapsed_ms >= self.config.tool_timeout_ms) {
+                std.log.warn("Tool '{s}' timed out after {d}ms (limit: {d}ms)", .{ call.name, timeout_elapsed_ms, self.config.tool_timeout_ms });
+                if (tool_span) |span| span.end(.@"error", "Tool timed out");
+                return ToolResult.init(self.allocator, call.id, "Tool execution timed out", false) catch null;
+            }
+
             if (attempt > 0) {
                 self.total_retries += 1;
                 if (self.config.show_intermediate) {
@@ -568,9 +599,32 @@ pub const AgentLoop = struct {
         // Add user message to history
         try self.addMessage("user", user_message);
 
+        // Clear any stale interrupt from a previous session
+        resetInterrupt();
+
         var done = false;
         const eff_max = self.config.effectiveMaxIterations();
         while (!done and self.iteration < eff_max) {
+            // Phase 49: Check for SIGINT interrupt
+            if (isInterrupted()) {
+                if (self.config.show_intermediate) {
+                    std.log.info("Agent loop interrupted by user (Ctrl+C) at iteration {d}", .{self.iteration});
+                }
+                result.interrupted = true;
+                break;
+            }
+
+            // Phase 50: Check budget before each iteration
+            if (self.budget_manager) |*bm| {
+                if (!bm.checkBeforeRequest()) {
+                    if (self.config.show_intermediate) {
+                        std.log.warn("Agent loop stopped — budget exceeded at iteration {d}", .{self.iteration});
+                    }
+                    result.budget_exceeded = true;
+                    break;
+                }
+            }
+
             self.iteration += 1;
             const step = try self.allocator.create(StepResult);
             step.* = StepResult.init(self.allocator);

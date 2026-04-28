@@ -348,29 +348,54 @@ Plans:
 
 ---
 
-## v3.3.0 — Agent UX Hardening 🔥 CURRENT
+## v3.3.0 — Agent UX Hardening ✅ DONE
 
 **วัตถุประสงค์**: Fix real gaps found during end-to-end testing. Make the agent loop production-ready.
 
 **Based on actual testing, not assumptions.**
 
-### Phase 45: Single-Shot Tool Execution
+### Phase 45: Single-Shot Tool Execution ✅ (d5ddb51)
 
-**Gap**: `crushcode chat "read src/main.zig"` — the model returns tool_calls but they're displayed as raw text instead of being executed. Only interactive mode runs AgentLoop.
+**Gap**: `crushcode chat "read src/main.zig"` — model returns tool_calls but shown as raw text.
+**Fix**: Detect tool_calls in single-shot response → execute via AgentLoop → send results back → return final answer.
 
-**Fix**: When single-shot mode receives a response with tool_calls, run one AgentLoop iteration to execute them and return the final result.
+### Phase 46: Streaming Error Recovery ✅ (e37f3b3)
 
-### Phase 46: Streaming Error Recovery
+**Gap**: Streaming failures show raw error names and stack traces.
+**Fix**: Boxed, human-readable error messages mapped from error types. No stack traces on user-facing errors.
 
-**Gap**: When streaming fails (429 rate limit, 500 server error), the error is shown as a stack trace instead of a user-friendly message.
+### Phase 47: Provider Streaming Fallback ✅ (e37f3b3)
 
-**Fix**: Catch streaming errors, show friendly message, optionally retry with backoff.
+**Gap**: No fallback when streaming fails with transient errors.
+**Fix**: Auto-retry with non-streaming on ServerError/NetworkError/TimeoutError. Yellow warning during fallback.
 
-### Phase 47: Provider-Specific Streaming Compatibility
+---
 
-**Gap**: Some providers may not support streaming. Need graceful fallback to non-streaming.
+## v3.4.0 — Agent Safety Rails 🔥 CURRENT
 
-**Fix**: Auto-detect streaming support, fall back to non-streaming on repeated failures.
+**วัตถุประสงค์**: Wire existing safety infrastructure into the agent loop. Infrastructure exists (BudgetManager, ContextCompactor, tool_timeout_ms) but none of it is connected. This is integration work.
+
+**Based on code audit of loop.zig (1187L), budget.zig (213L), tracker.zig, main.zig SIGINT handler.**
+
+### Phase 48: Tool Timeout Enforcement
+
+**Gap**: `tool_timeout_ms` exists in LoopConfig (default 30000ms) but `executeTool()` never checks it. Tools can run forever.
+**Fix**: Add elapsed time check in executeTool retry loop. Return error if tool exceeds timeout.
+
+### Phase 49: Graceful Agent Abort (Ctrl+C)
+
+**Gap**: SIGINT handler in main.zig calls `exit(130)` — no cleanup. AgentLoop has `running` flag but no `abort()` method, and SIGINT doesn't set it.
+**Fix**: Add `abort()` method. Wire SIGINT to set `running=false` via atomic flag. Agent loop checks flag each iteration and exits cleanly.
+
+### Phase 50: Budget Integration
+
+**Gap**: BudgetManager exists (213L) with `checkBeforeRequest()`, `recordCost()`, `isOverBudget()` — none called from AgentLoop. No cost tracking per agent session.
+**Fix**: Check budget before each iteration. Record cost after each AI response. Show warning at 80%. Hard stop at 100%.
+
+### Phase 51: Context Compaction Default
+
+**Gap**: ContextCompactor exists but must be explicitly enabled via `enableCompaction()`. Not called by default. Agent can exceed context window.
+**Fix**: Auto-enable compactor in AgentLoop.init() with sensible defaults. Trigger compaction at 70% context usage.
 
 ---
 

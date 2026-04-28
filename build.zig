@@ -602,6 +602,7 @@ pub fn build(b: *std.Build) !void {
         imp("knowledge_schema", knowledge_schema_mod),
     });
     const agent_loop_mod = createMod(b, "src/agent/loop.zig", target, optimize, &.{imp("ai_types", ai_types_mod)});
+    addImports(main_mod, &.{imp("agent_loop", agent_loop_mod)});
     const workflow_mod = createMod(b, "src/workflow/phase.zig", target, optimize, &.{ imp("task", task_mod), imp("adversarial_review", adversarial_review_mod), imp("git", git_mod) });
     const compaction_mod = simpleMod(b, "src/agent/compaction.zig", target, optimize);
     const context_budget_mod = simpleMod(b, "src/agent/context_budget.zig", target, optimize);
@@ -751,6 +752,7 @@ pub fn build(b: *std.Build) !void {
         imp("compaction", compaction_mod),
         imp("loop_detector", simpleMod(b, "src/agent/loop_detector.zig", target, optimize)),
         imp("notifier", simpleMod(b, "src/notification/notifier.zig", target, optimize)),
+        imp("usage_budget", usage_budget_mod),
     });
 
     // Wire trace, retry, guardrail, metrics into AI client
