@@ -375,6 +375,17 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         ai_client.setSystemPrompt(sp);
     }
 
+    // Load tool schemas so AI knows about available tools
+    const ss_default_tool_schemas = try tool_loader.loadDefaultToolSchemas(allocator);
+    defer tool_loader.freeToolSchemas(allocator, ss_default_tool_schemas);
+    const ss_user_tool_schemas = try tool_loader.loadUserToolSchemas(allocator);
+    defer tool_loader.freeToolSchemas(allocator, ss_user_tool_schemas);
+    const ss_merged_schemas = try tool_loader.mergeToolSchemas(allocator, ss_default_tool_schemas, ss_user_tool_schemas);
+    defer tool_loader.freeToolSchemas(allocator, ss_merged_schemas);
+    const ss_builtin_schemas = try tool_executors.collectSupportedToolSchemas(allocator, ss_merged_schemas);
+    defer allocator.free(ss_builtin_schemas);
+    ai_client.setTools(ss_builtin_schemas);
+
     out("Sending request to {s} ({s})...\n", .{ provider_name, model_name });
 
     json_out.emitSessionStart(provider_name, model_name);
@@ -427,6 +438,166 @@ pub fn handleChat(args: args_mod.Args, config: *Config) !void {
         if (choice.message.content) |c| {
             content_slice = c;
         }
+    }
+
+    // Check if AI returned tool calls — if so, execute via AgentLoop
+    const ss_tool_calls = ai_client.extractToolCalls(&response) catch &.{};
+    if (ss_tool_calls.len > 0) {
+        // AI wants to use tools — spin up AgentLoop to execute them
+        var ss_agent_loop = agent_loop_mod.AgentLoop.init(allocator);
+        defer ss_agent_loop.deinit();
+        var ss_loop_config = agent_loop_mod.LoopConfig.init();
+        ss_loop_config.show_intermediate = true;
+        ss_loop_config.max_iterations = 10;
+        ss_agent_loop.setConfig(ss_loop_config);
+        try tool_executors.registerBuiltinAgentTools(&ss_agent_loop, ss_builtin_schemas);
+
+        // Build conversation history with the initial exchange
+        var ss_messages = array_list_compat.ArrayList(core.ChatMessage).init(allocator);
+        defer {
+            for (ss_messages.items) |msg| {
+                chat_helpers.freeChatMessage(msg, allocator);
+            }
+            ss_messages.deinit();
+        }
+        try ss_messages.append(.{
+            .role = try allocator.dupe(u8, "user"),
+            .content = try allocator.dupe(u8, message),
+        });
+
+        // Set up bridge context for the agent loop
+        var ss_hooks = lifecycle_hooks_mod.LifecycleHooks.init(allocator);
+        defer ss_hooks.deinit();
+        var ss_total_input: u64 = 0;
+        var ss_total_output: u64 = 0;
+        var ss_request_count: u32 = 0;
+        var ss_request_arena = std.heap.ArenaAllocator.init(allocator);
+        defer ss_request_arena.deinit();
+
+        var ss_bridge_ctx = chat_bridge.InteractiveBridgeContext{
+            .allocator = allocator,
+            .client = &ai_client,
+            .messages = &ss_messages,
+            .hooks = &ss_hooks,
+            .provider_name = provider_name,
+            .model_name = model_name,
+            .turn_start_len = 0,
+            .synced_loop_messages = 0,
+            .turn_request_count = 0,
+            .turn_failed = false,
+            .total_input_tokens = &ss_total_input,
+            .total_output_tokens = &ss_total_output,
+            .request_count = &ss_request_count,
+            .request_arena = ss_request_arena,
+            .json_out = json_out,
+        };
+
+        chat_bridge.active_bridge_context = &ss_bridge_ctx;
+        chat_bridge.active_streaming_enabled = args.stream;
+        chat_bridge.active_show_thinking = stream_options.show_thinking;
+        tool_executors.setJsonOutput(json_out);
+
+        // Add the first AI response (with tool calls) to history so AgentLoop
+        // can see it and execute the tools
+        try ss_messages.append(.{
+            .role = try allocator.dupe(u8, "assistant"),
+            .content = if (content_slice.len > 0) try allocator.dupe(u8, content_slice) else null,
+            .tool_calls = blk: {
+                const copied_tc = allocator.alloc(ai_types.ToolCallInfo, ss_tool_calls.len) catch break :blk null;
+                for (ss_tool_calls, 0..) |tc, i| {
+                    copied_tc[i] = .{
+                        .id = allocator.dupe(u8, tc.id) catch "",
+                        .name = allocator.dupe(u8, tc.name) catch "",
+                        .arguments = allocator.dupe(u8, tc.arguments) catch "",
+                    };
+                }
+                break :blk copied_tc;
+            },
+        });
+
+        // Add assistant message + tool calls to agent loop history manually
+        try ss_agent_loop.addMessage("user", message);
+        if (content_slice.len > 0) {
+            try ss_agent_loop.addMessage("assistant", content_slice);
+        }
+
+        // Execute the tool calls and send results back to AI
+        // We need to add tool results and then call AI again
+        for (ss_tool_calls) |tc| {
+            const tool_call_ptr = try allocator.create(agent_loop_mod.ToolCall);
+            tool_call_ptr.* = try agent_loop_mod.ToolCall.init(allocator, tc.id, tc.name, tc.arguments);
+            defer {
+                tool_call_ptr.deinit();
+                allocator.destroy(tool_call_ptr);
+            }
+
+            if (ss_agent_loop.executeTool(tool_call_ptr)) |opt_result| {
+                if (opt_result) |result| {
+                    out("🔧 {s} → {s}\n", .{ tc.name, if (result.success) "OK" else "FAILED" });
+                    try ss_agent_loop.addToolResult(result.call_id, tc.name, result.output);
+                    try ss_messages.append(.{
+                        .role = try allocator.dupe(u8, "tool"),
+                        .content = try allocator.dupe(u8, result.output),
+                        .tool_call_id = try allocator.dupe(u8, result.call_id),
+                    });
+                    // result owns its strings via allocator — they get freed when allocator frees
+                } else {
+                    out("🔧 {s} → not found\n", .{tc.name});
+                    const err_msg = try std.fmt.allocPrint(allocator, "Tool '{s}' not found", .{tc.name});
+                    try ss_agent_loop.addToolResult(tc.id, tc.name, err_msg);
+                    try ss_messages.append(.{
+                        .role = try allocator.dupe(u8, "tool"),
+                        .content = err_msg,
+                        .tool_call_id = try allocator.dupe(u8, tc.id),
+                    });
+                }
+            } else |err| {
+                out("🔧 {s} → error: {}\n", .{ tc.name, err });
+                const err_msg = try std.fmt.allocPrint(allocator, "Tool execution error: {}", .{err});
+                try ss_agent_loop.addToolResult(tc.id, tc.name, err_msg);
+                try ss_messages.append(.{
+                    .role = try allocator.dupe(u8, "tool"),
+                    .content = err_msg,
+                    .tool_call_id = try allocator.dupe(u8, tc.id),
+                });
+            }
+        }
+
+        // Now ask AI for the final response with tool results
+        out("\n", .{});
+
+        var final_response: core.ChatResponse = undefined;
+        if (args.stream) {
+            final_response = ai_client.sendChatStreaming(ss_messages.items, struct {
+                pub fn callback(token: []const u8, done: bool) void {
+                    _ = done;
+                    if (token.len > 0) {
+                        const stdout = file_compat.File.stdout().writer();
+                        stdout.print("{s}", .{token}) catch {};
+                    }
+                }
+            }.callback) catch |err| {
+                out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
+                chat_bridge.active_bridge_context = null;
+                return err;
+            };
+        } else {
+            final_response = ai_client.sendChatWithHistory(ss_messages.items) catch |err| {
+                out("\n{s}Error:{s} {s}\n", .{ Style.err.start(), Style.err.reset(), @errorName(err) });
+                chat_bridge.active_bridge_context = null;
+                return err;
+            };
+        }
+
+        if (final_response.choices.len > 0) {
+            if (final_response.choices[0].message.content) |c| {
+                content_slice = c;
+            }
+        }
+        chat_bridge.active_bridge_context = null;
+        chat_bridge.active_streaming_enabled = false;
+        chat_bridge.active_show_thinking = false;
+        tool_executors.setJsonOutput(.{ .enabled = false });
     }
     markdown_mod.MarkdownRenderer.render(content_slice);
     out("\n", .{});

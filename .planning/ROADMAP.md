@@ -329,21 +329,48 @@ Plans:
 
 **The only gap found**: Edit diff preview — `previewEditDiff()` existed but wasn't wired into `executeEditTool`.
 
-### Phase 44: Agent Loop Audit + Diff Preview ✅
+### Phase 44: Agent Loop Audit + Diff Preview ✅ (a6f9c99)
 
 **Delivered:**
 - Diff preview wired into `edit` tool — shows Myers unified diff before applying changes
 - Diff preview wired into `write_file` tool — shows diff for existing file overwrites
-- Build clean
 
-**What was already built (no changes needed):**
-- AgentLoop ↔ chat_bridge ↔ AIClient wiring
-- 34 tool executors with permission system
-- System prompt with tool descriptions
-- Session persistence with SQLite
-- Auto-compaction, convergence detection, loop detection
-- 3-tier permission (blocklist → safelist → evaluator)
-- 3-tier search (ast-grep → ripgrep → grep)
+**Bug fixes during testing (bcceedb):**
+- `appendEscapedJsonString` didn't escape control characters (0x00-0x1F) — streaming was BROKEN for all providers
+- Added error response body logging in `sendChatStreaming` for debugging
+
+**Test results (end-to-end):**
+- ✅ Single-shot chat: works (non-streaming + streaming)
+- ✅ Streaming: fixed — was broken due to unescaped control chars
+- ✅ List providers/models: works (23 providers, model listing)
+- ⚠️ Tool calls in single-shot mode: model returns tool calls but they're shown as raw text, not executed
+- ✅ Interactive agent loop: uses AgentLoop.run() with full tool execution
+
+---
+
+## v3.3.0 — Agent UX Hardening 🔥 CURRENT
+
+**วัตถุประสงค์**: Fix real gaps found during end-to-end testing. Make the agent loop production-ready.
+
+**Based on actual testing, not assumptions.**
+
+### Phase 45: Single-Shot Tool Execution
+
+**Gap**: `crushcode chat "read src/main.zig"` — the model returns tool_calls but they're displayed as raw text instead of being executed. Only interactive mode runs AgentLoop.
+
+**Fix**: When single-shot mode receives a response with tool_calls, run one AgentLoop iteration to execute them and return the final result.
+
+### Phase 46: Streaming Error Recovery
+
+**Gap**: When streaming fails (429 rate limit, 500 server error), the error is shown as a stack trace instead of a user-friendly message.
+
+**Fix**: Catch streaming errors, show friendly message, optionally retry with backoff.
+
+### Phase 47: Provider-Specific Streaming Compatibility
+
+**Gap**: Some providers may not support streaming. Need graceful fallback to non-streaming.
+
+**Fix**: Auto-detect streaming support, fall back to non-streaming on repeated failures.
 
 ---
 
