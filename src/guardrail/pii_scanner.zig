@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const pipeline = @import("pipeline.zig");
 
 const GuardrailConfig = pipeline.GuardrailConfig;
@@ -226,7 +227,7 @@ fn scanGenericAPIKey(input: []const u8, start: usize) ?struct { start: usize, en
 
 /// Perform full PII scan on input, returning all detections found.
 pub fn scanPII(allocator: std.mem.Allocator, input: []const u8) ![]Detection {
-    var detections = std.ArrayList(Detection).init(allocator);
+    var detections = array_list_compat.ArrayList(Detection).init(allocator);
     errdefer {
         for (detections.items) |det| {
             allocator.free(det.entity_type);
@@ -366,4 +367,200 @@ pub fn check(allocator: std.mem.Allocator, input: []const u8, config: *const Gua
         .detections = detections,
         .allocator = allocator,
     };
+}
+
+test "PII scanPII detects email" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "contact user@example.com for help";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "email"));
+    try testing.expectEqual(@as(usize, 10), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 24), detections[0].end_pos);
+}
+
+test "PII scanPII detects phone ###-###-####" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "call 555-123-4567 for assistance";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "phone"));
+    try testing.expectEqual(@as(usize, 5), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 17), detections[0].end_pos);
+}
+
+test "PII scanPII detects SSN" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "SSN: 123-45-6789 is your social";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "ssn"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
+    try testing.expectEqual(@as(usize, 5), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 16), detections[0].end_pos);
+}
+
+test "PII scanPII detects credit card" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "card: 4111111111111111 payment";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "credit_card"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
+    try testing.expectEqual(@as(usize, 6), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 22), detections[0].end_pos);
+}
+
+test "PII scanPII detects AWS key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "key: AKIAIOSFODNN7EXAMPLE";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "aws_access_key"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
+    try testing.expectEqual(@as(usize, 5), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 21), detections[0].end_pos);
+}
+
+test "PII scanPII detects generic API key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "api_key=abcdefghijklmnopqrstuvwxyz1234";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "api_key"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
+    try testing.expectEqual(@as(usize, 0), detections[0].start_pos);
+    try testing.expectEqual(@as(usize, 28), detections[0].end_pos);
+}
+
+test "PII scanPII returns empty for clean content" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "hello world this is clean content";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 0), detections.len);
+}
+
+test "PII scanPII detects multiple types" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "email user@example.com and SSN 123-45-6789";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 2), detections.len);
+}
+
+test "PII scanPII redacts SSN" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "SSN: 123-45-6789 is redacted";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "ssn"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
+}
+
+test "PII scanPII redacts credit card" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    
+    const input = "credit card 4111111111111111 is sensitive";
+    const detections = try scanPII(alloc, input);
+    defer {
+        for (detections) |det| {
+            alloc.free(det.entity_type);
+            alloc.free(det.value);
+        }
+        alloc.free(detections);
+    }
+    
+    try testing.expectEqual(@as(usize, 1), detections.len);
+    try testing.expect(std.mem.eql(u8, detections[0].entity_type, "credit_card"));
+    try testing.expect(std.mem.eql(u8, detections[0].value, "***REDACTED***"));
 }

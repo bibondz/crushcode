@@ -495,6 +495,72 @@ Build ✅
 
 ---
 
+## v4.0.0 — Reliability Release
+
+**วัตถุประสงค์**: Close the test coverage gap. Codebase is feature-complete (22 providers, 34 tools, 46 slash commands, full agent loop, TUI, Forge naming). ~150 files have 0 tests — including the 3 biggest user-facing files (chat_tui_app 5324L, chat.zig 2685L, streaming.zig 946L). Agent modules are well-tested (loop: 38, compaction: 52, orchestrator: 23). The gap is in commands, TUI, streaming, LSP, permission, and guardrails.
+
+**Based on**: Full test coverage audit — every .zig file in src/ checked for `test "..."` blocks.
+
+### Phase 66: Streaming + Permission + Guardrail Tests 🔴 HIGH
+
+**Gap**: 0 tests in streaming parsers (729L), permission evaluate (595L), secrets scanner (282L), PII scanner (369L). These are security-critical — guardrails prevent leaking secrets/PII to AI providers.
+
+**Plan**:
+- `ai/streaming_parsers.zig` — test SSE parsing, NDJSON parsing, finish_reason extraction, tool_call streaming, malformed input handling
+- `permission/evaluate.zig` — test PermissionMode logic, tool risk classification, auto-approve/deny/ask decisions
+- `guardrail/secrets.zig` — test pattern matching for API keys, tokens, passwords, private keys
+- `guardrail/pii_scanner.zig` — test email, phone, SSN, credit card, IP address detection
+- `streaming/session.zig` — test session state transitions
+- `usage/budget.zig` — test budget check, cost recording, over-budget detection
+
+**Target**: 60+ new tests across 6 files
+
+### Phase 67: Command Layer Tests 🟡 MEDIUM
+
+**Gap**: 0 tests in chat.zig (2685L — core daily driver), handlers (324L), git.zig (515L), doctor.zig (513L), shell.zig (286L), write.zig (308L), connect.zig (327L).
+
+**Plan**:
+- `commands/chat.zig` — test argument parsing, provider/model selection, interactive mode flag, streaming toggle, message formatting helpers
+- `commands/handlers.zig` — test printHelp output, command routing, unknown command error
+- `commands/git.zig` — test git status/log/diff/add/commit argument construction, timeout handling
+- `commands/doctor.zig` — test diagnostic checks, provider validation, config file verification
+- `commands/shell.zig` — test command execution, timeout, output capture
+- `commands/write.zig` — test file writing, content validation, overwrite protection
+- `commands/connect.zig` — test provider credential input, API key validation, config update
+
+**Target**: 50+ new tests across 7 files
+
+### Phase 68: LSP + MCP + AI Layer Tests 🟡 MEDIUM
+
+**Gap**: 0 tests in lsp/client.zig (762L), mcp/discovery.zig (566L), ai/error_handler.zig (189L), ai/fallback.zig (133L), cli/intent_gate.zig (193L), search/semantic.zig (441L).
+
+**Plan**:
+- `lsp/client.zig` — test request formatting, response parsing, diagnostics parsing, completion parsing
+- `mcp/discovery.zig` — test server discovery, config parsing, capability matching
+- `ai/error_handler.zig` — test error classification, retry decision, user-friendly messages
+- `ai/fallback.zig` — test provider fallback chain, model fallback, failure tracking
+- `cli/intent_gate.zig` — test intent classification (implement/fix/explain/research), confidence scoring
+- `search/semantic.zig` — test embedding generation, cosine similarity, batch processing
+
+**Target**: 50+ new tests across 6 files
+
+### Phase 69: TUI Component Tests 🟢 LOW
+
+**Gap**: 0 tests in chat_tui_app.zig (5324L — biggest file), multiline_input.zig (914L), streaming.zig (946L), messages widget (571L), sidebar (529L). TUI testing is inherently harder (requires terminal mock), so focus on pure-logic extraction.
+
+**Plan**:
+- Extract testable logic from `tui/chat_tui_app.zig` into helper functions, test those helpers
+- `tui/model/streaming.zig` — test finish_reason handling, compaction retry count, message formatting
+- `tui/widgets/multiline_input.zig` — test text buffer operations, cursor movement, history navigation
+- `tui/model/helpers.zig` — test utility functions
+- `agent/parallel.zig` — test AgentCategory enum, category→model mapping
+
+**Target**: 30+ new tests across 5 files
+
+**Total target**: 190+ new tests across 24 currently-untested files
+
+---
+
 ## Ref Sources (reorganized 2026-04-28)
 
 ### CLI Core (`/mnt/d/crushcode-cli-reference/`) — 17 repos

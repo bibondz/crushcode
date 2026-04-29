@@ -211,3 +211,115 @@ pub const BudgetManager = struct {
         }) catch {};
     }
 };
+
+test "BudgetConfig isSet returns false for defaults" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{};
+    try testing.expectEqual(false, config.isSet());
+}
+
+test "BudgetConfig isSet returns true with daily limit" {
+    const testing = @import("std").testing;
+    var config = BudgetConfig{};
+    config.daily_limit_usd = 10.0;
+    try testing.expectEqual(true, config.isSet());
+}
+
+test "BudgetManager recordCost increases spending" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .daily_limit_usd = 100.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    const initial_spent = manager.session_spent;
+    manager.recordCost(1.5);
+    
+    try testing.expectEqual(initial_spent + 1.5, manager.session_spent);
+}
+
+test "BudgetManager isOverBudget false under limit" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .per_session_limit_usd = 10.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    manager.recordCost(5.0);
+    try testing.expectEqual(false, manager.isOverBudget());
+}
+
+test "BudgetManager isOverBudget true at limit" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .per_session_limit_usd = 10.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    manager.recordCost(10.0);
+    try testing.expectEqual(true, manager.isOverBudget());
+}
+
+test "BudgetManager isOverBudget false when no config" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{};
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    try testing.expectEqual(false, manager.isOverBudget());
+}
+
+test "BudgetManager checkBeforeRequest returns true under budget" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .per_session_limit_usd = 10.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    try testing.expectEqual(true, manager.checkBeforeRequest());
+}
+
+test "BudgetManager checkBeforeRequest returns false over budget" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .per_session_limit_usd = 1.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    manager.recordCost(2.0);
+    try testing.expectEqual(false, manager.checkBeforeRequest());
+}
+
+test "BudgetManager resetSession clears session spent" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .per_session_limit_usd = 10.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    manager.recordCost(5.0);
+    try testing.expectEqual(5.0, manager.session_spent);
+    
+    manager.resetSession();
+    try testing.expectEqual(0.0, manager.session_spent);
+}
+
+test "BudgetStatus isOverBudget checks all limits" {
+    const testing = @import("std").testing;
+    const config = BudgetConfig{ .daily_limit_usd = 10.0, .monthly_limit_usd = 100.0, .per_session_limit_usd = 5.0 };
+    var manager = BudgetManager.init(testing.allocator, config);
+    defer manager.deinit();
+    
+    const status = manager.checkBudget();
+    try testing.expectEqual(false, status.isOverBudget());
+}
+
+test "BudgetManager formatCost formats correctly" {
+    const testing = @import("std").testing;
+    
+    const cost1 = try BudgetManager.formatCost(testing.allocator, 0.0001);
+    defer testing.allocator.free(cost1);
+    try testing.expect(std.mem.eql(u8, cost1, "$0.0001"));
+    
+    const cost2 = try BudgetManager.formatCost(testing.allocator, 0.5);
+    defer testing.allocator.free(cost2);
+    try testing.expect(std.mem.eql(u8, cost2, "$0.500"));
+    
+    const cost3 = try BudgetManager.formatCost(testing.allocator, 1.2345);
+    defer testing.allocator.free(cost3);
+    try testing.expect(std.mem.eql(u8, cost3, "$1.23"));
+}

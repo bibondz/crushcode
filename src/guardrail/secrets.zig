@@ -1,4 +1,5 @@
 const std = @import("std");
+const array_list_compat = @import("array_list_compat");
 const pipeline = @import("pipeline.zig");
 
 const GuardrailConfig = pipeline.GuardrailConfig;
@@ -182,7 +183,7 @@ fn scanPrivateKey(input: []const u8, start: usize) ?struct { start: usize, end: 
 pub fn check(allocator: std.mem.Allocator, input: []const u8, config: *const GuardrailConfig) anyerror!GuardrailResult {
     _ = config;
 
-    var detections = std.ArrayList(Detection).init(allocator);
+    var detections = array_list_compat.ArrayList(Detection).init(allocator);
     errdefer {
         for (detections.items) |det| {
             allocator.free(det.entity_type);
@@ -279,4 +280,125 @@ pub fn check(allocator: std.mem.Allocator, input: []const u8, config: *const Gua
         .detections = det_slice,
         .allocator = allocator,
     };
+}
+
+test "secrets check detects GitHub token" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "my token is ghp_abcdefghijklmnopqrstuvwxyz1234567890abcdef1234567890abcdef1234";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects Stripe live key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "key: sk_live_1234567890abcdef1234567890";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects Anthropic key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "api key sk-ant-1234567890abcdef1234567890";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects OpenAI key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "sk-abcdefghijklmnopqrstuvwxyz1234567890abcdef1234567890abcdef123456";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects Slack token" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "xoxb-1234567890abcdef1234567890abcdef1234";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects Bearer token" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "Bearer abc.def.ghi1234567890";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check detects private key" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "-----BEGIN RSA PRIVATE KEY-----\nMIIEvQIBADANBgkqhkiG9w0BAQEFAASCBKcwggSjAgEAAoIBAQCj...\n-----END PRIVATE KEY-----";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+}
+
+test "secrets check returns ok for clean content" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "hello world, this is clean content";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .allow);
+}
+
+test "secrets check detects multiple secrets" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "user: ghp_abcdefghijklmnopqrstuvwxyz1234567890abcdef1234567890abcdef1234, key: -----BEGIN RSA PRIVATE KEY-----";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .deny);
+    try testing.expect(result.detections.len >= 2);
+}
+
+test "secrets check ignores short prefixes" {
+    const testing = @import("std").testing;
+    const alloc = testing.allocator;
+    const config = pipeline.GuardrailConfig{ .mode = .enforce, .max_input_bytes = 100000 };
+    
+    const input = "short prefix: ghp_abc";
+    const result = try check(alloc, input, &config);
+    defer result.deinit();
+    
+    try testing.expect(result.action == .allow);
 }
