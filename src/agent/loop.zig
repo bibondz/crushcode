@@ -362,6 +362,7 @@ pub const AgentLoop = struct {
     history: array_list_compat.ArrayList(LoopMessage),
     iteration: u32,
     total_tool_calls: u32,
+    max_tool_calls_per_loop: u32 = 10,
     total_retries: u32,
     running: bool,
     recent_tool_names: array_list_compat.ArrayList([]const u8),
@@ -381,6 +382,8 @@ pub const AgentLoop = struct {
     /// completion, loop detection, and permission waits.
     /// Reference: Crush coordinator.go notify package
     notifier: notifier_mod.NotifierPlugin,
+    /// Count of emergency compaction retries due to context overflow (finish_reason: "length")
+    compaction_retry_count: u32 = 0,
 
     pub fn init(allocator: Allocator) AgentLoop {
         var loop = AgentLoop{
@@ -390,12 +393,14 @@ pub const AgentLoop = struct {
             .history = array_list_compat.ArrayList(LoopMessage).init(allocator),
             .iteration = 0,
             .total_tool_calls = 0,
+            .max_tool_calls_per_loop = 10,
             .total_retries = 0,
             .running = false,
             .recent_tool_names = array_list_compat.ArrayList([]const u8).init(allocator),
             .recent_error_messages = array_list_compat.ArrayList([]const u8).init(allocator),
             .loop_detector = loop_detector_mod.LoopDetector.init(),
             .notifier = notifier_mod.NotifierPlugin.init(allocator),
+            .compaction_retry_count = 0,
         };
         // Phase 51: Auto-enable context compaction with sensible defaults
         // Prevents context window overflow in long agent sessions
@@ -705,6 +710,68 @@ pub const AgentLoop = struct {
             // Add assistant response to history
             try self.addMessage("assistant", ai_response.content);
 
+            // Handle context overflow (finish_reason: "length")
+            if (ai_response.finish_reason == .length) {
+                // Show warning to user
+                const stdout = file_compat.File.stdout().writer();
+                stdout.print("\n⚠️ Context limit reached. Compacting conversation...\n", .{}) catch {};
+
+                var compacted_ok = false;
+
+                // Attempt emergency compaction (max 2 times per loop)
+                if (self.compaction_retry_count < 2 and self.compactor != null) {
+                    self.compaction_retry_count += 1;
+
+                    // Convert history to CompactMessage format
+                    const compact_msgs = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
+                    for (self.history.items, 0..) |msg, i| {
+                        compact_msgs[i] = .{
+                            .role = msg.role,
+                            .content = msg.content,
+                            .timestamp = null,
+                        };
+                    }
+
+                    if (self.compactor) |*compactor| {
+                        const compact_result = try compactor.forceCompaction(compact_msgs, "");
+                        defer {
+                            if (compact_result.allocator) |_| {
+                                // compact_result owns the messages — CompactResult.deinit handles it
+                            }
+                        }
+
+                        if (self.config.show_intermediate) {
+                            std.log.info("Context overflow detected. Forced compaction (attempt {d}/2)", .{self.compaction_retry_count});
+                        }
+
+                        if (compact_result.messages_summarized > 0) {
+                            // Replace history with compacted messages
+                            self.history.clearRetainingCapacity();
+                            for (compact_result.messages) |cmsg| {
+                                try self.addMessage(cmsg.role, cmsg.content);
+                            }
+                            compacted_ok = true;
+                        }
+                    }
+
+                    self.allocator.free(compact_msgs);
+
+                    if (compacted_ok) {
+                        // Continue loop to retry the request
+                        self.iteration -= 1; // Adjust iteration count since we're retrying
+                        continue;
+                    }
+                }
+
+                // No compactor available or compaction failed or retries exhausted
+                if (self.config.show_intermediate) {
+                    std.log.warn("Context overflow: compaction did not free enough space after {d} attempts", .{self.compaction_retry_count});
+                }
+                stdout.print("⚠️ Context limit reached. Compaction did not free enough space. Please start a new conversation.\n", .{}) catch {};
+                done = true;
+                break;
+            }
+
             // Check for tool calls
             if (ai_response.tool_calls.len > 0) {
                 step.has_tool_calls = true;
@@ -715,6 +782,17 @@ pub const AgentLoop = struct {
                     defer self.allocator.free(parallel_calls);
 
                     for (ai_response.tool_calls, 0..) |tc, i| {
+                        // Check tool-call budget BEFORE executing this tool call
+                        if (self.total_tool_calls >= self.max_tool_calls_per_loop) {
+                            if (self.config.show_intermediate) {
+                                std.log.warn("Tool call budget reached ({d} calls). Stopping to preserve context.", .{self.max_tool_calls_per_loop});
+                            }
+                            const stdout = file_compat.File.stdout().writer();
+                            stdout.print("⚠️ Tool call budget reached ({d} calls). Stopping to preserve context.\n", .{self.max_tool_calls_per_loop}) catch {};
+                            done = true;
+                            break;
+                        }
+
                         self.total_tool_calls += 1;
                         const tool_call = try self.allocator.create(ToolCall);
                         tool_call.* = try ToolCall.init(self.allocator, tc.id, tc.name, tc.arguments);
@@ -801,6 +879,17 @@ pub const AgentLoop = struct {
                 } else {
                     // Sequential execution (existing code path)
                     for (ai_response.tool_calls) |tc| {
+                        // Check tool-call budget BEFORE executing this tool call
+                        if (self.total_tool_calls >= self.max_tool_calls_per_loop) {
+                            if (self.config.show_intermediate) {
+                                std.log.warn("Tool call budget reached ({d} calls). Stopping to preserve context.", .{self.max_tool_calls_per_loop});
+                            }
+                            const stdout = file_compat.File.stdout().writer();
+                            stdout.print("⚠️ Tool call budget reached ({d} calls). Stopping to preserve context.\n", .{self.max_tool_calls_per_loop}) catch {};
+                            done = true;
+                            break;
+                        }
+
                         self.total_tool_calls += 1;
                         const tool_call = try self.allocator.create(ToolCall);
                         tool_call.* = try ToolCall.init(self.allocator, tc.id, tc.name, tc.arguments);
@@ -951,6 +1040,7 @@ pub const AgentLoop = struct {
         self.iteration = 0;
         self.total_tool_calls = 0;
         self.total_retries = 0;
+        self.compaction_retry_count = 0;
         self.running = false;
     }
 
@@ -1057,6 +1147,60 @@ fn mockAISendMultiToolCall(allocator: Allocator, messages: []const LoopMessage) 
     }
     return AIResponse{
         .content = "All done after 3 tool calls.",
+        .finish_reason = .stop,
+        .tool_calls = &.{},
+    };
+}
+
+/// Mock AI send that returns many tool calls (for budget testing)
+var mock_budget_test_call_count: u32 = 0;
+
+fn mockAISendManyToolCalls(allocator: Allocator, messages: []const LoopMessage) anyerror!AIResponse {
+    _ = allocator;
+    _ = messages;
+    mock_budget_test_call_count += 1;
+    if (mock_budget_test_call_count <= 20) {
+        return AIResponse{
+            .content = "Making a tool call",
+            .finish_reason = .tool_calls,
+            .tool_calls = &[_]AIResponse.ToolCallInfo{
+                .{
+                    .id = "call-id",
+                    .name = "mock_tool",
+                    .arguments = "{}",
+                },
+            },
+        };
+    }
+    return AIResponse{
+        .content = "All done",
+        .finish_reason = .stop,
+        .tool_calls = &.{},
+    };
+}
+
+/// Mock AI send that returns tool calls (for custom budget testing)
+var mock_custom_budget_call_count: u32 = 0;
+
+fn mockAISendCustomBudget(allocator: Allocator, messages: []const LoopMessage) anyerror!AIResponse {
+    _ = allocator;
+    _ = messages;
+    mock_custom_budget_call_count += 1;
+    if (mock_custom_budget_call_count <= 15) {
+        return AIResponse{
+            .content = "Making a tool call",
+            .finish_reason = .tool_calls,
+            .tool_calls = &[_]AIResponse.ToolCallInfo{
+                .{
+                    .id = "call-id",
+                    .name = "mock_tool",
+                    .arguments = "{}",
+                },
+            },
+        };
+    }
+    return AIResponse{
+        .content = "All done",
         .finish_reason = .stop,
         .tool_calls = &.{},
     };
@@ -1388,4 +1532,41 @@ test "interrupt flag - reset and check" {
 test "interrupt flag - initial state is false" {
     resetInterrupt();
     try testing.expect(!isInterrupted());
+}
+
+test "AgentLoop - max_tool_calls_per_loop default value is 10" {
+    var loop = AgentLoop.init(testing.allocator);
+    defer loop.deinit();
+    try testing.expectEqual(@as(u32, 10), loop.max_tool_calls_per_loop);
+}
+
+test "AgentLoop - tool call budget stops execution when reached" {
+    mock_budget_test_call_count = 0;
+    var loop = AgentLoop.init(testing.allocator);
+    defer loop.deinit();
+    try loop.registerTool("mock_tool", mockToolExecutor);
+    var result = try loop.run(mockAISendManyToolCalls, "Execute many tools");
+    defer result.deinit();
+
+    // Should stop at exactly 10 tool calls (the budget limit)
+    try testing.expectEqual(@as(u32, 10), result.total_tool_calls);
+    try testing.expect(result.total_tool_calls <= loop.max_tool_calls_per_loop);
+}
+
+test "AgentLoop - tool call budget can be customized" {
+    mock_custom_budget_call_count = 0;
+    var loop = AgentLoop.init(testing.allocator);
+    defer loop.deinit();
+
+    // Set custom budget
+    loop.max_tool_calls_per_loop = 5;
+    try testing.expectEqual(@as(u32, 5), loop.max_tool_calls_per_loop);
+
+    try loop.registerTool("mock_tool", mockToolExecutor);
+    var result = try loop.run(mockAISendCustomBudget, "Execute many tools");
+    defer result.deinit();
+
+    // Should stop at exactly 5 tool calls (the custom budget limit)
+    try testing.expectEqual(@as(u32, 5), result.total_tool_calls);
+    try testing.expect(result.total_tool_calls <= loop.max_tool_calls_per_loop);
 }

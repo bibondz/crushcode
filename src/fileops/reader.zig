@@ -42,6 +42,19 @@ pub const FileReader = struct {
             return FileReadError.NotAFile;
         }
 
+        // File size skip threshold (default 100KB = 102400 bytes)
+        const max_file_size: usize = 102_400;
+        if (stat.size > max_file_size) {
+            return FileContent{
+                .path = try self.allocator.dupe(u8, path),
+                .content = try std.fmt.allocPrint(self.allocator,
+                    "📄 File too large ({d} KB, max {d} KB). Skipped to preserve context.",
+                    .{ stat.size / 1024, max_file_size / 1024 }),
+                .size = stat.size,
+                .allocator = self.allocator,
+            };
+        }
+
         const content = try self.allocator.alloc(u8, stat.size);
         errdefer self.allocator.free(content);
 
@@ -299,4 +312,81 @@ test "FileContent.deinit frees content without crash" {
     test_alloc.free(path);
 
     // If we reach here without crash or leak detection failure, test passes
+}
+
+test "FileReader.read large file (>100KB) returns skip message" {
+    // Create a file larger than 100KB threshold
+    const tmp_path = "/tmp/crushcode_test_large_file.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    // Write 101KB of data (102,400 bytes + 1024 = 103,424 bytes)
+    const large_data = try test_alloc.alloc(u8, 103_424);
+    defer test_alloc.free(large_data);
+    @memset(large_data, 'X');
+    try tmp_file.writeAll(large_data);
+    tmp_file.close();
+
+    var reader = FileReader.init(test_alloc);
+    var content = try reader.read(tmp_path);
+    defer {
+        test_alloc.free(content.path);
+        content.deinit();
+    }
+
+    // Verify we got a skip message instead of actual content
+    try testing.expect(std.mem.indexOf(u8, content.content, "File too large") != null);
+    try testing.expect(std.mem.indexOf(u8, content.content, "101 KB") != null);
+    try testing.expect(std.mem.indexOf(u8, content.content, "100 KB") != null);
+    try testing.expect(content.size > 102_400); // Actual file size is preserved
+}
+
+test "FileReader.read small file (<100KB) reads normally" {
+    const tmp_path = "/tmp/crushcode_test_small_file.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    // Write 50KB of data (well under the 100KB threshold)
+    const small_data = try test_alloc.alloc(u8, 51_200);
+    defer test_alloc.free(small_data);
+    @memset(small_data, 'A');
+    try tmp_file.writeAll(small_data);
+    tmp_file.close();
+
+    var reader = FileReader.init(test_alloc);
+    var content = try reader.read(tmp_path);
+    defer content.deinit();
+
+    // Verify we got the actual content, not a skip message
+    try testing.expectEqual(@as(usize, 51_200), content.content.len);
+    try testing.expectEqual(@as(usize, 51_200), content.size);
+    try testing.expect(std.mem.indexOf(u8, content.content, "File too large") == null);
+    // Verify the content is all 'A's
+    for (content.content) |byte| {
+        try testing.expectEqual(@as(u8, 'A'), byte);
+    }
+}
+
+test "FileReader.read file exactly at 100KB threshold is skipped" {
+    // Create a file exactly at the 100KB threshold (102,400 bytes)
+    const tmp_path = "/tmp/crushcode_test_threshold_file.txt";
+    const tmp_file = try std.fs.cwd().createFile(tmp_path, .{});
+    defer std.fs.cwd().deleteFile(tmp_path) catch {};
+
+    const threshold_data = try test_alloc.alloc(u8, 102_400);
+    defer test_alloc.free(threshold_data);
+    @memset(threshold_data, 'B');
+    try tmp_file.writeAll(threshold_data);
+    tmp_file.close();
+
+    var reader = FileReader.init(test_alloc);
+    var content = try reader.read(tmp_path);
+    defer {
+        test_alloc.free(content.path);
+        content.deinit();
+    }
+
+    // Verify we got a skip message (threshold is exclusive)
+    try testing.expect(std.mem.indexOf(u8, content.content, "File too large") != null);
+    try testing.expect(std.mem.indexOf(u8, content.content, "100 KB") != null);
 }

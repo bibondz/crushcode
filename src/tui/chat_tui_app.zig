@@ -424,6 +424,8 @@ pub const Model = struct {
     session_tree: session_tree_mod.SessionTreeWidget,
     /// Desktop notification plugin — opt-in via notifications_enabled config or CRUSHCODE_NOTIFY=1
     notifier: ?notifier_plugin.NotifierPlugin,
+    /// Count of emergency compaction retries due to context overflow (finish_reason: "length")
+    compaction_retry_count: u32 = 0,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         http_client.initSharedClient(allocator);
@@ -1297,6 +1299,11 @@ pub const Model = struct {
                 \\- Never delete files unless explicitly asked
                 \\- When running shell commands, show the command before executing
                 \\- Back up awareness: warn if editing files with uncommitted changes
+                \\
+                \\## Efficiency
+                \\- Prefer single-pass solutions — avoid unnecessary iteration
+                \\- If a tool call fails twice with the same error, stop and ask the user
+                \\- Do not repeat the same search or read operation in quick succession
             , .{}) catch {};
         }
 

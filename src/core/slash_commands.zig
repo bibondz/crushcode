@@ -2,6 +2,9 @@ const std = @import("std");
 const build_options = @import("build_options");
 const array_list_compat = @import("array_list_compat");
 const dynamic_commands = @import("dynamic_commands");
+const project_config = @import("project");
+const repo_map_mod = @import("repo_map");
+const file_compat = @import("file_compat");
 
 const Allocator = std.mem.Allocator;
 
@@ -55,7 +58,9 @@ pub const all_slash_command_names = [_][]const u8{
     "/rewind",
     "/compress",
     "/doctor",   "/review",   "/commit",
+    "/init",
     "/recipe",
+    "/init",
 };
 
 /// Check if a string is a recognized slash command.
@@ -205,6 +210,7 @@ pub const SlashCommandRegistry = struct {
         try self.register(SlashCommand{ .name = "/undo", .description = "Undo last change via git stash", .handler = cmdUndo });
         try self.register(SlashCommand{ .name = "/lsp-restart", .description = "Restart LSP servers", .handler = cmdLspRestart });
         try self.register(SlashCommand{ .name = "/export", .description = "Export session to Markdown", .handler = cmdExport });
+        try self.register(SlashCommand{ .name = "/init", .description = "Generate AGENTS.md project knowledge file", .handler = cmdInit });
     }
 
     /// Register a custom command
@@ -394,6 +400,110 @@ fn cmdExport(allocator: Allocator, args: []const u8) !CommandResult {
     
     const msg = try std.fmt.allocPrint(allocator, "Session exported to {s}", .{filename});
     return CommandResult.init(allocator, msg);
+}
+
+fn cmdInit(allocator: Allocator, args: []const u8) !CommandResult {
+    _ = args;
+
+    // Check if AGENTS.md already exists
+    const existing = std.fs.cwd().readFileAlloc(allocator, "AGENTS.md", 1024 * 1024) catch null;
+    if (existing) |content| {
+        allocator.free(content);
+        return CommandResult.init(allocator, "AGENTS.md already exists. Delete it first if you want to regenerate.");
+    }
+
+    // Detect project
+    const project = project_config.detectProject(allocator) orelse {
+        return CommandResult.init(allocator, "Could not detect project type. Create AGENTS.md manually.");
+    };
+
+    // Get directory structure
+    const dir_result = std.process.Child.run(.{
+        .allocator = allocator,
+        .argv = &.{ "find", ".", "-maxdepth", "2", "-type", "d" },
+    }) catch {
+        return CommandResult{ .allocator = allocator, .output = try allocator.dupe(u8, "Failed to scan directory structure.") };
+    };
+    defer allocator.free(dir_result.stdout);
+    defer allocator.free(dir_result.stderr);
+
+    // Generate AGENTS.md content
+    var buf = array_list_compat.ArrayList(u8).init(allocator);
+    defer buf.deinit();
+    const w = buf.writer();
+
+    w.print("# Project\n\n", .{}) catch {};
+    w.print("## Language & Build\n", .{}) catch {};
+    w.print("- **Language**: {s}\n", .{project.language}) catch {};
+    w.print("- **Build system**: {s}\n", .{project.build_system}) catch {};
+    w.print("- **Build**: `{s}`\n", .{project.build_command}) catch {};
+    w.print("- **Test**: `{s}`\n", .{project.test_command}) catch {};
+    if (project.framework) |fw| {
+        w.print("- **Framework**: {s}\n", .{fw}) catch {};
+    }
+    w.print("\n## Tips\n{s}\n", .{project.tips}) catch {};
+
+    // Directory structure
+    w.print("\n## Directory Structure\n```\n", .{}) catch {};
+    var lines = std.mem.splitScalar(u8, dir_result.stdout, '\n');
+    var count: u32 = 0;
+    while (lines.next()) |line| {
+        if (line.len == 0) continue;
+        if (count >= 30) {
+            w.print("... (truncated)\n", .{}) catch {};
+            break;
+        }
+        // Skip noise directories
+        if (std.mem.indexOf(u8, line, ".git") != null) continue;
+        if (std.mem.indexOf(u8, line, "node_modules") != null) continue;
+        if (std.mem.indexOf(u8, line, "zig-out") != null) continue;
+        if (std.mem.indexOf(u8, line, "zig-cache") != null) continue;
+        if (std.mem.indexOf(u8, line, "__pycache__") != null) continue;
+        if (std.mem.indexOf(u8, line, ".cache") != null) continue;
+        w.print("{s}\n", .{line}) catch {};
+        count += 1;
+    }
+    w.print("```\n", .{}) catch {};
+
+    // Entry points
+    w.print("\n## Entry Points\n", .{}) catch {};
+    if (std.mem.eql(u8, project.language, "Zig")) {
+        w.print("- `src/main.zig` — Application entry point\n", .{}) catch {};
+        w.print("- `build.zig` — Build configuration\n", .{}) catch {};
+    } else if (std.mem.eql(u8, project.language, "Rust")) {
+        w.print("- `src/main.rs` — Application entry point\n", .{}) catch {};
+        w.print("- `Cargo.toml` — Package manifest\n", .{}) catch {};
+    } else if (std.mem.eql(u8, project.language, "Go")) {
+        w.print("- `main.go` or `cmd/` — Application entry point\n", .{}) catch {};
+        w.print("- `go.mod` — Module definition\n", .{}) catch {};
+    } else {
+        w.print("- Check project manifest for entry points\n", .{}) catch {};
+    }
+
+    // Try repo map
+    const map_result = repo_map_mod.generateWithStats(allocator, 30) catch null;
+    if (map_result) |mr| {
+        if (mr.file_count >= 3 and mr.map_text.len > 0) {
+            w.print("\n## Repository Map ({d} files)\n```\n{s}```\n", .{ mr.file_count, mr.map_text }) catch {};
+        }
+        mr.deinit(allocator);
+    }
+
+    // Write to file
+    const content = try buf.toOwnedSlice();
+    const file = std.fs.cwd().createFile("AGENTS.md", .{}) catch {
+        allocator.free(content);
+        return CommandResult.init(allocator, "Failed to create AGENTS.md");
+    };
+    defer file.close();
+    file.writeAll(content) catch {
+        allocator.free(content);
+        return CommandResult.init(allocator, "Failed to write AGENTS.md");
+    };
+
+    const result_msg = try std.fmt.allocPrint(allocator, "Generated AGENTS.md ({d} bytes) with project info, directory structure, and entry points.", .{content.len});
+    allocator.free(content);
+    return CommandResult.init(allocator, result_msg);
 }
 
 // ============================================================

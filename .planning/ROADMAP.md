@@ -455,6 +455,46 @@ Build ✅
 
 ---
 
+## v3.9.0 — Context Resilience Release
+
+**Objective**: Close the critical gap where `finish_reason: "length"` (context overflow) is silently ignored. Add token-efficiency patterns from claude-code, codex, and goose references. Prevent context bloat — the #1 failure mode in Crush CLI.
+
+**Based on**: Preventive analysis of 5 reference CLIs (OpenCode, Claude Code, Codex, Goose, claude-token-efficient) vs. crushcode's 4 anti-Crush failure mode assessments.
+
+### Phase 60: finish_reason "length" Handler 🔴 HIGH ✅
+
+**Done**: Added `forceCompaction()` to ContextCompactor (compaction.zig +228L). Both agent loop (loop.zig) and TUI streaming (streaming.zig) now detect `finish_reason: "length"` → auto-compact + retry (max 2). User notification on overflow. 5 tests for forceCompaction. Build ✅
+
+### Phase 61: File-Size Skip + Tool-Call Budget 🟡 MEDIUM ✅
+
+**Done**: File-size skip at 100KB in `fileops/reader.zig` — soft skip returns warning message. Tool-call budget (default 10) in `agent/loop.zig` — hard stop in both parallel + sequential paths. Configurable thresholds. Tests for both. Build ✅
+
+### Phase 62: System Prompt Efficiency Hints 🟢 LOW ✅
+
+**Done**: Added `## Efficiency` section to default system prompt: single-pass preference, same-error stop rule, no repeated reads. Repeated-error auto-stop already existed via `self_heal_mod.detectRepetition` (threshold 3) + SHA-256 loop detector in both execution paths. Build ✅
+
+---
+
+## v3.10.0 — Polish & Intelligence Release
+
+**Objective**: Fill remaining feature gaps identified by graphify analysis (4794 nodes, 13647 edges, 60 communities) cross-referenced with oh-my-openagent (1766 TS files, 377K LOC). Three targeted additions that close the gap with the best CLI agents.
+
+**Based on**: Graphify codebase analysis + oh-my-openagent feature comparison. Found crushcode already has Hashline, IntentGate, model fallback, background agents, sub-agent delegation. Only 3 features missing.
+
+### Phase 63: Comment Checker 🟡 MEDIUM ✅
+
+**Done**: Created `src/edit/comment_checker.zig` — detects 4 categories of AI-generated comments (obvious, verbose, filler, template). Integrated into `write_file` tool in tool_executors.zig. Warns when AI comments detected. Config toggle `comment_checker_enabled`. Skips doc comments (`///`), TODO/FIXME, WHY/NOTE comments. Build ✅
+
+### Phase 64: Skill-Embedded MCP 🟡 MEDIUM ✅
+
+**Done**: Extended `Skill` struct in `src/skills/loader.zig` with `McpServerConfig` — supports stdio (spawn process) and HTTP (URL). Created `src/features/skill_mcp_manager.zig` with full lifecycle: startForSkill, stopForSkill, stopAll, isRunning. SKILL.md YAML parsing for `mcp_servers:` section. Build ✅
+
+### Phase 65: Project Intelligence Generator (`/init`) 🟢 LOW ✅
+
+**Done**: Added `/init` slash command in `src/core/slash_commands.zig`. Detects project via `detectProject()`, scans directory structure (top 2 levels), generates `AGENTS.md` with language, build commands, tips, entry points, and repo map. Skips if AGENTS.md already exists. Build ✅
+
+---
+
 ## Ref Sources (reorganized 2026-04-28)
 
 ### CLI Core (`/mnt/d/crushcode-cli-reference/`) — 17 repos

@@ -9,6 +9,26 @@ inline fn out(comptime fmt: []const u8, args: anytype) void {
 
 const Allocator = std.mem.Allocator;
 
+/// MCP server configuration embedded in a skill
+pub const McpServerConfig = struct {
+    allocator: Allocator,
+    name: []const u8,
+    command: ?[]const u8 = null,
+    args: ?[][]const u8 = null,
+    url: ?[]const u8 = null,
+    mcp_type: enum { stdio, http } = .stdio,
+
+    pub fn deinit(self: *McpServerConfig) void {
+        self.allocator.free(self.name);
+        if (self.command) |cmd| self.allocator.free(cmd);
+        if (self.args) |args| {
+            for (args) |arg| self.allocator.free(arg);
+            self.allocator.free(args);
+        }
+        if (self.url) |url| self.allocator.free(url);
+    }
+};
+
 /// Skill definition loaded from SKILL.md
 pub const Skill = struct {
     allocator: Allocator,
@@ -18,6 +38,7 @@ pub const Skill = struct {
     tools: [][]const u8,
     prompt: []const u8,
     file_path: []const u8,
+    mcp_servers: []McpServerConfig,
 
     pub fn deinit(self: *Skill) void {
         self.allocator.free(self.name);
@@ -28,6 +49,10 @@ pub const Skill = struct {
         self.allocator.free(self.triggers);
         for (self.tools) |t| self.allocator.free(t);
         self.allocator.free(self.tools);
+        for (self.mcp_servers) |*mcp| {
+            mcp.deinit();
+        }
+        self.allocator.free(self.mcp_servers);
     }
 };
 
@@ -108,6 +133,7 @@ pub const SkillLoader = struct {
             .tools = &[_][]const u8{},
             .prompt = "",
             .file_path = try self.allocator.dupe(u8, path),
+            .mcp_servers = try self.allocator.alloc(McpServerConfig, 0),
         };
 
         if (split.yaml.len > 0) {
@@ -159,6 +185,11 @@ pub const SkillLoader = struct {
                     skill.triggers = try self.parseCommaList(value);
                 } else if (std.mem.eql(u8, key, "tools")) {
                     skill.tools = try self.parseCommaList(value);
+                } else if (std.mem.eql(u8, key, "mcp_servers")) {
+                    // Parse as list - get remaining content after current line
+                    const current_pos = @intFromPtr(line.ptr) - @intFromPtr(yaml.ptr) + line.len;
+                    const remaining = if (current_pos < yaml.len) yaml[current_pos..] else "";
+                    skill.mcp_servers = try self.parseMcpServers(remaining);
                 }
             }
         }
@@ -180,6 +211,88 @@ pub const SkillLoader = struct {
         }
 
         return items.toOwnedSlice();
+    }
+
+    /// Parse mcp_servers list from YAML
+    fn parseMcpServers(self: *SkillLoader, yaml: []const u8) ![]McpServerConfig {
+        var servers = array_list_compat.ArrayList(McpServerConfig).init(self.allocator);
+        errdefer {
+            for (servers.items) |*server| server.deinit();
+            servers.deinit();
+        }
+
+        var line_iter = std.mem.splitScalar(u8, yaml, '\n');
+        var current_config: ?McpServerConfig = null;
+
+        while (line_iter.next()) |line| {
+            const trimmed = std.mem.trim(u8, line, " \t\r");
+            if (trimmed.len == 0) continue;
+            if (trimmed[0] == '#') continue;
+
+            // Check for list item start (- name: or similar)
+            if (std.mem.startsWith(u8, trimmed, "-")) {
+                // Save previous config if exists
+                if (current_config) |*config| {
+                    try servers.append(config.*);
+                }
+
+                // Start new config
+                if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon_pos| {
+                    const name_key = std.mem.trim(u8, trimmed[1..colon_pos], " \t");
+                    const name_value = std.mem.trim(u8, trimmed[colon_pos + 1 ..], " \t\"'");
+
+                    if (std.mem.eql(u8, name_key, "name")) {
+                        current_config = McpServerConfig{
+                            .allocator = self.allocator,
+                            .name = try self.allocator.dupe(u8, name_value),
+                            .command = null,
+                            .args = null,
+                            .url = null,
+                            .mcp_type = .stdio,
+                        };
+                    }
+                }
+            } else if (current_config) |*config| {
+                // Parse nested properties for current config
+                if (std.mem.indexOfScalar(u8, trimmed, ':')) |colon_pos| {
+                    const key = std.mem.trim(u8, trimmed[0..colon_pos], " \t");
+                    const value = std.mem.trim(u8, trimmed[colon_pos + 1 ..], " \t\"'");
+
+                    if (value.len == 0) continue;
+
+                    if (std.mem.eql(u8, key, "type")) {
+                        if (std.mem.eql(u8, value, "http")) {
+                            config.mcp_type = .http;
+                        } else {
+                            config.mcp_type = .stdio;
+                        }
+                    } else if (std.mem.eql(u8, key, "command")) {
+                        config.command = try self.allocator.dupe(u8, value);
+                    } else if (std.mem.eql(u8, key, "url")) {
+                        config.url = try self.allocator.dupe(u8, value);
+                    } else if (std.mem.eql(u8, key, "args")) {
+                        // Parse args as JSON-like array or comma-separated
+                        if (std.mem.startsWith(u8, value, "[")) {
+                            // JSON array format
+                            const json_str = std.mem.trim(u8, value, "[]");
+                            config.args = try self.parseCommaList(json_str);
+                        } else {
+                            config.args = try self.parseCommaList(value);
+                        }
+                    }
+                }
+            } else {
+                // End of list (no more indented items)
+                break;
+            }
+        }
+
+        // Add last config if exists
+        if (current_config) |config| {
+            try servers.append(config);
+        }
+
+        return servers.toOwnedSlice();
     }
 
     /// Get loaded skills
@@ -608,12 +721,13 @@ test "SkillLoader - toPromptXml" {
 
     const skill = Skill{
         .allocator = allocator,
-        .name = "test-skill",
-        .description = "A test skill",
-        .triggers = &.{},
-        .tools = &.{},
-        .prompt = "Do the thing",
-        .file_path = "test",
+        .name = try allocator.dupe(u8, "test-skill"),
+        .description = try allocator.dupe(u8, "A test skill"),
+        .triggers = try allocator.alloc([]const u8, 0),
+        .tools = try allocator.alloc([]const u8, 0),
+        .prompt = try allocator.dupe(u8, "Do the thing"),
+        .file_path = try allocator.dupe(u8, "test"),
+        .mcp_servers = try allocator.alloc(McpServerConfig, 0),
     };
     try loader.skills.append(skill);
 

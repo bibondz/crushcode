@@ -29,6 +29,7 @@ const question_mod = @import("question");
 const hooks_mod = @import("hooks_registry");
 const subagent_mod = @import("subagent");
 const hashline_edit_mod = @import("hashline_edit");
+const comment_checker_mod = @import("comment_checker");
 const image_analyzer_mod = @import("image_analyzer");
 const semantic_search_mod = @import("semantic_search");
 
@@ -96,6 +97,7 @@ threadlocal var active_session_db_ref: ?*session_db_mod.SessionDB = null;
 threadlocal var active_checkpoint_session_id: []const u8 = "";
 threadlocal var active_hook_registry: ?*hooks_mod.HookRegistry = null;
 threadlocal var hashline_mode: bool = false;
+threadlocal var comment_checker_enabled: bool = true;
 threadlocal var active_semantic_api_base: ?[]const u8 = null;
 threadlocal var active_semantic_api_key: ?[]const u8 = null;
 threadlocal var active_semantic_embed_model: ?[]const u8 = null;
@@ -161,6 +163,10 @@ pub fn setHookRegistry(registry: ?*hooks_mod.HookRegistry) void {
 
 pub fn setHashlineMode(enabled: bool) void {
     hashline_mode = enabled;
+}
+
+pub fn setCommentCheckerEnabled(enabled: bool) void {
+    comment_checker_enabled = enabled;
 }
 
 /// Attempt to snapshot a file before a destructive operation.
@@ -836,6 +842,19 @@ fn executeWriteFileTool(allocator: std.mem.Allocator, tool_call: core.ParsedTool
     // Invalidate cache after write
     if (active_file_tracker) |tracker| {
         tracker.invalidate(parsed.value.path);
+    }
+
+    // Check for AI-generated comments (Phase 63)
+    if (comment_checker_enabled) {
+        var checker = comment_checker_mod.CommentChecker.init(allocator);
+        if (checker.check(parsed.value.content)) |check_result| {
+            defer check_result.deinit(allocator);
+            if (check_result.ai_comment_count > 0) {
+                const warning = checker.formatWarning(&check_result) catch "AI comments detected";
+                defer allocator.free(warning);
+                file_compat.File.stdout().writer().print("{s}\n", .{warning}) catch {};
+            }
+        } else |_| {}
     }
 
     // Build display with diff preview

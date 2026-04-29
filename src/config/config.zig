@@ -64,6 +64,8 @@ pub const Config = struct {
     allowed_paths: [][]const u8 = &.{},
     /// Enable desktop notifications (default: false, opt-in via CRUSHCODE_NOTIFY=1)
     notifications_enabled: bool = false,
+    /// Enable AI comment checker (default: true)
+    comment_checker_enabled: bool = true,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -81,6 +83,7 @@ pub const Config = struct {
             .skills_dir = null,
             .commands_dir = null,
             .notifications_enabled = false,
+            .comment_checker_enabled = true,
         };
     }
 
@@ -347,6 +350,17 @@ pub const Config = struct {
                 break :blk copied;
             };
             self.notifications_enabled = std.mem.eql(u8, lower_val, "true") or
+                std.mem.eql(u8, lower_val, "1") or
+                std.mem.eql(u8, lower_val, "on") or
+                std.mem.eql(u8, lower_val, "yes");
+        } else if (std.mem.eql(u8, key, "comment_checker_enabled")) {
+            // Parse boolean: true/1/on/yes -> true, everything else -> false
+            const lower_val = blk: {
+                var buf: [32]u8 = undefined;
+                const copied = std.ascii.lowerString(&buf, value);
+                break :blk copied;
+            };
+            self.comment_checker_enabled = std.mem.eql(u8, lower_val, "true") or
                 std.mem.eql(u8, lower_val, "1") or
                 std.mem.eql(u8, lower_val, "on") or
                 std.mem.eql(u8, lower_val, "yes");

@@ -188,6 +188,9 @@ pub fn build(b: *std.Build) !void {
     const skills_loader_mod = createMod(b, "src/skills/loader.zig", target, optimize, &.{
         imp("skills_resolver", skills_resolver_mod),
     });
+    _ = createMod(b, "src/features/skill_mcp_manager.zig", target, optimize, &.{
+        imp("array_list_compat", compat_array_list_mod),
+    });
     addImports(skills_mod, &.{imp("skills_loader", skills_loader_mod)});
     const collections_mod = simpleMod(b, "src/core/collections.zig", target, optimize);
     const skill_pipeline_mod = simpleMod(b, "src/skills/pipeline.zig", target, optimize);
@@ -244,8 +247,8 @@ pub fn build(b: *std.Build) !void {
     const knowledge_lint_mod = simpleMod(b, "src/core/knowledge_lint.zig", target, optimize);
     const slash_commands_mod = simpleMod(b, "src/core/slash_commands.zig", target, optimize);
     const dynamic_commands_mod = simpleMod(b, "src/skills/dynamic_commands.zig", target, optimize);
-    addImports(slash_commands_mod, &.{imp("dynamic_commands", dynamic_commands_mod)});
-    addImports(slash_commands_mod, &.{imp("build_options", options_mod)});
+addImports(slash_commands_mod, &.{imp("dynamic_commands", dynamic_commands_mod)});
+addImports(slash_commands_mod, &.{imp("build_options", options_mod)});
     const revision_loop_mod = createMod(b, "src/core/revision_loop.zig", target, optimize, &.{
         imp("convergence", convergence_mod),
     });
@@ -456,6 +459,7 @@ pub fn build(b: *std.Build) !void {
 
     const hashline_mod = simpleMod(b, "src/edit/hashline.zig", target, optimize);
     const pattern_search_mod = simpleMod(b, "src/edit/pattern_search.zig", target, optimize);
+    const comment_checker_mod = createMod(b, "src/edit/comment_checker.zig", target, optimize, &.{imp("array_list_compat", compat_array_list_mod)});
     const hash_index_mod = createMod(b, "src/edit/hash_index.zig", target, optimize, &.{imp("hashline", hashline_mod)});
     const conflict_mod = simpleMod(b, "src/edit/conflict.zig", target, optimize);
     const hashline_edit_mod = simpleMod(b, "src/edit/hashline_edit.zig", target, optimize);
@@ -544,6 +548,7 @@ pub fn build(b: *std.Build) !void {
     const project_mod = simpleMod(b, "src/config/project.zig", target, optimize);
     addImports(tui_mod, &.{imp("project", project_mod), imp("repo_map", repo_map_mod), imp("keymap", keymap_mod), imp("file_watcher", file_watcher_mod)});
     addImports(config_mod, &.{imp("project", project_mod)});
+    addImports(slash_commands_mod, &.{imp("project", project_mod), imp("repo_map", repo_map_mod), imp("file_compat", compat_file_mod)});
 
     const main_mod = createMod(b, "src/main.zig", target, optimize, &.{
         imp("args", cli_mod),                        imp("handlers", handlers_mod), imp("config", config_mod),
@@ -935,7 +940,7 @@ pub fn build(b: *std.Build) !void {
         imp("session_db", session_db_mod), imp("hooks_registry", hooks_registry_mod),
         imp("hashline_edit", hashline_edit_mod), imp("image_analyzer", image_analyzer_mod),
         imp("semantic_search", semantic_search_mod), imp("ansi_strip", ansi_strip_mod),
-        imp("permission_sandbox", sandbox_mod),
+        imp("permission_sandbox", sandbox_mod), imp("comment_checker", comment_checker_mod),
     });
     addImports(todo_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});
     addImports(apply_patch_mod, &.{imp("core_api", core_api_mod), imp("json_helpers", json_helpers_mod)});

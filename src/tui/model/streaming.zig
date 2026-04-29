@@ -23,6 +23,7 @@ const safety_checkpoint_mod = @import("safety_checkpoint");
 const plan_mod = @import("plan_handler");
 const feedback_mod = @import("feedback");
 const token_tracking_mod = @import("token_tracking.zig");
+const compaction_mod = @import("compaction");
 
 // Import sibling modules
 const history_mod = @import("history.zig");
@@ -87,6 +88,9 @@ pub fn requestThreadMain(self: *Model) void {
 
 pub fn runStreamingRequest(self: *Model) !void {
     self.request_start_time = std.time.milliTimestamp();
+
+    // Reset compaction retry count at the start of each new request
+    self.compaction_retry_count = 0;
 
     self.budget_mgr.checkAndResetPeriods();
     if (self.budget_mgr.isOverBudget()) {
@@ -159,6 +163,60 @@ pub fn runStreamingRequest(self: *Model) !void {
             }
             finishRequestWithErrorText(self, "No response received from provider");
             return;
+        }
+
+        // Check for context overflow (finish_reason: "length")
+        const fr = response.choices[0].finish_reason orelse "stop";
+        if (std.mem.eql(u8, fr, "length")) {
+            // Show notification to user
+            addSystemMessage(self, "⚠️ Context limit reached. Compacting conversation...");
+
+            // Attempt emergency compaction (max 2 times per conversation)
+            if (self.compaction_retry_count < 2) {
+                self.compaction_retry_count += 1;
+
+                // Convert history to CompactMessage format
+                const compact_msgs = try self.allocator.alloc(compaction_mod.CompactMessage, self.history.items.len);
+                for (self.history.items, 0..) |msg, i| {
+                    compact_msgs[i] = .{
+                        .role = msg.role,
+                        .content = msg.content orelse "",
+                        .timestamp = null,
+                    };
+                }
+
+                // Call forceCompaction
+                const compact_result = try self.compactor.forceCompaction(compact_msgs, "");
+                defer {
+                    if (compact_result.allocator) |_| {
+                        // compact_result owns the messages — CompactResult.deinit handles it
+                    }
+                }
+
+                if (compact_result.messages_summarized > 0) {
+                    // Replace history with compacted messages
+                    self.history.clearRetainingCapacity();
+                    for (compact_result.messages) |cmsg| {
+                        const chat_msg = try self.allocator.create(core.ChatMessage);
+                        chat_msg.* = .{
+                            .role = cmsg.role,
+                            .content = cmsg.content,
+                            .tool_calls = null,
+                        };
+                        try self.history.append(self.allocator, chat_msg.*);
+                        self.allocator.destroy(chat_msg);
+                    }
+                }
+
+                self.allocator.free(compact_msgs);
+
+                // Continue loop to retry (regardless of whether compaction freed enough,
+                // we give it one more shot — the next overflow will hit the retry limit)
+                continue;
+            } else {
+                finishRequestWithErrorText(self, "⚠️ Context limit reached. Compaction did not free enough space. Please start a new conversation.");
+                return;
+            }
         }
 
         total_output_tokens += helpers.estimateResponseOutputTokens(content, tool_calls);
@@ -730,6 +788,13 @@ pub fn startNextAssistantPlaceholder(self: *Model) !void {
     spinner.setContextPhrase("Thinking...");
     self.spinner = spinner;
     try session_mgmt.saveSessionSnapshotUnlocked(self);
+}
+
+/// Add a system message to the conversation (for notifications like compaction)
+fn addSystemMessage(self: *Model, text: []const u8) void {
+    self.lock.lock();
+    defer self.lock.unlock();
+    history_mod.addMessageUnlocked(self, "system", text) catch {};
 }
 
 pub fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64) void {

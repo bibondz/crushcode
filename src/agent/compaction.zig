@@ -648,6 +648,138 @@ pub const ContextCompactor = struct {
         return self.compactHeuristic(messages, self.previous_summary);
     }
 
+    /// Force emergency compaction regardless of current token level.
+    /// Called when provider returns finish_reason: "length" (context overflow).
+    /// Uses the most aggressive compaction settings:
+    /// - Truncate ALL tool outputs to 500 chars
+    /// - Keep only last 6 messages at full fidelity
+    /// - Summarize everything else
+    pub fn forceCompaction(
+        self: *ContextCompactor,
+        messages: []const CompactMessage,
+        previous_summary: []const u8,
+    ) !CompactResult {
+        const emergency_window: u32 = 6;
+
+        if (messages.len <= emergency_window) {
+            return CompactResult{
+                .messages = messages,
+                .tokens_saved = 0,
+                .messages_summarized = 0,
+                .summary = "",
+                .agent_metadata = std.StringHashMap([]const u8).init(self.allocator),
+            };
+        }
+
+        var total_tokens_before: u64 = 0;
+        for (messages) |msg| {
+            total_tokens_before += estimateTokens(msg.content);
+        }
+
+        const split_point = messages.len - emergency_window;
+        const old_messages = messages[0..split_point];
+        const recent_messages = messages[split_point..];
+
+        // Aggressively truncate tool outputs to 500 chars in old messages
+        var truncated_old = try self.allocator.alloc(CompactMessage, old_messages.len);
+        var initialized: usize = 0;
+        errdefer {
+            for (truncated_old[0..initialized]) |msg| {
+                self.allocator.free(msg.role);
+                if (msg.content.len > 0) self.allocator.free(msg.content);
+            }
+            self.allocator.free(truncated_old);
+        }
+
+        for (old_messages, 0..) |msg, i| {
+            const role_copy = try self.allocator.dupe(u8, msg.role);
+
+            // Truncate ALL tool outputs to 500 chars aggressively
+            const content_copy = if (std.mem.eql(u8, msg.role, "tool") and msg.content.len > 500) blk: {
+                const truncated = try std.fmt.allocPrint(
+                    self.allocator,
+                    "{s}... [emergency truncation]",
+                    .{msg.content[0..500]}
+                );
+                initialized += 1;
+                break :blk truncated;
+            } else if (msg.content.len > 0) blk: {
+                break :blk try self.allocator.dupe(u8, msg.content);
+            } else "";
+
+            if (msg.content.len > 0 or content_copy.len > 0) {
+                initialized += 1;
+            }
+
+            truncated_old[i] = .{
+                .role = role_copy,
+                .content = content_copy,
+                .timestamp = msg.timestamp,
+            };
+        }
+
+        // Build emergency summary
+        var summary_buf = array_list_compat.ArrayList(u8).init(self.allocator);
+        defer summary_buf.deinit();
+        const writer = summary_buf.writer();
+
+        try writer.print("[EMERGENCY COMPACTION — Context Overflow]\n", .{});
+
+        if (previous_summary.len > 0) {
+            try writer.print("\nPrevious context summary:\n{s}\n", .{previous_summary});
+        }
+
+        try writer.print("\n[Context Recovery — {d} messages emergency-compacted]\n", .{old_messages.len});
+        try writer.print("\nThis compaction was triggered because the context limit was exceeded.\n", .{});
+
+        // Count messages by role
+        var user_count: u32 = 0;
+        var assistant_count: u32 = 0;
+        var tool_count: u32 = 0;
+        for (old_messages) |msg| {
+            if (std.mem.eql(u8, msg.role, "user")) user_count += 1;
+            if (std.mem.eql(u8, msg.role, "assistant")) assistant_count += 1;
+            if (std.mem.eql(u8, msg.role, "tool")) tool_count += 1;
+        }
+        try writer.print("Session: {d} user msgs, {d} assistant msgs, {d} tool outputs (truncated to 500 chars)\n", .{ user_count, assistant_count, tool_count });
+        try writer.print("\nLast {d} messages preserved at full fidelity.\n", .{emergency_window });
+
+        const summary = try summary_buf.toOwnedSlice();
+        try self.storePreviousSummary(summary);
+
+        const summary_tokens = estimateTokens(summary);
+        var tokens_after: u64 = summary_tokens;
+        for (recent_messages) |msg| {
+            tokens_after += estimateTokens(msg.content);
+        }
+
+        // Copy agent metadata for the result
+        var result_metadata = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var meta_iter = result_metadata.iterator();
+            while (meta_iter.next()) |entry| {
+                self.allocator.free(entry.key_ptr.*);
+                self.allocator.free(entry.value_ptr.*);
+            }
+            result_metadata.deinit();
+        }
+
+        var meta_iter = self.agent_metadata.iterator();
+        while (meta_iter.next()) |entry| {
+            try result_metadata.put(try self.allocator.dupe(u8, entry.key_ptr.*),
+                                 try self.allocator.dupe(u8, entry.value_ptr.*));
+        }
+
+        return CompactResult{
+            .messages = recent_messages,
+            .tokens_saved = total_tokens_before -| tokens_after,
+            .messages_summarized = @intCast(old_messages.len),
+            .summary = summary,
+            .agent_metadata = result_metadata,
+            .allocator = self.allocator,
+        };
+    }
+
     /// Truncate tool-role messages to max_chars, adding "... (truncated)" suffix.
     /// Non-tool messages are preserved unchanged.
     pub fn truncateToolOutputs(
@@ -1833,4 +1965,100 @@ test "microCompact - prunes aggressive tool outputs when stale" {
     // Aggressive tool should be pruned
     try testing.expect(std.mem.indexOf(u8, result.messages[0].content, "[tool output pruned]") != null);
     try testing.expect(result.tokens_saved > 0);
+}
+
+// ========== Tests for forceCompaction ==========
+
+test "forceCompaction - keeps only last 6 messages" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "msg1", .timestamp = null },
+        .{ .role = "assistant", .content = "msg2", .timestamp = null },
+        .{ .role = "user", .content = "msg3", .timestamp = null },
+        .{ .role = "assistant", .content = "msg4", .timestamp = null },
+        .{ .role = "user", .content = "msg5", .timestamp = null },
+        .{ .role = "assistant", .content = "msg6", .timestamp = null },
+        .{ .role = "user", .content = "msg7", .timestamp = null },
+        .{ .role = "assistant", .content = "msg8", .timestamp = null },
+        .{ .role = "user", .content = "msg9", .timestamp = null },
+        .{ .role = "assistant", .content = "msg10", .timestamp = null },
+    };
+
+    var result = try c.forceCompaction(&messages, "");
+    defer result.deinit();
+
+    // Should keep only last 6 messages
+    try testing.expectEqual(@as(usize, 6), result.messages.len);
+    try testing.expectEqual(@as(u32, 4), result.messages_summarized);
+    // Last message should be msg10
+    try testing.expectEqualStrings("msg10", result.messages[5].content);
+}
+
+test "forceCompaction - truncates tool outputs to 500 chars" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const long_tool = "tool: " ++ ("x" ** 1000);
+    const messages = [_]CompactMessage{
+        .{ .role = "tool", .content = long_tool, .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.forceCompaction(&messages, "");
+    defer result.deinit();
+
+    // Only recent message kept
+    try testing.expectEqual(@as(usize, 1), result.messages.len);
+    try testing.expectEqualStrings("recent", result.messages[0].content);
+    try testing.expect(result.tokens_saved > 0);
+    try testing.expect(std.mem.indexOf(u8, result.summary, "500 chars") != null);
+}
+
+test "forceCompaction - includes emergency summary marker" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "msg1", .timestamp = null },
+        .{ .role = "assistant", .content = "msg2", .timestamp = null },
+        .{ .role = "user", .content = "msg3", .timestamp = null },
+        .{ .role = "assistant", .content = "msg4", .timestamp = null },
+        .{ .role = "user", .content = "msg5", .timestamp = null },
+        .{ .role = "assistant", .content = "msg6", .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.forceCompaction(&messages, "");
+    defer result.deinit();
+
+    // Summary should have emergency markers
+    try testing.expect(std.mem.indexOf(u8, result.summary, "EMERGENCY COMPACTION") != null);
+    try testing.expect(std.mem.indexOf(u8, result.summary, "Context Overflow") != null);
+    try testing.expect(std.mem.indexOf(u8, result.summary, "Context Recovery") != null);
+}
+
+test "forceCompaction - preserves agent metadata" {
+    var c = ContextCompactor.init(testing.allocator, 100000);
+    defer c.deinit();
+
+    try c.preserveAgentMetadata("test_key", "test_value");
+
+    const messages = [_]CompactMessage{
+        .{ .role = "user", .content = "msg1", .timestamp = null },
+        .{ .role = "user", .content = "msg2", .timestamp = null },
+        .{ .role = "user", .content = "recent", .timestamp = null },
+    };
+
+    var result = try c.forceCompaction(&messages, "");
+    defer result.deinit();
+
+    // Agent metadata should be preserved in result
+    try testing.expectEqual(@as(usize, 1), result.agent_metadata.count());
+    const value = result.agent_metadata.get("test_key");
+    try testing.expect(value != null);
+    if (value) |v| {
+        try testing.expectEqualStrings("test_value", v);
+    }
 }
