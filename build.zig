@@ -1,6 +1,6 @@
 const std = @import("std");
 
-const version = "3.8.0";
+const version = "3.10.0";
 
 const ImportSpec = struct {
     name: []const u8,
