@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const args_mod = @import("args");
 const config_mod = @import("config");
 const chat_mod = @import("chat");
@@ -319,5 +320,5 @@ pub fn printHelp() !void {
 }
 
 pub fn printVersion() !void {
-    stdout_print("Crushcode v1.2.0\n", .{});
+    stdout_print("Crushcode v{s}\n", .{build_options.version});
 }

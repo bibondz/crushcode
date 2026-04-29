@@ -28,6 +28,7 @@ pub const Options = struct {
     max_tokens: u32 = 4096,
     temperature: f32 = 0.7,
     override_url: ?[]const u8 = null,
+    notifications_enabled: bool = false,
 };
 
 pub const Message = struct {

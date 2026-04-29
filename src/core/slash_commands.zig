@@ -1,4 +1,5 @@
 const std = @import("std");
+const build_options = @import("build_options");
 const array_list_compat = @import("array_list_compat");
 const dynamic_commands = @import("dynamic_commands");
 
@@ -344,7 +345,9 @@ fn cmdExit(allocator: Allocator, args: []const u8) !CommandResult {
 
 fn cmdVersion(allocator: Allocator, args: []const u8) !CommandResult {
     _ = args;
-    return CommandResult.init(allocator, "Crushcode v1.2.0");
+    const version_str = try std.fmt.allocPrint(allocator, "Crushcode v{s}", .{build_options.version});
+    defer allocator.free(version_str);
+    return CommandResult.init(allocator, version_str);
 }
 
 fn cmdStatus(allocator: Allocator, args: []const u8) !CommandResult {

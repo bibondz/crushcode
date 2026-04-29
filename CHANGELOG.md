@@ -2,6 +2,33 @@
 
 All notable changes to Crushcode.
 
+## [3.8.0] — 2026-04-29
+
+### Added
+- **Unified version system** — single `const version = "3.8.0"` in build.zig, exposed to all modules via `build_options`. `--version` flag, `/version` slash command, and update checker all use the same constant.
+- **Notification config** — `notifications_enabled` config field + `CRUSHCODE_NOTIFY` env var for future desktop notification support.
+
+### Changed
+- **Release cross-compile** — simplified to `zig build -Dtarget=x86_64-windows-gnu -Doptimize=ReleaseSmall` instead of complex build.zig targets.
+
+## [3.7.0] — 2026-04-29
+
+### Fixed
+- Eliminated all `@panic` crash paths — TUI preview null checks (3), permission OOM (1) now use graceful error handling.
+- Replaced all `catch unreachable` with proper error propagation — metrics/collector.zig (3), diff/myers.zig (3).
+- Replaced all `unreachable` in switch statements with safe defaults — language detection, permission guardian.
+- Zero production crash paths remain in the entire codebase.
+
+## [3.6.0] — 2026-04-29
+
+### Added
+- **OAuth deduplication** — shared `auth/oauth_helpers.zig` (218L) with PKCE helpers, token parsing, callback server. Both `mcp/oauth.zig` (-26%) and `auth/provider_oauth.zig` (-24%) delegate to it. ~101 lines saved.
+- **37 critical-path tests** — `ai/client.zig` (getApiModelName, getChatPath, extractExtendedUsage, buildToolsJson), `ai/registry.zig` (nvidia toString), `agent/loop.zig` (17: AgentMode enum, tool permissions, ModeConfig defaults, LoopConfig, interrupt), `config/config.zig` (9: parseCommaList, getSystemPrompt, mergeOverride).
+- **Agent loop decomposition** — extracted `commands/agent_setup.zig` (96L) from handleInteractiveChat god function.
+
+### Cancelled
+- Phase 57 (Knowledge Lint Merge) — investigation proved `knowledge/lint.zig` (vault-based) and `core/knowledge_lint.zig` (entry-based) are different linters for different data models. Not duplication.
+
 ## [0.2.2] — 2026-04-14
 
 ### Added — Architecture & Features (Phase A–D)

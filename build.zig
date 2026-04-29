@@ -1,5 +1,7 @@
 const std = @import("std");
 
+const version = "3.8.0";
+
 const ImportSpec = struct {
     name: []const u8,
     module: *std.Build.Module,
@@ -38,6 +40,11 @@ pub fn build(b: *std.Build) !void {
     const target = b.standardTargetOptions(.{});
     const optimize = b.standardOptimizeOption(.{});
     const vaxis_dep = b.dependency("vaxis", .{ .target = target, .optimize = optimize });
+
+    // Expose version to modules
+    const options = b.addOptions();
+    options.addOption([]const u8, "version", version);
+    const options_mod = options.createModule();
 
     // Patch vaxis tty.zig to fallback to stdin when /dev/tty is unavailable (WSL fix)
     // The patch replaces the hardcoded `try posix.open("/dev/tty", ...)` with a
@@ -238,6 +245,7 @@ pub fn build(b: *std.Build) !void {
     const slash_commands_mod = simpleMod(b, "src/core/slash_commands.zig", target, optimize);
     const dynamic_commands_mod = simpleMod(b, "src/skills/dynamic_commands.zig", target, optimize);
     addImports(slash_commands_mod, &.{imp("dynamic_commands", dynamic_commands_mod)});
+    addImports(slash_commands_mod, &.{imp("build_options", options_mod)});
     const revision_loop_mod = createMod(b, "src/core/revision_loop.zig", target, optimize, &.{
         imp("convergence", convergence_mod),
     });
@@ -516,6 +524,7 @@ pub fn build(b: *std.Build) !void {
         imp("batch", batch_mod),                     imp("logs", logs_mod),                                   imp("session_cmd", session_cmd_mod),
         imp("completion", completion_mod),
     });
+    addImports(handlers_mod, &.{imp("build_options", options_mod)});
 
     const cli_registry_mod = createMod(b, "src/cli/registry.zig", target, optimize, &.{
         imp("args", cli_mod), imp("config", config_mod), imp("handlers", handlers_mod),
@@ -1006,6 +1015,10 @@ pub fn build(b: *std.Build) !void {
         "-DSQLITE_DQS=0",
     };
 
+    // Expose version to main module by adding it to the existing main_mod
+    main_mod.addImport("build_options", options_mod);
+    handlers_mod.addImport("build_options", options_mod);
+    
     const exe = b.addExecutable(.{ .name = "crushcode", .root_module = main_mod });
     exe.addCSourceFile(.{
         .file = b.path("vendor/sqlite3/sqlite3.c"),
@@ -1017,6 +1030,7 @@ pub fn build(b: *std.Build) !void {
     });
     exe.addIncludePath(b.path("vendor/sqlite3"));
     exe.linkLibC();
+    
     b.installArtifact(exe);
 
     const test_modules = [_]*std.Build.Module{

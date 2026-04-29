@@ -62,6 +62,8 @@ pub const Config = struct {
     sandbox_mode: []const u8 = "",
     /// External directories AI can read files from (comma-separated paths)
     allowed_paths: [][]const u8 = &.{},
+    /// Enable desktop notifications (default: false, opt-in via CRUSHCODE_NOTIFY=1)
+    notifications_enabled: bool = false,
 
     pub fn init(allocator: std.mem.Allocator) Config {
         return Config{
@@ -78,6 +80,7 @@ pub const Config = struct {
             .oauth_port = 19876,
             .skills_dir = null,
             .commands_dir = null,
+            .notifications_enabled = false,
         };
     }
 
@@ -336,6 +339,17 @@ pub const Config = struct {
             for (self.allowed_paths) |p| self.allocator.free(p);
             self.allocator.free(self.allowed_paths);
             self.allowed_paths = try self.parseCommaList(value);
+        } else if (std.mem.eql(u8, key, "notifications_enabled")) {
+            // Parse boolean: true/1/on/yes -> true, everything else -> false
+            const lower_val = blk: {
+                var buf: [32]u8 = undefined;
+                const copied = std.ascii.lowerString(&buf, value);
+                break :blk copied;
+            };
+            self.notifications_enabled = std.mem.eql(u8, lower_val, "true") or
+                std.mem.eql(u8, lower_val, "1") or
+                std.mem.eql(u8, lower_val, "on") or
+                std.mem.eql(u8, lower_val, "yes");
         } else {
             try self.setApiKey(key, value);
         }
@@ -589,6 +603,20 @@ pub fn loadOrCreateConfig(allocator: std.mem.Allocator) !Config {
         defer allocator.free(config_dir);
         config.commands_dir = try std.fs.path.join(allocator, &.{ config_dir, "commands" });
     }
+
+    // Check CRUSHCODE_NOTIFY environment variable (overrides config)
+    if (std.process.getEnvVarOwned(allocator, "CRUSHCODE_NOTIFY")) |env_val| {
+        defer allocator.free(env_val);
+        const lower_val = blk: {
+            var buf: [16]u8 = undefined;
+            const copied = std.ascii.lowerString(&buf, env_val);
+            break :blk copied;
+        };
+        config.notifications_enabled = std.mem.eql(u8, lower_val, "true") or
+            std.mem.eql(u8, lower_val, "1") or
+            std.mem.eql(u8, lower_val, "on") or
+            std.mem.eql(u8, lower_val, "yes");
+    } else |_| {}
 
     return config;
 }

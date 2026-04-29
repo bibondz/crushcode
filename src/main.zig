@@ -1,5 +1,6 @@
 const builtin = @import("builtin");
 const std = @import("std");
+const build_options = @import("build_options");
 const perf = @import("core/perf.zig");
 const file_compat = @import("file_compat");
 const args_mod = @import("args");
@@ -132,7 +133,7 @@ pub fn main() !void {
             if (maybe_version) |new_version| {
                 const stdout = file_compat.File.stdout().writer();
                 stdout.print("\n  ┌──────────────────────────────────────────────────┐\n", .{}) catch {};
-                stdout.print("  │  Update available: v1.0.0 → v{s}", .{new_version}) catch {};
+                stdout.print("  │  Update available: v{s} → v{s}", .{build_options.version, new_version}) catch {};
                 stdout.print("  │  Run 'crushcode update' to upgrade                │\n", .{}) catch {};
                 stdout.print("  └──────────────────────────────────────────────────┘\n\n", .{}) catch {};
                 allocator.free(new_version);
