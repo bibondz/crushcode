@@ -158,7 +158,11 @@ pub const Guardian = struct {
                 .reason = std.fmt.allocPrint(self.allocator, "Operation '{s}' requires approval", .{operation}) catch null,
                 .hook_results = hook_results,
             },
-            .never => unreachable, // exhaustive switch: .never is handled in step 1 (sensitive path check)
+            .never => GuardianResult{
+                .verdict = .block,
+                .reason = std.fmt.allocPrint(self.allocator, "Operation '{s}' is blocked by governance policy", .{operation}) catch null,
+                .hook_results = hook_results,
+            }, // .never case handled in step 1, but keep as defensive fallback
         };
     }
 

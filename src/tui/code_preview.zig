@@ -576,9 +576,7 @@ test "PreviewFile reads and returns snippet" {
     var preview = CodePreview.init(allocator);
     defer preview.deinit();
 
-    var snippet = preview.previewFile(tmp_path) orelse {
-        @panic("previewFile returned null");
-    };
+    var snippet = preview.previewFile(tmp_path) orelse return error.TestFailed;
     defer snippet.deinit();
 
     try std.testing.expectEqualStrings(tmp_path, snippet.file_path);
@@ -608,9 +606,7 @@ test "PreviewSnippet extracts correct line range" {
     var preview = CodePreview.init(allocator);
     defer preview.deinit();
 
-    var snippet = preview.previewSnippet(tmp_path, 10, 2) orelse {
-        @panic("previewSnippet returned null");
-    };
+    var snippet = preview.previewSnippet(tmp_path, 10, 2) orelse return error.TestFailed;
     defer snippet.deinit();
 
     // ±2 around line 10 = lines 8..12
@@ -721,9 +717,7 @@ test "FormatDiff output contains +/- markers" {
     var preview = CodePreview.init(allocator);
     defer preview.deinit();
 
-    const hunks = preview.previewDiff(path_a, path_b) orelse {
-        @panic("previewDiff returned null");
-    };
+    const hunks = preview.previewDiff(path_a, path_b) orelse return error.TestFailed;
     defer {
         for (hunks) |*h| h.deinit(allocator);
         allocator.free(hunks);

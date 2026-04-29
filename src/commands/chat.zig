@@ -862,10 +862,15 @@ fn handleInteractiveChat(args: args_mod.Args, config: *Config, allocator: std.me
     defer command_blocklist.deinit();
     tool_executors.setCommandBlocklist(&command_blocklist);
 
+    // Initialize safelist - degrade gracefully if OOM occurs
     var safe_command_list = safelist_mod.SafeCommandList.init(allocator);
-    safe_command_list.loadFromFile(config_dir) catch {};
-    defer safe_command_list.deinit();
-    tool_executors.setSafeCommandList(&safe_command_list);
+    defer {
+        if (safe_command_list) |*scl| scl.deinit();
+    }
+    if (safe_command_list) |*scl| {
+        scl.loadFromFile(config_dir) catch {};
+    }
+    tool_executors.setSafeCommandList(if (safe_command_list) |*scl| scl else null);
 
     // Initialize file tracker to avoid re-reading unchanged files (Phase 32)
     var file_tracker = file_tracker_mod.FileTracker.init(allocator);

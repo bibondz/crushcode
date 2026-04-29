@@ -360,11 +360,11 @@ test "Prometheus format output" {
 
     c.increment("http_requests", 5.0, &.{});
     c.gauge("cpu_usage", 42.5, &.{});
-    c.observe("latency", 100.0, &.{}) catch unreachable;
+    try c.observe("latency", 100.0, &.{});
 
     var buf: std.ArrayList(u8) = .{};
     defer buf.deinit(allocator);
-    c.exportPrometheus(buf.writer(allocator)) catch unreachable;
+    try c.exportPrometheus(buf.writer(allocator));
     const output = buf.items;
 
     // Counter
@@ -390,7 +390,7 @@ test "JSONL format output" {
 
     var buf: std.ArrayList(u8) = .{};
     defer buf.deinit(allocator);
-    c.exportJsonl(buf.writer(allocator)) catch unreachable;
+    try c.exportJsonl(buf.writer(allocator));
     const output = buf.items;
 
     try std.testing.expect(std.mem.indexOf(u8, output, "\"name\":\"requests\"") != null);

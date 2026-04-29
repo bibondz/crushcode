@@ -227,7 +227,8 @@ pub const SafeCommandList = struct {
     };
 
     /// Initialize the safe command list with all hardcoded defaults.
-    pub fn init(allocator: Allocator) SafeCommandList {
+    /// Returns null if allocation fails (degrades gracefully).
+    pub fn init(allocator: Allocator) ?SafeCommandList {
         var self = SafeCommandList{
             .allocator = allocator,
             .safe_commands = array_list_compat.ArrayList([]const u8).init(allocator),
@@ -235,8 +236,13 @@ pub const SafeCommandList = struct {
         errdefer self.deinit();
 
         // Pre-populate with hardcoded defaults — safe_commands now owns these strings.
+        // If any allocation fails, continue with partial list (graceful degradation).
         for (&default_safe_commands) |cmd| {
-            self.safe_commands.append(allocator.dupe(u8, cmd) catch @panic("OOM")) catch @panic("OOM");
+            const owned = allocator.dupe(u8, cmd) catch continue;
+            self.safe_commands.append(owned) catch {
+                allocator.free(owned);
+                continue;
+            };
         }
 
         return self;

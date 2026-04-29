@@ -357,7 +357,10 @@ pub fn formatUnifiedDiff(
             hunk.old_count,
             hunk.new_start,
             hunk.new_count,
-        }) catch unreachable; // 256-byte buffer always sufficient for hunk header
+        }) catch |err| {
+            // Hunk header formatting failed - return error to caller
+            return err;
+        };
         try buf.appendSlice(allocator, header);
 
         for (hunk.lines) |line| {
@@ -530,11 +533,11 @@ test "large file with scattered changes produces multiple hunks" {
 
     for (0..100) |i| {
         var tmp: [32]u8 = undefined;
-        const line = std.fmt.bufPrint(&tmp, "line{d}\n", .{i}) catch unreachable; // 32-byte buffer sufficient for i<100
+        const line = try std.fmt.bufPrint(&tmp, "line{d}\n", .{i}); // 32-byte buffer sufficient for i<100
         try old_text.appendSlice(allocator, line);
 
         if (i == 10 or i == 50 or i == 90) {
-            const changed = std.fmt.bufPrint(&tmp, "changed{d}\n", .{i}) catch unreachable; // 32-byte buffer sufficient for i<100
+            const changed = try std.fmt.bufPrint(&tmp, "changed{d}\n", .{i}); // 32-byte buffer sufficient for i<100
             try new_text.appendSlice(allocator, changed);
         } else {
             try new_text.appendSlice(allocator, line);

@@ -417,7 +417,7 @@ fn trySgCli(allocator: std.mem.Allocator, pattern: []const u8, target: []const u
             .solidity => "Solidity",
             .html => "Html",
             .css => "Css",
-            .unknown => unreachable,
+            .unknown => "Unknown", // Safe default for unknown languages
         };
         const lang_arg = std.fmt.allocPrint(allocator, "-l{s}", .{lang_name}) catch return false;
         argv_buf[argc] = lang_arg;
