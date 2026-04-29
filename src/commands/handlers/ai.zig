@@ -63,6 +63,7 @@ pub fn handleTUI(args: args_mod.Args, config: *config_mod.Config) !void {
         .max_tokens = config.max_tokens,
         .temperature = config.temperature,
         .override_url = config.getProviderOverrideUrl(provider_name),
+        .notifications_enabled = config.notifications_enabled,
     }) catch {
         // Any TUI initialization failure (no /dev/tty, no TTY, vaxis error, etc.)
         // falls back to interactive chat mode. This handles WSL and headless environments.

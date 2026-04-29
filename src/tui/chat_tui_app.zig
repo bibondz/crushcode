@@ -72,6 +72,7 @@ const review_mod = @import("review");
 const commit_mod = @import("commit");
 const hooks_mod = @import("hooks_registry");
 const hooks_config_mod = @import("hooks_config");
+const notifier_plugin = @import("notifier_plugin");
 const model_palette = @import("model/palette.zig");
 const input_handling = @import("model/input_handling.zig");
 const navigation = @import("model/navigation.zig");
@@ -421,6 +422,8 @@ pub const Model = struct {
     context_scored_files: u32 = 0,
     lsp_manager: lsp_manager_mod.LSPManager,
     session_tree: session_tree_mod.SessionTreeWidget,
+    /// Desktop notification plugin — opt-in via notifications_enabled config or CRUSHCODE_NOTIFY=1
+    notifier: ?notifier_plugin.NotifierPlugin,
 
     pub fn create(allocator: std.mem.Allocator, options: Options) !*Model {
         http_client.initSharedClient(allocator);
@@ -562,6 +565,7 @@ pub const Model = struct {
             .delegator = delegate_mod.SubAgentDelegator.init(allocator, delegate_mod.DelegationConfig.init(allocator)),
             .lsp_manager = lsp_manager_mod.LSPManager.init(allocator),
             .session_tree = session_tree_mod.SessionTreeWidget.init(allocator),
+            .notifier = if (options.notifications_enabled) notifier_plugin.NotifierPlugin.init(allocator) else null,
         };
         errdefer model.destroy();
 
@@ -740,6 +744,7 @@ pub const Model = struct {
         if (self.auto_gen) |*ag| ag.deinit();
         if (self.feedback) |*fb| fb.deinit();
         if (self.guardian) |*g| g.deinit();
+        if (self.notifier) |*n| n.deinit();
 
         permissions_mod.resolvePendingPermission(self, .no);
         if (self.worker) |thread| {

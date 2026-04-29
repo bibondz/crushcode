@@ -380,7 +380,7 @@ pub const AgentLoop = struct {
     /// Desktop notification support — fires OS notifications on agent
     /// completion, loop detection, and permission waits.
     /// Reference: Crush coordinator.go notify package
-    notifier: notifier_mod.DesktopNotifier,
+    notifier: notifier_mod.NotifierPlugin,
 
     pub fn init(allocator: Allocator) AgentLoop {
         var loop = AgentLoop{
@@ -395,7 +395,7 @@ pub const AgentLoop = struct {
             .recent_tool_names = array_list_compat.ArrayList([]const u8).init(allocator),
             .recent_error_messages = array_list_compat.ArrayList([]const u8).init(allocator),
             .loop_detector = loop_detector_mod.LoopDetector.init(),
-            .notifier = notifier_mod.DesktopNotifier.init(),
+            .notifier = notifier_mod.NotifierPlugin.init(allocator),
         };
         // Phase 51: Auto-enable context compaction with sensible defaults
         // Prevents context window overflow in long agent sessions
@@ -775,12 +775,16 @@ pub const AgentLoop = struct {
 
                         // SHA-256 loop detection — catches ALL repeated interactions
                         // (both success and failure) within a sliding window
-                        if (self.loop_detector.recordAndCheck(tc.name, tc.arguments, output_str)) {
-                            if (self.config.show_intermediate) {
-                                std.log.warn("Loop detected: tool '{s}' repeated identically too many times. Breaking loop.", .{tc.name});
-                            }
-                            self.notifier.notifyWithUrgency("Crushcode — Loop Detected", "Agent stuck repeating tool calls", .critical);
-                            done = true;
+                            if (self.loop_detector.recordAndCheck(tc.name, tc.arguments, output_str)) {
+                                if (self.config.show_intermediate) {
+                                    std.log.warn("Loop detected: tool '{s}' repeated identically too many times. Breaking loop.", .{tc.name});
+                                }
+                                self.notifier.handleEvent(.{
+                                    .type = .error_occurred,
+                                    .error_message = "Agent stuck repeating tool calls",
+                                    .timestamp = std.time.milliTimestamp(),
+                                }) catch {};
+                                done = true;
                             if (!parallel_cleaned_up) {
                                 for (results) |*r| r.deinit();
                                 self.allocator.free(results);
@@ -846,7 +850,11 @@ pub const AgentLoop = struct {
                                 if (self.config.show_intermediate) {
                                     std.log.warn("Loop detected: tool '{s}' repeated identically too many times. Breaking loop.", .{tc.name});
                                 }
-                                self.notifier.notifyWithUrgency("Crushcode — Loop Detected", "Agent stuck repeating tool calls", .critical);
+                                self.notifier.handleEvent(.{
+                                    .type = .error_occurred,
+                                    .error_message = "Agent stuck repeating tool calls",
+                                    .timestamp = std.time.milliTimestamp(),
+                                }) catch {};
                                 done = true;
                                 break;
                             }
@@ -877,7 +885,11 @@ pub const AgentLoop = struct {
         self.running = false;
 
         // Desktop notification: agent loop completed
-        self.notifier.notify("Crushcode — Agent Done", "Completed after iterations");
+        self.notifier.handleEvent(.{
+            .type = .task_completed,
+            .task_name = "agent loop",
+            .timestamp = std.time.milliTimestamp(),
+        }) catch {};
 
         return result;
     }

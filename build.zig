@@ -769,7 +769,7 @@ pub fn build(b: *std.Build) !void {
         imp("tool_parallel", tool_parallel_mod),
         imp("compaction", compaction_mod),
         imp("loop_detector", simpleMod(b, "src/agent/loop_detector.zig", target, optimize)),
-        imp("notifier", simpleMod(b, "src/notification/notifier.zig", target, optimize)),
+        imp("notifier", notifier_plugin_mod),
         imp("usage_budget", usage_budget_mod),
     });
 
@@ -920,7 +920,7 @@ pub fn build(b: *std.Build) !void {
         imp("recipe", recipe_mod), imp("loader", recipe_loader_mod), imp("runner", recipe_runner_mod),
         imp("safety_checkpoint", safety_checkpoint_mod), imp("hooks_registry", hooks_registry_mod),
         imp("hooks_config", hooks_config_mod), imp("context_limits", context_limits_mod),
-        imp("http_client", http_client_mod),
+        imp("http_client", http_client_mod), imp("notifier_plugin", notifier_plugin_mod),
     });
     addImports(chat_tool_executors_mod, &.{
         imp("core_api", core_api_mod), imp("agent_loop", agent_loop_mod), imp("json_output", json_output_mod),

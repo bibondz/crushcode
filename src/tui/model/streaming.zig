@@ -760,6 +760,15 @@ pub fn finishRequestSuccess(self: *Model, input_tokens: u64, output_tokens: u64)
     // Keep typewriter alive so animation can finish naturally
     session_mgmt.saveSessionSnapshotUnlocked(self) catch {};
 
+    // Fire desktop notification on task completion
+    if (self.notifier) |*n| {
+        n.handleEvent(.{
+            .type = .task_completed,
+            .task_name = self.model_name,
+            .timestamp = std.time.milliTimestamp(),
+        }) catch {};
+    }
+
     // Auto-compact when context exceeds 70% of model window
     if (self.compactor.needsCompaction(self.context_tokens)) {
         self.performCompactionAuto() catch |err| {
@@ -787,6 +796,15 @@ pub fn finishRequestWithCaughtError(self: *Model, err: anyerror) void {
 pub fn finishRequestWithErrorText(self: *Model, text: []const u8) void {
     self.lock.lock();
     defer self.lock.unlock();
+
+    // Fire desktop notification on error
+    if (self.notifier) |*n| {
+        n.handleEvent(.{
+            .type = .error_occurred,
+            .error_message = text,
+            .timestamp = std.time.milliTimestamp(),
+        }) catch {};
+    }
 
     if (self.awaiting_first_token) {
         if (self.assistant_stream_index) |index| {
