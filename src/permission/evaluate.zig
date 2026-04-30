@@ -587,9 +587,176 @@ pub fn runClassificationTests() !void {
     std.log.info("All classification tests passed!", .{});
 }
 
-/// Export test function for build system
-pub const test_runner = struct {
-    pub fn run() !void {
-        try runTests();
-    }
-};
+// ── Inline tests ──────────────────────────────────────────────────────────────
+
+test "wildcardMatch exact match" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("hello", "hello"));
+}
+
+test "wildcardMatch no match" {
+    try std.testing.expect(!PermissionEvaluator.wildcardMatch("hello", "world"));
+}
+
+test "wildcardMatch star matches all" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("anything", "*"));
+}
+
+test "wildcardMatch star matches prefix" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("file:read", "file:*"));
+}
+
+test "wildcardMatch star matches suffix" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("read_file", "*_file"));
+}
+
+test "wildcardMatch star in middle" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("bash:execute", "bash:*"));
+}
+
+test "wildcardMatch question mark single char" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("file", "f?le"));
+}
+
+test "wildcardMatch question mark wrong length" {
+    try std.testing.expect(!PermissionEvaluator.wildcardMatch("files", "f?le"));
+}
+
+test "wildcardMatch empty matches empty" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("", ""));
+}
+
+test "wildcardMatch star matches empty" {
+    try std.testing.expect(PermissionEvaluator.wildcardMatch("", "*"));
+}
+
+test "evaluate auto mode allows all" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    config.mode = .auto;
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("shell", "execute", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.allow, result.action);
+    try std.testing.expect(result.auto_approved);
+}
+
+test "evaluate plan mode denies write" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    config.mode = .plan;
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("write_file", "write", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.deny, result.action);
+}
+
+test "evaluate plan mode allows read" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    config.mode = .plan;
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("read_file", "read", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.allow, result.action);
+}
+
+test "evaluate bypass mode allows all" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    config.mode = .bypassPermissions;
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("shell", "execute", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.allow, result.action);
+}
+
+test "evaluate default mode asks for shell" {
+    const allocator = std.testing.allocator;
+    var config = createDefaultConfig(allocator);
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("shell", "execute", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.ask, result.action);
+}
+
+test "evaluate default mode allows read_file" {
+    const allocator = std.testing.allocator;
+    var config = createDefaultConfig(allocator);
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("read_file", "execute", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.allow, result.action);
+}
+
+test "evaluate rule override denies read" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    defer config.deinit();
+
+    try config.addRule(.{
+        .pattern = try allocator.dupe(u8, "read_file:*"),
+        .action = .deny,
+    });
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("read_file", "read", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.deny, result.action);
+}
+
+test "evaluate always-allow tool auto-approves" {
+    const allocator = std.testing.allocator;
+    var config = PermissionConfig.init(allocator);
+    try config.addAlwaysAllowTool("write_file");
+    defer config.deinit();
+
+    var evaluator = PermissionEvaluator.init(allocator, config);
+    defer evaluator.deinit();
+
+    var request = try PermissionRequest.init("write_file", "write", allocator);
+    defer request.deinit(allocator);
+
+    const result = evaluator.evaluate(&request);
+    try std.testing.expectEqual(PermissionAction.allow, result.action);
+    try std.testing.expect(result.auto_approved);
+}

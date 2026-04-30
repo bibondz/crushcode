@@ -211,3 +211,107 @@ pub const StreamingSession = struct {
         }
     }
 };
+
+// ── Inline tests ──────────────────────────────────────────────────────────────
+
+test "SessionState enum has all variants" {
+    _ = SessionState.pending;
+    _ = SessionState.streaming;
+    _ = SessionState.paused;
+    _ = SessionState.completed;
+    _ = SessionState.cancelled;
+    _ = SessionState.failed;
+}
+
+test "StreamingSession init sets pending state" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expectEqual(SessionState.pending, session.getState());
+}
+
+test "StreamingSession start sets streaming state" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    session.start();
+    try std.testing.expectEqual(SessionState.streaming, session.getState());
+}
+
+test "StreamingSession cancel sets cancelled state" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    session.start();
+    session.cancel();
+    try std.testing.expectEqual(SessionState.cancelled, session.getState());
+}
+
+test "StreamingSession isComplete false for pending" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expect(!session.isComplete());
+}
+
+test "StreamingSession isComplete false for streaming" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    session.start();
+    try std.testing.expect(!session.isComplete());
+}
+
+test "StreamingSession isComplete true for cancelled" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    session.cancel();
+    try std.testing.expect(session.isComplete());
+}
+
+test "StreamingSession hasError false initially" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expect(!session.hasError());
+}
+
+test "StreamingSession getTokenCount starts at zero" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expectEqual(@as(u32, 0), session.getTokenCount());
+}
+
+test "StreamingSession getFullContent empty initially" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expectEqualStrings("", session.getFullContent());
+}
+
+test "StreamingSession ollama uses ndjson parser" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "ollama", "llama2", opts);
+    defer session.deinit();
+    try std.testing.expect(session.parser == .ndjson);
+}
+
+test "StreamingSession openai uses sse parser" {
+    const allocator = std.testing.allocator;
+    const opts = StreamOptions{ .display_tokens = false, .show_thinking = false };
+    var session = try StreamingSession.init(allocator, "openai", "gpt-4", opts);
+    defer session.deinit();
+    try std.testing.expect(session.parser == .sse);
+}
