@@ -501,19 +501,16 @@ Build ✅
 
 **Based on**: Full test coverage audit — every .zig file in src/ checked for `test "..."` blocks.
 
-### Phase 66: Streaming + Permission + Guardrail Tests 🔴 HIGH
+### Phase 66: Streaming + Permission + Guardrail Tests 🔴 HIGH ✅
 
-**Gap**: 0 tests in streaming parsers (729L), permission evaluate (595L), secrets scanner (282L), PII scanner (369L). These are security-critical — guardrails prevent leaking secrets/PII to AI providers.
-
-**Plan**:
-- `ai/streaming_parsers.zig` — test SSE parsing, NDJSON parsing, finish_reason extraction, tool_call streaming, malformed input handling
-- `permission/evaluate.zig` — test PermissionMode logic, tool risk classification, auto-approve/deny/ask decisions
-- `guardrail/secrets.zig` — test pattern matching for API keys, tokens, passwords, private keys
-- `guardrail/pii_scanner.zig` — test email, phone, SSN, credit card, IP address detection
-- `streaming/session.zig` — test session state transitions
-- `usage/budget.zig` — test budget check, cost recording, over-budget detection
-
-**Target**: 60+ new tests across 6 files
+**Done**: 79 new tests across 6 previously-untested files:
+- `ai/streaming_parsers.zig`: 18 tests (jsonU32, parseUsage, detectStreamingFormat, SSE/NDJSON parsing, JSON escape)
+- `permission/evaluate.zig`: 18 tests (wildcardMatch patterns, plan/auto/bypass/acceptEdits modes, rule override, always-allow)
+- `guardrail/secrets.zig`: 10 tests (GitHub/Stripe/Anthropic/OpenAI/Slack/Bearer/PrivateKey detection)
+- `guardrail/pii_scanner.zig`: 10 tests (email/phone/SSN/credit card/AWS key/API key detection + redaction)
+- `streaming/session.zig`: 12 tests (SessionState, init/start/cancel lifecycle, isComplete, parser backend selection)
+- `usage/budget.zig`: 11 tests (BudgetConfig, recordCost, isOverBudget, checkBeforeRequest, formatCost, resetSession)
+- Build ✅
 
 ### Phase 67: Command Layer Tests 🟡 MEDIUM
 
