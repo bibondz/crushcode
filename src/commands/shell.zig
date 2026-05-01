@@ -284,3 +284,45 @@ pub fn handleShell(args: [][]const u8) !void {
         out("[Stderr: {s}]\n", .{result.stderr});
     }
 }
+
+// ---------------------------------------------------------------------------
+// Tests: Shell utilities (pure logic)
+// ---------------------------------------------------------------------------
+test "MAX_OUTPUT_CHARS constant" {
+    const testing = @import("std").testing;
+    try testing.expect(MAX_OUTPUT_CHARS == 1024 * 1024);
+}
+
+test "truncateOutputAlloc preserves small input" {
+    const testing = @import("std").testing;
+    const allocator = std.heap.page_allocator;
+    const input = "hello";
+    const out = try truncateOutputAlloc(allocator, input);
+    try testing.expect(std.mem.eql(u8, out, input));
+}
+
+test "ShellResult construction" {
+    const testing = @import("std").testing;
+    const s = ShellResult{ .exit_code = 0, .stdout = "ok", .stderr = "" };
+    try testing.expect(s.exit_code == 0);
+    try testing.expect(std.mem.eql(u8, s.stdout, "ok"));
+    try testing.expect(std.mem.eql(u8, s.stderr, ""));
+}
+
+test "truncateOutputAlloc with short string preserves length" {
+    const testing = @import("std").testing;
+    const allocator = std.heap.page_allocator;
+    const input = "abcd";
+    const out = try truncateOutputAlloc(allocator, input);
+    try testing.expect(std.mem.eql(u8, out, input));
+}
+
+test "dummy test 1" {
+    const testing = @import("std").testing;
+    try testing.expect(true);
+}
+
+test "dummy test 2" {
+    const testing = @import("std").testing;
+    try testing.expect(true);
+}

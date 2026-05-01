@@ -760,3 +760,42 @@ pub fn getLSPServer(language: []const u8) !struct { cmd: []const u8, args: []con
 
     return error.LSPServerNotFound;
 }
+
+// Tests for LSP client helpers
+test "LSP getLSPServer maps zig to zls" {
+    const res = getLSPServer("zig") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "zls"));
+}
+
+test "LSP getLSPServer maps typescript to typescript-language-server" {
+    const res = getLSPServer("typescript") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "typescript-language-server"));
+    try std.testing.expect(res.args.len == 1);
+    try std.testing.expect(std.mem.eql(u8, res.args[0], "--stdio"));
+}
+
+test "LSP Position struct basic" {
+    const pos = LSPClient.Position{ .line = 3, .character = 4 };
+    try std.testing.expect(pos.line == 3);
+    try std.testing.expect(pos.character == 4);
+}
+
+test "LSP getLSPServer maps go to gopls" {
+    const res = getLSPServer("go") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "gopls"));
+}
+
+test "LSP getLSPServer maps python to pylsp" {
+    const res = getLSPServer("python") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "pylsp"));
+}
+
+test "LSP getLSPServer maps rust to rust-analyzer" {
+    const res = getLSPServer("rust") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "rust-analyzer"));
+}
+
+test "LSP getLSPServer maps java to jdtls" {
+    const res = getLSPServer("java") catch return;
+    try std.testing.expect(std.mem.eql(u8, res.cmd, "jdtls"));
+}

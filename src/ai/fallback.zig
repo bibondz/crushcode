@@ -131,3 +131,104 @@ pub const FallbackChain = struct {
         self.chain.deinit();
     }
 };
+
+// ------------------------------------------------------------
+// Tests for fallback.zig
+// ------------------------------------------------------------
+test "FallbackChain - empty on init" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try std.testing.expect(chain.isEmpty());
+    try std.testing.expect(chain.count() == 0);
+}
+
+test "FallbackChain - addEntry and primary" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try chain.addEntry("openai", "gpt-4");
+    try std.testing.expect(!chain.isEmpty());
+    const primary = chain.getPrimary();
+    if (primary) |p| {
+        try std.testing.expect(std.mem.eql(u8, p.provider, "openai"));
+        try std.testing.expect(std.mem.eql(u8, p.model, "gpt-4"));
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "FallbackChain - multiple entries and getNext/getAtIndex" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try chain.addEntry("openai", "gpt-4");
+    try chain.addEntry("anthropic", "claude-3");
+    try chain.addEntry("ollama", "llama-3");
+
+    try std.testing.expect(chain.count() == 3);
+    // Next after first should be second
+    const next1 = chain.getNext("openai", "gpt-4");
+    if (next1) |n1| {
+        try std.testing.expect(std.mem.eql(u8, n1.provider, "anthropic"));
+        try std.testing.expect(std.mem.eql(u8, n1.model, "claude-3"));
+    } else {
+        try std.testing.expect(false);
+    }
+    // Next after last should be null
+    const next3 = chain.getNext("ollama", "llama-3");
+    try std.testing.expect(next3 == null);
+    // Unknown provider returns first
+    const nextUnknown = chain.getNext("unknown", "x");
+    if (nextUnknown) |nu| {
+        try std.testing.expect(std.mem.eql(u8, nu.provider, "openai"));
+    } else {
+        try std.testing.expect(false);
+    }
+}
+
+test "FallbackChain - getAtIndex" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try chain.addEntry("a", "m1");
+    try chain.addEntry("b", "m2");
+    const e0 = chain.getAtIndex(0);
+    const e1 = chain.getAtIndex(1);
+    try std.testing.expect(e0 != null);
+    try std.testing.expect(e1 != null);
+    try std.testing.expect(e0.?.provider == "a");
+    try std.testing.expect(e1.?.model == "m2");
+    const eInvalid = chain.getAtIndex(5);
+    try std.testing.expect(eInvalid == null);
+}
+
+test "FallbackChain - setRetryDelay and setMaxRetries" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    chain.setRetryDelay(2500);
+    chain.setMaxRetries(5);
+    // Access internal fields to validate (allowed in test scope)
+    try std.testing.expect(chain.retry_delay_ms == 2500);
+    try std.testing.expect(chain.max_retries == 5);
+}
+
+test "FallbackChain - getEntries correctness" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try chain.addEntry("p1", "m1");
+    try chain.addEntry("p2", "m2");
+    const entries = chain.getEntries();
+    try std.testing.expect(entries.len == 2);
+    try std.testing.expect(std.mem.eql(u8, entries[0].provider, "p1"));
+    try std.testing.expect(std.mem.eql(u8, entries[0].model, "m1"));
+}
+
+test "FallbackChain - empty getPrimary" {
+    const alloc = std.testing.allocator;
+    var chain = FallbackChain.init(alloc);
+    defer chain.deinit();
+    try std.testing.expect(chain.getPrimary() == null);
+}

@@ -51,7 +51,7 @@ pub fn build(b: *std.Build) !void {
     // raw openat syscall that silently falls back to STDIN_FILENO on failure,
     // avoiding the stack-trace dump that Zig's posix.open triggers on ENXIO.
     // Only the tty patch is Linux-specific; the App.zig division-by-zero guard applies to all targets.
-    patchVaxisTty(b, vaxis_dep, target);
+    // patchVaxisTty(b, vaxis_dep, target);  // Disabled for Zig 0.16 compatibility
 
     const compat_array_list_mod = simpleMod(b, "src/compat/array_list.zig", target, optimize);
     const compat_file_mod = simpleMod(b, "src/compat/file.zig", target, optimize);
@@ -1025,16 +1025,15 @@ addImports(slash_commands_mod, &.{imp("build_options", options_mod)});
     handlers_mod.addImport("build_options", options_mod);
     
     const exe = b.addExecutable(.{ .name = "crushcode", .root_module = main_mod });
-    exe.addCSourceFile(.{
-        .file = b.path("vendor/sqlite3/sqlite3.c"),
-        .flags = &sqlite_c_flags,
+    exe.root_module.addCSourceFiles(.{
+        .files = &.{
+            "vendor/sqlite3/sqlite3.c",
+            "vendor/sqlite3/zig_helpers.c",
+        },
+        .flags = &sqlite_c_flags, 
     });
-    exe.addCSourceFile(.{
-        .file = b.path("vendor/sqlite3/zig_helpers.c"),
-        .flags = &.{},
-    });
-    exe.addIncludePath(b.path("vendor/sqlite3"));
-    exe.linkLibC();
+    exe.root_module.addIncludePath(b.path("vendor/sqlite3"));
+    exe.root_module.link_libc = true;
     
     b.installArtifact(exe);
 
@@ -1069,18 +1068,17 @@ addImports(slash_commands_mod, &.{imp("build_options", options_mod)});
     // SQ-1: Dedicated sqlite test step with C linkage (-lc + sqlite3 amalgamation)
     // Uses a separate module instance to avoid duplicate symbol conflicts with the main exe.
     const sqlite_test_mod = simpleMod(b, "src/db/sqlite.zig", target, optimize);
-    sqlite_test_mod.addIncludePath(b.path("vendor/sqlite3"));
+
     const sqlite_tests = b.addTest(.{ .root_module = sqlite_test_mod });
-    sqlite_tests.addCSourceFile(.{
-        .file = b.path("vendor/sqlite3/sqlite3.c"),
+    sqlite_tests.root_module.addCSourceFiles(.{
+        .files = &.{
+            "vendor/sqlite3/sqlite3.c",
+            "vendor/sqlite3/zig_helpers.c",
+        },
         .flags = &sqlite_c_flags,
     });
-    sqlite_tests.addCSourceFile(.{
-        .file = b.path("vendor/sqlite3/zig_helpers.c"),
-        .flags = &.{},
-    });
-    sqlite_tests.addIncludePath(b.path("vendor/sqlite3"));
-    sqlite_tests.linkLibC();
+    sqlite_tests.root_module.addIncludePath(b.path("vendor/sqlite3"));
+    sqlite_tests.root_module.link_libc = true;
     const test_sqlite_step = b.step("test-sqlite", "Run sqlite unit tests (with C linkage)");
     test_sqlite_step.dependOn(&sqlite_tests.step);
 
@@ -1110,7 +1108,7 @@ fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency, target: std.Bu
         const tty_src = vaxis_dep.path("src/tty.zig").getPath3(b, null);
         const tty_path = tty_src.root_dir.path orelse return;
 
-        const file = std.fs.cwd().openFile(tty_path, .{ .mode = .read_write }) catch return;
+        const file = std.fs.openFileAbsolute(tty_path, .{ .mode = .read_write }) catch return;
         defer file.close();
 
         const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;
@@ -1142,7 +1140,7 @@ fn patchVaxisTty(b: *std.Build, vaxis_dep: *std.Build.Dependency, target: std.Bu
         var app_path_buf: [512]u8 = undefined;
         const app_path = std.fmt.bufPrint(&app_path_buf, "{s}/src/vxfw/App.zig", .{app_root}) catch return;
 
-        const file = std.fs.cwd().openFile(app_path, .{ .mode = .read_write }) catch return;
+        const file = std.fs.openFileAbsolute(app_path, .{ .mode = .read_write }) catch return;
         defer file.close();
 
         const contents = file.readToEndAlloc(b.allocator, 128 * 1024) catch return;

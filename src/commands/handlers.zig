@@ -319,6 +319,131 @@ pub fn printHelp() !void {
     , .{});
 }
 
+// ---------------------------------------------------------------------------
+// Tests: Structural verification of handler module
+// ---------------------------------------------------------------------------
+const testing = @import("std").testing;
+
+test "handleChat is a function" {
+    const T = @TypeOf(handleChat);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleRead is a function" {
+    const T = @TypeOf(handleRead);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleShell is a function" {
+    const T = @TypeOf(handleShell);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleWrite is a function" {
+    const T = @TypeOf(handleWrite);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleGit is a function" {
+    const T = @TypeOf(handleGit);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleAuth is a function" {
+    const T = @TypeOf(handleAuth);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleLSP is a function" {
+    const T = @TypeOf(handleLSP);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleMCP is a function" {
+    const T = @TypeOf(handleMCP);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleRun is a function" {
+    const T = @TypeOf(handleRun);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleBatch is a function" {
+    const T = @TypeOf(handleBatch);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleJobs is a function" {
+    const T = @TypeOf(handleJobs);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleLogs is a function" {
+    const T = @TypeOf(handleLogs);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleSessions is a function" {
+    const T = @TypeOf(handleSessions);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleCompletion is a function" {
+    const T = @TypeOf(handleCompletion);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleTrace is a function" {
+    const T = @TypeOf(handleTrace);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "printHelp is a function" {
+    const T = @TypeOf(printHelp);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "printVersion is a function" {
+    const T = @TypeOf(printVersion);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleSkill is a function" {
+    const T = @TypeOf(handleSkill);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleInstall is a function" {
+    const T = @TypeOf(handleInstall);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
+test "handleUpdate is a function" {
+    const T = @TypeOf(handleUpdate);
+    const info = @typeInfo(T);
+    try testing.expect(info == .Fn);
+}
+
 pub fn printVersion() !void {
     stdout_print("Crushcode v{s}\n", .{build_options.version});
 }

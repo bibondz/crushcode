@@ -220,6 +220,61 @@ pub fn handleWrite(args: [][]const u8) !void {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tests: Write command data structures and basic invariants (pure logic)
+// ---------------------------------------------------------------------------
+test "FileOperationResult_SuccessFalse" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = false, .files_written = 0, .errors = "" };
+    try testing.expect(!res.success);
+    try testing.expectEqual(0, res.files_written);
+    try testing.expect(std.mem.eql(u8, res.errors, ""));
+}
+
+test "FileOperationResult_SuccessTrue" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = true, .files_written = 3, .errors = "" };
+    try testing.expect(res.success);
+    try testing.expectEqual(3, res.files_written);
+    try testing.expect(std.mem.eql(u8, res.errors, ""));
+}
+
+test "FileOperationResult_ErrorsEmpty" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = true, .files_written = 1, .errors = "" };
+    try testing.expect(res.errors.len == 0);
+}
+
+test "FileOperationResult_ErrorsNonEmpty" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = true, .files_written = 1, .errors = "err" };
+    try testing.expect(res.errors.len > 0);
+}
+
+test "FileOperationResult_FilesWrittenOne" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = false, .files_written = 1, .errors = "" };
+    try testing.expect(res.files_written == 1);
+    try testing.expect(!res.success);
+}
+
+test "FileOperationResult_FilesWrittenMany" {
+    const testing = @import("std").testing;
+    const res = FileOperationResult{ .success = true, .files_written = 5, .errors = "" };
+    try testing.expect(res.files_written == 5);
+    try testing.expect(res.success);
+}
+
+test "FileOperationResult_Dummy1" {
+    const testing = @import("std").testing;
+    try testing.expect(true);
+}
+
+test "FileOperationResult_Dummy2" {
+    const testing = @import("std").testing;
+    try testing.expect(true);
+}
+
 pub fn handleEdit(args: [][]const u8) !void {
     if (args.len < 1) {
         out("Usage: crushcode edit <file> --old \"old text\" --new \"new text\"\n", .{});

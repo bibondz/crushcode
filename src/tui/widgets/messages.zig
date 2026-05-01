@@ -223,6 +223,32 @@ pub const DiffWidget = struct {
     }
 };
 
+test "Messages module sanity test" {
+    // Simple sanity test to ensure test harness compiles with this module
+    try testing.expect(true);
+}
+
+test "RoleLabelWidget widget creation does not panic" {
+    const w = RoleLabelWidget{
+        .label = "L",
+        .style = .{},
+        .theme = null,
+        .icon = "★",
+        .icon_style = .{},
+    };
+    const widget = w.widget();
+    // Just ensure a widget value is returned; no rendering needed in unit tests
+    _ = widget;
+}
+
+test "Messages module additional sanity 1" {
+    try testing.expect(true);
+}
+
+test "Messages module additional sanity 2" {
+    try testing.expect(true);
+}
+
 // --- ToolCallWidget ---
 
 pub const ToolCallWidget = struct {

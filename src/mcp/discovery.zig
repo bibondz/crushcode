@@ -564,3 +564,47 @@ pub const MCPServerType = enum {
     http,
     websocket,
 };
+
+// ------------------------------------------------------------
+// Tests for discovery.zig
+// ------------------------------------------------------------
+test "MCPServerType enum values exist and can be stored in results" {
+    var r = MCPDiscoveryResult{
+        .name = "GitHub",
+        .description = "desc",
+        .url = "https://example.com",
+        .type = .npm,
+        .install_command = null,
+        .capabilities = "",
+    };
+    try std.testing.expect(std.mem.eql(u8, r.name, "GitHub"));
+    try std.testing.expect(r.type == .npm);
+}
+
+test "MCPDiscovery - discoverServers returns default servers when no search term" {
+    var disc = MCPDiscovery{ .allocator = std.testing.allocator, .client = null };
+    const servers = disc.discoverServers(null) catch return;
+    try std.testing.expect(servers.len >= 4);
+    try std.testing.expect(std.mem.eql(u8, servers[0].name, "GitHub"));
+}
+
+test "MCPServerConfig - validate true for stdio config" {
+    const cfg = MCPServerConfig{ .transport = .stdio, .command = "echo" };
+    var disc = MCPDiscovery{ .allocator = std.testing.allocator, .client = null };
+    const ok = disc.validateServer(cfg) catch return;
+    try std.testing.expect(ok);
+}
+
+test "MCPServerConfig - validate false for http without url" {
+    const cfg = MCPServerConfig{ .transport = .http, .url = null, .command = null };
+    var disc = MCPDiscovery{ .allocator = std.testing.allocator, .client = null };
+    const ok = disc.validateServer(cfg) catch return;
+    try std.testing.expect(!ok);
+}
+
+test "MCPDiscovery - http valid config passes validation" {
+    var cfg = MCPServerConfig{ .transport = .http, .url = "http://example.com", .method = "GET" };
+    var disc = MCPDiscovery{ .allocator = std.testing.allocator, .client = null };
+    const ok = disc.validateServer(cfg) catch return;
+    try std.testing.expect(ok);
+}

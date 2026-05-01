@@ -187,3 +187,168 @@ pub fn formatError(err: ErrorResponse) []const u8 {
         AIClientError.RetryExhausted => "Maximum retry attempts exceeded.",
     };
 }
+
+// ------------------------------------------------------------
+// Tests for error_handler.zig
+// ------------------------------------------------------------
+test "parseHttpStatus - 400 maps to InvalidRequest" {
+    const res = parseHttpStatus(400, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            const _ = e; // keep linter happy
+            try std.testing.expect(e.error_type == AIClientError.InvalidRequest);
+        },
+    }
+}
+
+test "parseHttpStatus - 401 maps to AuthenticationError" {
+    const res = parseHttpStatus(401, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            try std.testing.expect(e.error_type == AIClientError.AuthenticationError);
+        },
+    }
+}
+
+test "parseHttpStatus - 403 maps to AuthenticationError" {
+    const res = parseHttpStatus(403, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            try std.testing.expect(e.error_type == AIClientError.AuthenticationError);
+        },
+    }
+}
+
+test "parseHttpStatus - 404 maps to ModelNotFound" {
+    const res = parseHttpStatus(404, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            try std.testing.expect(e.error_type == AIClientError.ModelNotFound);
+        },
+    }
+}
+
+test "parseHttpStatus - 429 maps to RateLimitError with retry_after" {
+    const res = parseHttpStatus(429, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            try std.testing.expect(e.error_type == AIClientError.RateLimitError);
+            try std.testing.expect(e.retry_after != null);
+            try std.testing.expect(e.retry_after orelse 0 == 60);
+        },
+    }
+}
+
+test "parseHttpStatus - 500 maps to ServerError" {
+    const res = parseHttpStatus(500, "body");
+    switch (res) {
+        null => { try std.testing.expect(false); },
+        else => |e| {
+            try std.testing.expect(e.error_type == AIClientError.ServerError);
+        },
+    }
+}
+
+test "parseHttpStatus - 200 returns null" {
+    const res = parseHttpStatus(200, "body");
+    try std.testing.expect(res == null);
+}
+
+test "parseHttpStatus - 999 returns null" {
+    const res = parseHttpStatus(999, "body");
+    try std.testing.expect(res == null);
+}
+
+test "calculateDelay - 0 returns base delay" {
+    const cfg = RetryConfig.default();
+    const d = calculateDelay(0, cfg);
+    try std.testing.expect(d == cfg.base_delay_ms);
+}
+
+test "calculateDelay - 2 returns base * 2^2 (no jitter)" {
+    const cfg = RetryConfig{ .max_attempts = 3, .base_delay_ms = 1000, .max_delay_ms = 30000, .backoff_multiplier = 2.0, .jitter = false };
+    const d = calculateDelay(2, cfg);
+    try std.testing.expect(d == 4000);
+}
+
+test "calculateDelay - cap at max_delay" {
+    const cfg = RetryConfig{ .max_attempts = 3, .base_delay_ms = 5000, .max_delay_ms = 3000, .backoff_multiplier = 2.0, .jitter = false };
+    const d = calculateDelay(0, cfg);
+    try std.testing.expect(d == 3000);
+}
+
+test "RetryConfig presets" {
+    const d = RetryConfig.default();
+    try std.testing.expect(d.max_attempts == 3);
+    try std.testing.expect(d.base_delay_ms == 1000);
+    try std.testing.expect(d.max_delay_ms == 30000);
+    try std.testing.expect(d.backoff_multiplier == 2.0);
+    try std.testing.expect(d.jitter == true);
+
+    const a = RetryConfig.aggressive();
+    try std.testing.expect(a.max_attempts == 5);
+    try std.testing.expect(a.base_delay_ms == 500);
+    try std.testing.expect(a.max_delay_ms == 60000);
+
+    const c = RetryConfig.conservative();
+    try std.testing.expect(c.max_attempts == 2);
+    try std.testing.expect(c.base_delay_ms == 2000);
+    try std.testing.expect(c.max_delay_ms == 10000);
+}
+
+test "calculateDelay - aggressive preset" {
+    const cfg = RetryConfig.aggressive();
+    const d = calculateDelay(4, cfg);
+    try std.testing.expect(d == 8000);
+}
+
+test "calculateDelay - conservative preset cap" {
+    const cfg = RetryConfig.conservative();
+    const d = calculateDelay(4, cfg);
+    try std.testing.expect(d == 10000);
+}
+
+test "isRetryableError - common retryable values" {
+    try std.testing.expect(isRetryableError(AIClientError.NetworkError));
+    try std.testing.expect(isRetryableError(AIClientError.RateLimitError));
+    try std.testing.expect(isRetryableError(AIClientError.ServerError));
+    try std.testing.expect(isRetryableError(AIClientError.TimeoutError));
+    try std.testing.expect(!isRetryableError(AIClientError.AuthenticationError));
+}
+
+test "formatError - returns non-empty strings for several errors" {
+    var e = ErrorResponse{ .error_type = AIClientError.NetworkError, .message = "net" };
+    try std.testing.expect(formatError(e).len > 0);
+    e = ErrorResponse{ .error_type = AIClientError.AuthenticationError, .message = "auth" };
+    try std.testing.expect(formatError(e).len > 0);
+    e = ErrorResponse{ .error_type = AIClientError.RateLimitError, .message = "rate" };
+    try std.testing.expect(formatError(e).len > 0);
+}
+
+test "formatError - TokenLimitError returns non-empty" {
+    const e = ErrorResponse{ .error_type = AIClientError.TokenLimitError, .message = "tok" };
+    const s = formatError(e);
+    try std.testing.expect(s.len > 0);
+}
+
+test "ErrorResponse - withCode sets code" {
+    const e = ErrorResponse.withCode(AIClientError.InvalidRequest, "msg", "ERR-001");
+    try std.testing.expect(std.mem.eql(u8, e.code orelse "", "ERR-001"));
+}
+
+test "ErrorResponse - withRetryAfter sets retry_after" {
+    const e = ErrorResponse.withRetryAfter(AIClientError.RateLimitError, "msg", 30);
+    try std.testing.expect(e.retry_after != null);
+    try std.testing.expect(e.retry_after orelse 0 == 30);
+}
+
+test "RateLimiter init/deinit basic" {
+    var rl = RateLimiter.init(std.testing.allocator, 60);
+    rl.deinit();
+    // If we reach here, allocation/deallocation didn't crash
+}

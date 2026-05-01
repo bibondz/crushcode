@@ -808,6 +808,113 @@ pub fn currentDisplayRows(self: *const MultiLineInputState, available_width: u16
     return result;
 }
 
+// ---------------------------------------------------------------------------
+// Inline tests for pure-buffer logic (gap buffer) in MultiLineInputState
+test "GapBuffer basic operations" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    // insert simple content
+    try gb.insertSliceAtCursor("abc");
+
+    // dupe should reflect current content
+    const dupe = try gb.dupe();
+    defer allocator.free(dupe);
+    try testing.expect(std.mem.eql(u8, dupe, "abc"));
+
+    // firstHalf equals the content up to cursor
+    try testing.expect(std.mem.eql(u8, gb.firstHalf(), "abc"));
+    // cursor should be at end (length of content)
+    try testing.expect(gb.cursor == 3);
+}
+
+test "GapBuffer toOwnedSlice resets state" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    try gb.insertSliceAtCursor("xyz");
+    const owned = try gb.toOwnedSlice();
+    defer allocator.free(owned);
+    try testing.expect(std.mem.eql(u8, owned, "xyz"));
+    // After toOwnedSlice, buffer should be cleared; firstHalf should be empty
+    try testing.expect(std.mem.eql(u8, gb.firstHalf(), ""));
+}
+
+// Additional pure tests for gap buffer and multi-line input state to improve
+// test coverage without requiring a full TUI environment.
+test "GapBuffer: firstHalf/secondHalf after insertion" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    try gb.insertSliceAtCursor("xy");
+    try testing.expect(std.mem.eql(u8, gb.firstHalf(), "xy"));
+    try testing.expect(std.mem.eql(u8, gb.secondHalf(), ""));
+}
+
+test "GapBuffer: multi-byte insertion supported" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    try gb.insertSliceAtCursor("é");
+    const dupe = try gb.dupe();
+    defer allocator.free(dupe);
+    try testing.expect(std.mem.eql(u8, dupe, "é"));
+}
+
+test "MultiLineInputState: cursorPosition after 'ab\\nc'" {
+    var allocator = std.testing.allocator;
+    var st = MultiLineInputState.init(allocator);
+    try st.insertSliceAtCursor("ab\nc");
+    const pos = st.cursorPosition();
+    try testing.expect(pos.row == 1);
+    try testing.expect(pos.col_byte == 1);
+}
+
+test "MultiLineInputState: lineCount after 'ab\\nc'" {
+    var allocator = std.testing.allocator;
+    var st = MultiLineInputState.init(allocator);
+    try st.insertSliceAtCursor("ab\nc");
+    const lc = st.lineCount();
+    try testing.expect(lc == 2);
+}
+
+test "MultiLineInputState: cursorPosition after single line 'xyz'" {
+    var allocator = std.testing.allocator;
+    var st = MultiLineInputState.init(allocator);
+    try st.insertSliceAtCursor("xyz");
+    const pos = st.cursorPosition();
+    try testing.expect(pos.row == 0);
+    try testing.expect(pos.col_byte == 3);
+}
+
+test "GapBuffer: firstHalf equals full content after 'abc'" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    try gb.insertSliceAtCursor("abc");
+    try testing.expect(std.mem.eql(u8, gb.firstHalf(), "abc"));
+}
+
+test "GapBuffer: realLength equals content length after insertion" {
+    var allocator = std.testing.allocator;
+    var gb = GapBuffer.init(allocator);
+    try gb.insertSliceAtCursor("abc");
+    const len = gb.realLength();
+    try testing.expect(len == 3);
+}
+
+test "MultiLineInputState: lineCount after 'a\\nb\\nc' equals 3" {
+    var allocator = std.testing.allocator;
+    var st = MultiLineInputState.init(allocator);
+    try st.insertSliceAtCursor("a\nb\nc");
+    const lc = st.lineCount();
+    try testing.expect(lc == 3);
+}
+
+test "MultiLineInputState: toOwnedSlice returns current content" {
+    var allocator = std.testing.allocator;
+    var st = MultiLineInputState.init(allocator);
+    try st.insertSliceAtCursor("hello");
+    const owned = try st.toOwnedSlice();
+    defer allocator.free(owned);
+    try testing.expect(std.mem.eql(u8, owned, "hello"));
+}
+
 // --- Drawing ---
 
 pub fn draw(self: *MultiLineInputState, ctx: vxfw.DrawContext) Allocator.Error!vxfw.Surface {

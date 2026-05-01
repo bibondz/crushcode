@@ -418,6 +418,87 @@ pub fn cosineSimilarity(a: []const f32, b: *const [embed_dim]f32) f64 {
     return dot / denom;
 }
 
+// ------------------------------------------------------------
+// Tests for semantic.zig
+// ------------------------------------------------------------
+test "cosineSimilarity - identical vectors -> ~1.0" {
+    var v: [embed_dim]f32 = undefined;
+    v[0] = 1.0; v[1] = 2.0;
+    const sim = cosineSimilarity(v[0..embed_dim], &v);
+    try std.testing.expect(sim > 0.999);
+}
+
+test "cosineSimilarity - orthogonal vectors -> ~0.0" {
+    var a: [embed_dim]f32 = undefined;
+    var b: [embed_dim]f32 = undefined;
+    a[0] = 1.0; b[0] = 0.0; // make sure vectors are aligned along different axes
+    const sim = cosineSimilarity(a[0..embed_dim], &b);
+    try std.testing.expect(sim < 0.01);
+}
+
+test "cosineSimilarity - opposite vectors -> ~-1.0" {
+    var a: [embed_dim]f32 = undefined;
+    var b: [embed_dim]f32 = undefined;
+    a[0] = 1.0; b[0] = -1.0;
+    const sim = cosineSimilarity(a[0..embed_dim], &b);
+    try std.testing.expect(sim < -0.99);
+}
+
+test "cosineSimilarity - zero vector handling" {
+    var a: [embed_dim]f32 = undefined;
+    var b: [embed_dim]f32 = undefined;
+    // a is zero by default, b is non-zero
+    b[0] = 1.0;
+    const sim = cosineSimilarity(a[0..embed_dim], &b);
+    try std.testing.expect(sim == 0.0);
+}
+
+test "EmbeddingEntry basic creation" {
+    const path = "/path/file.zig";
+    const text = "chunk";
+    var vec: [embed_dim]f32 = undefined;
+    vec[0] = 0.5;
+    const e = EmbeddingEntry{ .file_path = path, .chunk_text = text, .vector = vec };
+    try std.testing.expect(std.mem.eql(u8, e.file_path, path));
+    try std.testing.expect(std.mem.eql(u8, e.chunk_text, text));
+    try std.testing.expect(e.vector[0] == 0.5);
+}
+
+test "SemanticIndex init/deinit lifecycle" {
+    const alloc = std.testing.allocator;
+    var idx = SemanticIndex.init(alloc);
+    defer idx.deinit();
+    try std.testing.expect(idx.entries.len == 0);
+}
+
+test "semantic constants" {
+    try std.testing.expect(embed_dim == 1536);
+    try std.testing.expect(max_chunk_bytes == 2048);
+}
+
+test "SearchResult sorting - manual reorder works" {
+    var a = SearchResult{ .file_path = "a", .score = 0.2, .snippet = "" };
+    var b = SearchResult{ .file_path = "b", .score = 0.8, .snippet = "" };
+    var results = [_]SearchResult{ a, b };
+    if (results[0].score < results[1].score) {
+        const tmp = results[0];
+        results[0] = results[1];
+        results[1] = tmp;
+    }
+    try std.testing.expect(results[0].score >= results[1].score);
+}
+
+test "cosineSimilarity - isIndexable helper works for common extensions" {
+    inline for (indexable_exts) |ext| {
+        _ = ext;
+    }
+    // Basic sanity: known index-eligible extension
+    try std.testing.expect(isIndexable("foo.zig"));
+    try std.testing.expect(isIndexable("readme.md"));
+    // Non-indexable extension
+    try std.testing.expect(!isIndexable("archive.tar"));
+}
+
 /// Check if a filename has an indexable extension.
 fn isIndexable(name: []const u8) bool {
     for (indexable_exts) |ext| {

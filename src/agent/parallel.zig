@@ -92,6 +92,79 @@ pub fn parseCategory(s: []const u8) ?AgentCategory {
     return null;
 }
 
+/// Tests for pure-logic helpers in Agent parallel module
+test "AgentCategory parseCategory known values" {
+    const i1 = parseCategory("visual");
+    if (i1) |c| {
+        try testing.expect(c == .visual_engineering);
+    } else {
+        try testing.expect(false);
+    }
+
+    const i2 = parseCategory("ultrabrain");
+    if (i2) |c| {
+        try testing.expect(c == .ultrabrain);
+    } else {
+        try testing.expect(false);
+    }
+
+    const i3 = parseCategory("deep");
+    if (i3) |c| {
+        try testing.expect(c == .deep);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "AgentCategory parseCategory synonyms frontend yields visual_engineering" {
+    const res = parseCategory("frontend");
+    if (res) |c| {
+        try testing.expect(c == .visual_engineering);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "AgentCategory parseCategory known values: general" {
+    const res = parseCategory("general");
+    if (res) |c| {
+        try testing.expect(c == .general);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "getDefaultProviderForCategory returns 'default' for visual_engineering" {
+    const v = getDefaultProviderForCategory(.visual_engineering);
+    try testing.expect(std.mem.eql(u8, v, "default"));
+}
+
+test "getDefaultModelForCategory returns 'default' for review" {
+    const m = getDefaultModelForCategory(.review);
+    try testing.expect(std.mem.eql(u8, m, "default"));
+}
+
+test "AgentCategory parseCategory synonyms explore yields research" {
+    const res = parseCategory("explore");
+    if (res) |c| {
+        try testing.expect(c == .research);
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "AgentCategory parseCategory unknown returns null" {
+    const v = parseCategory("not-a-category");
+    try testing.expect(v == null);
+}
+
+test "getDefaultModelForCategory returns default for categories" {
+    const v = getDefaultModelForCategory(.visual_engineering);
+    try testing.expect(std.mem.eql(u8, v, "default"));
+    const u = getDefaultModelForCategory(.ultrabrain);
+    try testing.expect(std.mem.eql(u8, u, "default"));
+}
+
 /// Completed work item — produced by worker thread, consumed by main thread
 pub const CompletedWork = struct {
     task_id: []const u8, // owned

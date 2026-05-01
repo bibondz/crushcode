@@ -527,3 +527,32 @@ const time_txt = try std.fmt.allocPrint(ctx.arena, "{d}m{d}s", .{ self.context.s
         return text.draw(ctx.withConstraints(.{ .width = width, .height = 1 }, .{ .width = width, .height = 1 }));
     }
 };
+
+test "MCPServerStatus basic struct init" {
+    const s = MCPServerStatus{ .name = "srv", .connected = true, .tool_count = 2 };
+    try testing.expect(std.mem.eql(u8, s.name, "srv"));
+    try testing.expect(s.connected);
+    try testing.expect(s.tool_count == 2);
+}
+
+test "SidebarContext basic literal init" {
+    const sc = SidebarContext{
+        .recent_files = &.{},
+        .cwd_files = &.{},
+        .request_count = 0,
+        .total_input_tokens = 0,
+        .total_output_tokens = 0,
+        .turn_token_history = &.{},
+        .estimated_cost_usd = 0.0,
+        .session_minutes = 0,
+        .session_seconds_part = 0,
+        .workers = &.{},
+        .theme_name = "default",
+        .current_theme = null,
+        .mcp_servers = &.{},
+        .diag_error_count = 0,
+        .diag_warning_count = 0,
+    };
+    // If construction succeeds, test harness can proceed
+    _ = sc;
+}

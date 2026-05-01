@@ -191,3 +191,52 @@ pub const IntentGate = struct {
         _ = self;
     }
 };
+
+// ------------------------------------------------------------
+// Tests for intent_gate.zig
+// ------------------------------------------------------------
+test "IntentGate - classification for various intents" {
+    var g = IntentGate.init(std.testing.allocator);
+    defer g.deinit();
+
+    const r1 = g.classify("implement new feature");
+    try std.testing.expect(r1.intent_type == .implementation);
+
+    const r2 = g.classify("explain how this works");
+    try std.testing.expect(r2.intent_type == .research);
+
+    const r3 = g.classify("look into the logs now");
+    try std.testing.expect(r3.intent_type == .investigation);
+
+    const r4 = g.classify("what do you think about this?");
+    try std.testing.expect(r4.intent_type == .evaluation);
+
+    const r5 = g.classify("fix the crash in module X");
+    try std.testing.expect(r5.intent_type == .fix);
+
+    const r6 = g.classify("refactor module Y for clarity");
+    try std.testing.expect(r6.intent_type == .open_ended);
+
+    const r7 = g.classify("hello there");
+    try std.testing.expect(r7.intent_type == .chat);
+
+    const r8 = g.classify("implement X and explain Y");
+    // Ensure a valid intent is chosen
+    try std.testing.expect(r8.intent_type == .implementation or r8.intent_type == .research or r8.intent_type == .investigation or r8.intent_type == .evaluation or r8.intent_type == .fix or r8.intent_type == .open_ended or r8.intent_type == .chat);
+}
+
+test "IntentGate - intentLabel returns non-empty for all types" {
+    // Just ensure we can obtain labels for all enum values
+    const types = [_]IntentType{ .research, .implementation, .investigation, .evaluation, .fix, .open_ended, .chat };
+    for (types) |t| {
+        const lab = IntentGate.intentLabel(t);
+        try std.testing.expect(lab.len > 0);
+    }
+}
+
+test "IntentGate - case-insensitive classification" {
+    var g = IntentGate.init(std.testing.allocator);
+    defer g.deinit();
+    const r = g.classify("IMPLEMENT something");
+    try std.testing.expect(r.intent_type == .implementation);
+}

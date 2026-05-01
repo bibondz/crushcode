@@ -511,3 +511,44 @@ pub fn runDoctorChecks(allocator: Allocator) ![]const u8 {
 
     return report.formatReport();
 }
+
+// ---------------------------------------------------------------------------
+// Tests: Doctor data structures and small helpers (pure logic)
+// ---------------------------------------------------------------------------
+test "statusIcon for pass" {
+    const testing = @import("std").testing;
+    try testing.expect(std.mem.eql(u8, statusIcon(.pass), "\xE2\x9C\x85"));
+}
+
+test "statusIcon for warning" {
+    const testing = @import("std").testing;
+    try testing.expect(std.mem.eql(u8, statusIcon(.warning), "\xE2\x9A\xA0\xEF\xB8\x8F"));
+}
+
+test "statusIcon for fail" {
+    const testing = @import("std").testing;
+    try testing.expect(std.mem.eql(u8, statusIcon(.fail), "\xE2\x9D\x8C"));
+}
+
+test "statusIcon for skip" {
+    const testing = @import("std").testing;
+    try testing.expect(std.mem.eql(u8, statusIcon(.skip), "\xE2\x84\xB9\xEF\xB8\x8F"));
+}
+
+test "DiagnosticCheck fields" {
+    const testing = @import("std").testing;
+    const dc = DiagnosticCheck{ .category = .installation, .name = "Test", .status = .pass, .message = "ok" };
+    try testing.expect(dc.category == .installation);
+    try testing.expect(std.mem.eql(u8, dc.name, "Test"));
+    try testing.expect(dc.status == .pass);
+    try testing.expect(std.mem.eql(u8, dc.message, "ok"));
+}
+
+test "DoctorReport basic init and addCheck" {
+    const testing = @import("std").testing;
+    var report = DoctorReport.init(std.heap.page_allocator);
+    defer report.deinit();
+    const chk = DiagnosticCheck{ .category = .installation, .name = "dummy", .status = .pass, .message = "done" };
+    try report.addCheck(chk);
+    try testing.expect(true);
+}

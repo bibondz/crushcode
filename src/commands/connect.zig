@@ -213,6 +213,80 @@ pub fn handleConnect(args: []const []const u8) !void {
     out("\nDone! Run 'crushcode list --models {s}' to see available models\n", .{provider.id});
 }
 
+// ---------------------------------------------------------------------------
+// Tests: Provider list and access helpers (pure logic)
+// ---------------------------------------------------------------------------
+test "Providers list length" {
+    const testing = @import("std").testing;
+    try testing.expect(PROVIDERS.len == 13);
+}
+
+test "Provider index 1: openai" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(1);
+    if (p) |pp| {
+        try testing.expect(std.mem.eql(u8, pp.id, "openai"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "Provider index 3: groq" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(3);
+    if (p) |pp| {
+        try testing.expect(std.mem.eql(u8, pp.id, "groq"));
+        try testing.expect(std.mem.eql(u8, pp.name, "Groq"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "Provider index 13: zai" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(13);
+    if (p) |pp| {
+        try testing.expect(std.mem.eql(u8, pp.id, "zai"));
+        try testing.expect(std.mem.eql(u8, pp.name, "Z.AI"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "Provider index 0: null" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(0);
+    try testing.expect(p == null);
+}
+
+test "Provider index out of range: null" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(14);
+    try testing.expect(p == null);
+}
+
+test "Provider index 4: deepseek" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(4);
+    if (p) |pp| {
+        try testing.expect(std.mem.eql(u8, pp.id, "deepseek"));
+        try testing.expect(std.mem.eql(u8, pp.name, "DeepSeek"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
+test "Provider index 2: openrouter" {
+    const testing = @import("std").testing;
+    const p = getProviderByIndex(2);
+    if (p) |pp| {
+        try testing.expect(std.mem.eql(u8, pp.id, "openrouter"));
+        try testing.expect(std.mem.eql(u8, pp.name, "OpenRouter"));
+    } else {
+        try testing.expect(false);
+    }
+}
+
 /// Set default provider in config
 fn setDefaultProvider(provider_id: []const u8) !void {
     const allocator = std.heap.page_allocator;

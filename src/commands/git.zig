@@ -513,3 +513,105 @@ fn printGitHelp() !void {
         \\
     , .{});
 }
+
+// ---------------------------------------------------------------------------
+// Tests: Git command formatting helpers (pure logic)
+// ---------------------------------------------------------------------------
+test "Git commit command formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "git commit -m \"{s}\"", .{"hello"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "git commit -m \"hello\""));
+}
+
+test "Git add command formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "git add {s}", .{"file.txt"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "git add file.txt"));
+}
+
+test "Git remoteAdd formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "remote add {s} {s}", .{"origin", "https://example.com"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "remote add origin https://example.com"));
+}
+
+test "Git remoteRemove formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "remote remove {s}", .{"origin"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "remote remove origin"));
+}
+
+test "Git createBranch formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "checkout -b {s}", .{"feature"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "checkout -b feature"));
+}
+
+test "Git checkout formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "checkout {s}", .{"main"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "checkout main"));
+}
+
+test "Git logSearch formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "log --oneline -S \"{s}\"", .{"foo"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "log --oneline -S \"foo\""));
+}
+
+test "Git logOpts formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "log {s}", .{"--oneline"}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "log --oneline"));
+}
+
+test "Git bisectStart formatting" {
+    const testing = @import("std").testing;
+    var alloc = std.heap.page_allocator;
+    const cmd = std.fmt.allocPrint(alloc, "bisect start", .{}) catch {
+        try testing.expect(false);
+        return;
+    };
+    defer alloc.free(cmd);
+    try testing.expect(std.mem.eql(u8, cmd, "bisect start"));
+}
